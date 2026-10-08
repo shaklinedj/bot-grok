@@ -2272,9 +2272,9 @@ def run_paper_trading(reset_all: bool = False):
                             else:
                                 global LAST_AGENT_PCT
                                 available_funds = bot.cash * 0.98
-                                # Sizing para cuentas con múltiples mallas concurrentes ($30 a $80 por malla)
-                                target_by_agents = round(available_funds * comm_mult * 0.35, 2)
-                                adjusted_capital = max(MIN_ORDER_USDT, min(80.0, min(available_funds, target_by_agents)))
+                                # Poder total autónomo al bot: asigna hasta el 100% del efectivo disponible según el veredicto del comité
+                                target_by_agents = round(available_funds * comm_mult, 2)
+                                adjusted_capital = max(MIN_ORDER_USDT, min(available_funds, target_by_agents))
                                 pct_display = round(comm_mult * 100, 0)
                                 LAST_AGENT_PCT = pct_display
                                 

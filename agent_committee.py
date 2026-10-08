@@ -164,9 +164,9 @@ class QuantitativeAgentCommittee:
         is_risk_off = btc_macro.get("is_risk_off", False) if isinstance(btc_macro, dict) else False
         macro_mult = 0.75 if is_risk_off else 1.0
 
-        # Multiplicador dinámico integrado (entre 35% y 90% según las condiciones en vivo)
+        # Multiplicador dinámico integrado (entre 35% y 100% según las condiciones en vivo)
         raw_mult = (base_mult + score_adj + obi_adj + ker_adj) * macro_mult
-        mult_clean = round(max(0.35, min(0.90, raw_mult)), 2)
+        mult_clean = round(max(0.35, min(1.00, raw_mult)), 2)
 
         # 3. Filtros Cuantitativos Institucionales de Aprobación
         decision_clean = "APROBADO"
