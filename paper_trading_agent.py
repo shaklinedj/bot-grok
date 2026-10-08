@@ -2111,9 +2111,25 @@ def run_paper_trading(reset_all: bool = False):
                         for idx, l in enumerate(sorted([x for x in grid.lines if x['active'] and x['side'] == 'buy'], key=lambda x: -x['price'])):
                             l['price'] = curr_p * (1 - (grid.step_pct * (idx + 1)))
 
-                # 2. GESTIÓN JERÁRQUICA DE RUPTURA:
-                # Si el precio cae por debajo del piso de la malla:
-                if curr_p < grid.grid_lower:
+                # 2. GESTIÓN JERÁRQUICA DE COSECHA TOTAL Y RUPTURA:
+                active_sells = [l for l in grid.lines if l.get("active") and l.get("side") == "sell"]
+
+                # A. Victoria Total (100% de Ventas Cosechadas con Ganancia):
+                # Si ya no quedan órdenes de venta vivas, toda la mercadería comprada fue vendida con beneficio.
+                # No dejamos capital atrapado en compras bajas inactivas: reciclamos el 100% del efectivo a caja líquida.
+                if len(active_sells) == 0:
+                    recovered_cash = sum((l["price"] * l["amount"]) for l in grid.lines if l.get("active") and l.get("side") == "buy")
+                    for l in grid.lines:
+                        l["active"] = False
+                    bot.cash += recovered_cash
+                    grid.active = False
+                    grid_pnl_val = getattr(grid, "realized_pnl", 0.0)
+                    grid.status_msg = f"Victoria Total Cosechada (+{grid_pnl_val:+.2f} USDT). Capital liberado a caja."
+                    bot.save_portfolio_state()
+                    print(f"  🚀🟢 [VICTORIA TOTAL / COSECHA {sym}] 100% de órdenes de venta cobradas con ganancia (+{grid_pnl_val:+.4f} USDT). Malla cerrada con éxito. ${recovered_cash:.2f} USDT devueltos a caja líquida para reciclaje.", flush=True)
+
+                # B. Si el precio cae por debajo del piso de la malla (con inventario vivo):
+                elif curr_p < grid.grid_lower:
                     grid.freeze_buys = True  # 1. Congelar compras de inmediato (Anti-Knife Shield)
                     grid.out_of_range_ticks = getattr(grid, "out_of_range_ticks", 0) + 1
                     dist_below_floor_pct = ((grid.grid_lower - curr_p) / grid.grid_lower) * 100
@@ -2124,7 +2140,6 @@ def run_paper_trading(reset_all: bool = False):
                     lower_bb = regime.get("lower_bb", grid.grid_lower)
 
                     # Calcular VWAP exacto de todas las órdenes de venta activas (inventario retenido)
-                    active_sells = [l for l in grid.lines if l.get("active") and l.get("side") == "sell"]
                     total_tokens = sum(l["amount"] for l in active_sells)
                     total_buy_cost = sum(l["amount"] * (l["price"] / (1 + grid.step_pct)) for l in active_sells)
                     vwap = (total_buy_cost / total_tokens) if total_tokens > 0 else grid.grid_lower
@@ -2210,7 +2225,7 @@ def run_paper_trading(reset_all: bool = False):
                     else:
                         grid.status_msg = f"Modo Paciente: Caída -{dist_below_floor_pct:.1f}% bajo piso (RSI 1h: {rsi_1h:.1f}). Compras congeladas, esperando resolución."
 
-                # B. Ruptura de Techo hacia arriba (Tendencia alcista fuerte):
+                # C. Ruptura de Techo hacia arriba (Tendencia alcista fuerte con ventas aún vivas):
                 elif curr_p > grid.grid_upper * 1.012:
                     grid.freeze_buys = False
                     grid.out_of_range_ticks = getattr(grid, "out_of_range_ticks", 0) + 1
@@ -2226,7 +2241,7 @@ def run_paper_trading(reset_all: bool = False):
                         bot.save_portfolio_state()
                         print(f"  🚀🟢 [TRAILING ALCISTA {sym}] Rompimiento alcista exitoso. Malla reciclada liberando ${recovered_cash:.2f} para re-armar en el nuevo flujo.", flush=True)
 
-                # C. En Rango Normal:
+                # D. En Rango Normal:
                 else:
                     grid.freeze_buys = False
                     grid.out_of_range_ticks = 0
