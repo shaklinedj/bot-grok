@@ -59,20 +59,20 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <div id="conn-dot" class="h-3.5 w-3.5 rounded-full bg-emerald-500 animate-pulse-fast"></div>
         <div>
           <div class="flex items-center gap-2 flex-wrap">
-            <h1 class="text-xl md:text-2xl font-black text-white tracking-tight">Binance Spot Paper Trading Bot v11</h1>
+            <h1 class="text-xl md:text-2xl font-black text-white tracking-tight">Binance Spot Grid Bot</h1>
             <span class="text-xs bg-emerald-500/20 text-emerald-400 font-bold px-2.5 py-0.5 rounded-full border border-emerald-500/30">
-              ⚡ CONTROL PREDICTIVO PID & SQUEEZE
+              ⚡ MALLA DINÁMICA CENTRADA
             </span>
             <span class="text-xs bg-purple-500/20 text-purple-300 font-bold px-2.5 py-0.5 rounded-full border border-purple-500/30">
-              🎯 FLUJO CONCENTRADO (MAX 2 SLOTS)
+              🎯 COSECHA CONTINUA EN VIVO
             </span>
           </div>
           <p class="text-xs text-gray-400 mt-1 flex items-center gap-2">
-            <span>Anticipación de Rupturas por Inflexión de Aceleración y Compresión</span>
+            <span>Escalones Dinámicos 0.45% - 0.70%</span>
             <span>•</span>
-            <span>Veto Estricto a Crestas</span>
+            <span>Modo Paciente en Caídas</span>
             <span>•</span>
-            <span>Interés Compuesto 48%</span>
+            <span>Micro-Cosecha Instantánea Maker</span>
           </p>
         </div>
       </div>
@@ -88,7 +88,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         </div>
         <button onclick="toggleAllTradesModal()" class="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold px-3 py-1.5 rounded-lg border border-emerald-400/50 shadow-lg flex items-center gap-1.5 transition-all shadow-emerald-500/20">
           <span>📊</span>
-          <span id="btn-trades-text">Ver Todas las Operaciones</span>
+          <span id="btn-trades-text">Ver Operaciones</span>
         </button>
         <a href="/office" target="_blank" class="bg-gradient-to-r from-indigo-600 to-cyan-600 hover:from-indigo-500 hover:to-cyan-500 text-white font-bold px-3 py-1.5 rounded-lg border border-indigo-400/40 shadow-lg flex items-center gap-1.5 transition-all">
           <span>🏢</span>
@@ -118,16 +118,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       </div>
 
       <div class="card p-4 border-t-2 border-t-indigo-500">
-        <div class="text-[11px] text-gray-400 uppercase font-bold tracking-wider">Holdings en Juego</div>
+        <div class="text-[11px] text-gray-400 uppercase font-bold tracking-wider">Capital en Malla</div>
         <div class="text-2xl md:text-3xl font-extrabold mt-1 text-white flex items-baseline gap-1">
           <span id="kpi-holdings">$0.00</span>
           <span class="text-xs text-gray-500 font-medium">USDT</span>
         </div>
-        <div id="kpi-slots" class="text-xs text-indigo-400 font-medium mt-1">0 de 2 slots ocupados</div>
+        <div id="kpi-slots" class="text-xs text-indigo-400 font-medium mt-1">1 Malla Activa Desplegada</div>
       </div>
 
       <div class="card p-4 border-t-2 border-t-yellow-500">
-        <div class="text-[11px] text-gray-400 uppercase font-bold tracking-wider">PnL Flotante Vivo</div>
+        <div class="text-[11px] text-gray-400 uppercase font-bold tracking-wider">Cosecha Malla Viva</div>
         <div class="text-2xl md:text-3xl font-extrabold mt-1 font-mono flex items-baseline gap-1">
           <span id="kpi-unrealized-val">$0.0000</span>
           <span class="text-xs text-gray-500 font-medium">USDT</span>
@@ -145,127 +145,52 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Panel de Control Predictivo PID & Arquitectura de Anticipación -->
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-      <div class="card p-5 lg:col-span-2 border-l-4 border-l-cyan-500 bg-gradient-to-r from-gray-900/90 to-gray-900/40">
-        <div class="flex items-center justify-between mb-3">
-          <div class="flex items-center gap-2">
-            <span class="text-lg">🎯</span>
-            <h2 class="text-sm uppercase font-black tracking-wider text-cyan-400">Motor de Anticipación Predictiva (Control PID + Squeeze)</h2>
-          </div>
-          <span class="text-[10px] bg-cyan-500/20 text-cyan-300 font-mono font-bold px-2 py-0.5 rounded border border-cyan-500/30">
-            CERO COMPRAS EN LA CRESTA
-          </span>
-        </div>
-        
-        <p class="text-xs text-gray-300 leading-relaxed mb-4">
-          <strong class="text-white">¿Cómo nos anteponemos a los movimientos?</strong> En lugar de perseguir una vela verde que ya explotó (+2%), el bot monitorea la compresión de volatilidad (<span class="text-yellow-400 font-mono">Squeeze &le; 1.05</span>) y la <strong class="text-emerald-400">derivada de momentum</strong> junto con la <strong class="text-cyan-400">aceleración de 2do orden (&Delta;&sup2;P/&Delta;t&sup2; &gt; 0)</strong> en el piso de soporte. Esto identifica el punto de inflexión exacto (<em class="text-emerald-300">Launchpad</em>) <em>antes</em> de que ocurra la expansión.
-        </p>
-
-        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-center">
-          <div class="bg-gray-950/80 p-3 rounded-lg border border-gray-800">
-            <div class="text-[10px] text-gray-400 font-bold uppercase">Proporcional (P)</div>
-            <div class="text-base font-extrabold font-mono text-cyan-400 mt-0.5" id="pid-p-metric">-0.15%</div>
-            <div class="text-[10px] text-gray-500">Error vs EMA20 (Piso)</div>
-          </div>
-          <div class="bg-gray-950/80 p-3 rounded-lg border border-gray-800">
-            <div class="text-[10px] text-gray-400 font-bold uppercase">Integral (I)</div>
-            <div class="text-base font-extrabold font-mono text-blue-400 mt-0.5" id="pid-i-metric">-0.22%</div>
-            <div class="text-[10px] text-gray-500">Acumulación en 5 velas</div>
-          </div>
-          <div class="bg-gray-950/80 p-3 rounded-lg border border-gray-800">
-            <div class="text-[10px] text-gray-400 font-bold uppercase">Derivada (D)</div>
-            <div class="text-base font-extrabold font-mono text-emerald-400 mt-0.5" id="pid-d-metric">+0.0018</div>
-            <div class="text-[10px] text-gray-500">Velocidad Líder (&Delta;P)</div>
-          </div>
-          <div class="bg-gray-950/80 p-3 rounded-lg border border-gray-800">
-            <div class="text-[10px] text-gray-400 font-bold uppercase">Aceleración (&Delta;&sup2;P)</div>
-            <div class="text-base font-extrabold font-mono text-yellow-400 mt-0.5" id="pid-acc-metric">+0.0034</div>
-            <div class="text-[10px] text-gray-500">Inflexión de Giro</div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Flujo Concentrado & Parámetros -->
-      <div class="card p-5 border-l-4 border-l-purple-500 flex flex-col justify-between">
-        <div>
-          <div class="flex items-center justify-between mb-2">
-            <span class="text-xs uppercase font-black tracking-wider text-purple-400">Capital IA Autónomo</span>
-            <span id="param-pct-badge" class="text-[10px] bg-purple-500/20 text-purple-300 font-mono font-bold px-2 py-0.5 rounded">IA Decide %</span>
-          </div>
-          <div class="space-y-2.5 text-xs mt-3">
-            <div class="flex justify-between items-center text-gray-300">
-              <span class="text-gray-400">Slots Concurrentes:</span>
-              <span id="param-slots" class="font-bold text-white font-mono">— / 3 máx</span>
-            </div>
-            <div class="flex justify-between items-center text-gray-300">
-              <span class="text-gray-400">Caja Disponible:</span>
-              <span id="param-next-trade" class="font-bold text-emerald-400 font-mono">$— USDT</span>
-            </div>
-            <div class="flex justify-between items-center text-gray-300">
-              <span class="text-gray-400">Filtro Anti-Migajas:</span>
-              <span class="text-emerald-400 font-semibold font-mono">Min $25.00 | $0 Enanas</span>
-            </div>
-            <div class="flex justify-between items-center text-gray-300">
-              <span class="text-gray-400">Escudo Break-Even:</span>
-              <span class="text-cyan-400 font-semibold font-mono">Al tocar +1.80% &rarr; SL +0.40%</span>
-            </div>
-          </div>
-        </div>
-        <div class="mt-3 pt-3 border-t border-gray-800 text-[11px] text-gray-400 flex items-center justify-between font-mono">
-          <span>Target TP1 (Fees): <strong class="text-emerald-400" id="param-tp1-pct">+2.80%</strong></span>
-          <span>Score Mínimo: <strong class="text-purple-300" id="param-min-score">65.0 pts</strong></span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Órdenes Límite Predictivas en Espera (Maker / Cero Deslizamiento) -->
-    <div id="pending-limits-section" class="space-y-2 hidden">
-      <div class="flex items-center justify-between">
-        <h2 class="text-sm uppercase font-black tracking-wider text-cyan-400 flex items-center gap-2">
-          <span>🎯</span>
-          <span>Órdenes Límite Predictivas en Espera de Retroceso (Maker Pasivo)</span>
-        </h2>
-        <span class="text-[10px] bg-cyan-500/20 text-cyan-300 font-mono font-bold px-2 py-0.5 rounded border border-cyan-500/30">
-          CERO DESLIZAMIENTO
-        </span>
-      </div>
-      <div id="pending-limits-container" class="space-y-2">
-        <!-- Inyectado por JS -->
-      </div>
-    </div>
-
-    
-    <!-- Mallas Activas (Grid Trading) -->
-    <div class="space-y-3 mt-4">
+    <!-- 1. SECCIÓN PRINCIPAL: MALLA CUANTITATIVA ACTIVA EN VIVO -->
+    <div class="space-y-3">
       <div class="flex items-center justify-between">
         <h2 class="text-sm uppercase font-black tracking-wider text-purple-400 flex items-center gap-2">
           <span>🕸️</span>
-          <span>Mallas Cuantitativas Activas</span>
+          <span>Malla Cuantitativa Activa (Operación en Tiempo Real)</span>
         </h2>
+        <span class="text-xs text-gray-400 font-mono">Supervisor y Cosecha Automática Activos ⚡</span>
       </div>
       <div id="grids-container" class="space-y-4">
         <!-- Inyectado por JS -->
       </div>
     </div>
-    
-    <!-- Posiciones Activas Vivas (Live Cards) -->
-    <div class="space-y-3">
-      <div class="flex items-center justify-between">
-        <h2 class="text-sm uppercase font-black tracking-wider text-gray-300 flex items-center gap-2">
-          <span>💼</span>
-          <span>Operaciones Abiertas en Cartera</span>
-          <span id="positions-count-badge" class="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full font-mono">2 activas</span>
-        </h2>
-        <span class="text-xs text-gray-500 font-mono">Actualizado en tiempo real</span>
-      </div>
 
-      <div id="positions-container" class="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <!-- Tarjetas dinámicas inyectadas por JS -->
+    <!-- 2. AUDITORÍA PnL POR TRADE / MALLA (Ciclos Completos) -->
+    <div class="card p-5 space-y-3 border-l-4 border-l-emerald-500">
+      <div class="flex items-center justify-between flex-wrap gap-2">
+        <div class="flex items-center gap-2">
+          <span>💰</span>
+          <h3 class="text-xs uppercase font-black tracking-wider text-emerald-400">Auditoría PnL por Trade (Ciclos Completos de Entrada a Cierre)</h3>
+        </div>
+        <span class="text-xs text-gray-400 font-mono">Desglose transparente: Resultados netos de cada ciclo</span>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-xs">
+          <thead>
+            <tr class="text-gray-400 border-b border-gray-800 font-mono text-[11px]">
+              <th class="pb-2.5">HORA CIERRE</th>
+              <th class="pb-2.5">PAR</th>
+              <th class="pb-2.5">RESULTADO</th>
+              <th class="pb-2.5">ENTRADA</th>
+              <th class="pb-2.5">SALIDA</th>
+              <th class="pb-2.5">PNL NETO</th>
+              <th class="pb-2.5">FEE + SLIP</th>
+              <th class="pb-2.5">DURACIÓN</th>
+              <th class="pb-2.5 text-right">MOTIVO DE SALIDA</th>
+            </tr>
+          </thead>
+          <tbody id="audit-tbody" class="divide-y divide-gray-800/60 font-mono">
+            <!-- Filas inyectadas por JS -->
+          </tbody>
+        </table>
       </div>
     </div>
 
-    <!-- Gráfico SVG Interactivo de Curva de Equity -->
+    <!-- 3. GRÁFICO SVG INTERACTIVO DE CURVA DE EQUITY -->
     <div class="card p-5">
       <div class="flex items-center justify-between mb-3">
         <div class="flex items-center gap-2">
@@ -292,107 +217,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Radar Macro Institucional (4h / 1d) & Arsenal Multi-Factor -->
-    <div class="card p-5 space-y-4 border-l-4 border-l-emerald-500 bg-gradient-to-r from-gray-900 via-gray-900/95 to-emerald-950/20">
-      <div class="flex items-center justify-between flex-wrap gap-2">
-        <div class="flex items-center gap-2">
-          <span>🧭</span>
-          <h3 class="text-xs uppercase font-black tracking-wider text-emerald-400">Radar Macro Institucional & Semáforo de Mercado (4h / 1d)</h3>
-        </div>
-        <div class="flex items-center gap-2 font-mono text-[10px]">
-          <span class="bg-gray-800 text-gray-400 px-2 py-0.5 rounded">CADENCIA: MACRO 60s | MICRO 20s</span>
-          <span id="btc-regime-badge" class="bg-emerald-500/20 text-emerald-300 font-bold px-2 py-0.5 rounded border border-emerald-500/30">CALCULANDO...</span>
-        </div>
-      </div>
-
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 font-mono text-xs">
-        <div class="bg-gray-800/40 p-3 rounded border border-gray-800">
-          <div class="text-[10px] text-gray-400 uppercase">BTC Precio & 24h</div>
-          <div id="macro-btc-price" class="text-sm font-bold text-white mt-1">--</div>
-          <div id="macro-btc-change" class="text-[11px] text-gray-400 mt-0.5">--</div>
-        </div>
-        <div class="bg-gray-800/40 p-3 rounded border border-gray-800">
-          <div class="text-[10px] text-gray-400 uppercase">Soporte EMA50 4h</div>
-          <div id="macro-btc-ema50" class="text-sm font-bold text-cyan-400 mt-1">--</div>
-          <div class="text-[10px] text-gray-500 mt-0.5">Línea de tendencia</div>
-        </div>
-        <div class="bg-gray-800/40 p-3 rounded border border-gray-800">
-          <div class="text-[10px] text-gray-400 uppercase">Fuerza ADX 4h</div>
-          <div id="macro-btc-adx" class="text-sm font-bold text-purple-400 mt-1">--</div>
-          <div class="text-[10px] text-gray-500 mt-0.5">&gt; 22 = Tendencia Fuerte</div>
-        </div>
-        <div class="bg-gray-800/40 p-3 rounded border border-gray-800">
-          <div class="text-[10px] text-gray-400 uppercase">Diagnóstico Previsor</div>
-          <div id="macro-btc-summary" class="text-[11px] text-emerald-300 font-sans mt-1">Analizando estructura...</div>
-        </div>
-      </div>
-
-      <!-- 6 Pilares del Arsenal -->
-      <div class="pt-2 border-t border-gray-800/60 grid grid-cols-2 md:grid-cols-6 gap-2 text-[11px] font-mono">
-        <div class="bg-gray-800/20 p-2 rounded text-center border border-gray-800/40">
-          <span class="text-emerald-400 block font-bold">1. Macro 4h</span>
-          <span class="text-gray-400 text-[10px]">Triple EMA + Anti-Cuchillo</span>
-        </div>
-        <div class="bg-gray-800/20 p-2 rounded text-center border border-gray-800/40">
-          <span class="text-cyan-400 block font-bold">2. Squeeze TTM</span>
-          <span class="text-gray-400 text-[10px]">BB vs KC (Pre-Explosión)</span>
-        </div>
-        <div class="bg-gray-800/20 p-2 rounded text-center border border-gray-800/40">
-          <span class="text-blue-400 block font-bold">3. Flujo OBV</span>
-          <span class="text-gray-400 text-[10px]">Acumulación de Ballenas</span>
-        </div>
-        <div class="bg-gray-800/20 p-2 rounded text-center border border-gray-800/40">
-          <span class="text-yellow-400 block font-bold">4. Osciladores</span>
-          <span class="text-gray-400 text-[10px]">RSI 14 + StochRSI</span>
-        </div>
-        <div class="bg-gray-800/20 p-2 rounded text-center border border-gray-800/40">
-          <span class="text-purple-400 block font-bold">5. Física PID</span>
-          <span class="text-gray-400 text-[10px]">Aceleración &Delta;&sup2;P &gt; 0</span>
-        </div>
-        <div class="bg-gray-800/20 p-2 rounded text-center border border-gray-800/40">
-          <span class="text-rose-400 block font-bold">6. Filtro KER</span>
-          <span class="text-gray-400 text-[10px]">Ratio Eficiencia Kaufman</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Centinela IA de Noticias & Catalizadores (NVIDIA NIM) -->
-    <div class="card p-5 space-y-3 border-l-4 border-l-purple-500 bg-gradient-to-r from-gray-900 via-gray-900/95 to-purple-950/20">
-      <div class="flex items-center justify-between flex-wrap gap-2">
-        <div class="flex items-center gap-2">
-          <span>🤖</span>
-          <h3 class="text-xs uppercase font-black tracking-wider text-purple-400">Centinela IA de Noticias & Catalizadores (NVIDIA NIM Llama-3.2)</h3>
-        </div>
-        <div class="flex items-center gap-2 font-mono text-[10px]">
-          <span id="news-status-badge" class="bg-emerald-500/20 text-emerald-300 font-bold px-2 py-0.5 rounded border border-emerald-500/30 flex items-center gap-1">
-            <span class="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span> ONLINE (NVIDIA NIM)
-          </span>
-          <span id="news-sentiment-badge" class="bg-purple-500/20 text-purple-300 font-bold px-2 py-0.5 rounded border border-purple-500/30">SENTIMIENTO: ANALIZANDO...</span>
-          <span id="news-update-time" class="bg-gray-800 text-gray-400 px-2 py-0.5 rounded">--:--:--</span>
-        </div>
-      </div>
-      <div class="bg-gray-950/60 p-3 rounded-lg border border-gray-800/80 font-mono text-xs">
-        <div class="text-[10px] text-gray-500 uppercase font-bold tracking-wider mb-1 flex items-center justify-between">
-          <span>Diagnóstico de Inteligencia Artificial en Tiempo Real:</span>
-          <span id="news-veto-count" class="text-gray-400">0 Monedas Vetadas</span>
-        </div>
-        <p id="news-summary-text" class="text-gray-300 font-sans leading-relaxed text-xs">
-          Centinela en espera de inferencia de noticias de mercado...
-        </p>
-      </div>
-      <div id="news-alerts-container" class="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs font-mono">
-        <!-- Tarjetas de noticias inyectadas por JS -->
-      </div>
-    </div>
-
-    <!-- Radar de Oportunidades Escaneadas con Métricas Predictivas -->
+    <!-- 4. RADAR ESCÁNER DE OPORTUNIDADES DEL MERCADO -->
     <div class="card p-5 space-y-3">
       <div class="flex items-center justify-between flex-wrap gap-2">
         <div class="flex items-center gap-2">
           <span>🛰️</span>
-          <h3 class="text-xs uppercase font-black tracking-wider text-gray-300">Radar Escáner de Oportunidades & Disparadores Predictivos</h3>
+          <h3 class="text-xs uppercase font-black tracking-wider text-gray-300">Radar Escáner de Oportunidades (Próximas Rotaciones de Malla)</h3>
         </div>
-        <span class="text-xs text-gray-400">Canasta Combinada (Volumen &ge; $6M + Top Gainers 24h)</span>
+        <span class="text-xs text-gray-400">Filtro de Liquidez &ge; $15M + Rango Saludable</span>
       </div>
       <div class="overflow-x-auto">
         <table class="w-full text-left text-xs">
@@ -415,66 +247,36 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Panel de Centinela de Riesgo (Meta-Gatekeeper Nivel 2) -->
-    <div class="card p-5 space-y-3 border-l-4 border-l-indigo-500 bg-gradient-to-r from-gray-900 via-gray-900/90 to-indigo-950/30">
-      <div class="flex items-center justify-between flex-wrap gap-2">
-        <div class="flex items-center gap-2">
-          <span>🛡️</span>
-          <h3 class="text-xs uppercase font-black tracking-wider text-indigo-400">Centinela de Riesgo Cuantitativo (Meta-Gatekeeper & Bet Sizing)</h3>
-        </div>
-        <div class="flex items-center gap-2 font-mono text-[10px]">
-          <span class="bg-indigo-500/20 text-indigo-300 font-bold px-2 py-0.5 rounded border border-indigo-500/30">NIVEL 2: FILTRO PROBABILÍSTICO & BET SIZING</span>
-          <span id="meta-samples-badge" class="bg-gray-800 text-gray-300 px-2 py-0.5 rounded font-mono">49 trades aprendidos</span>
-        </div>
-      </div>
-      <div id="meta-labeling-container">
-        <!-- Inyectado por JS -->
-      </div>
-    </div>
-
-    <!-- Panel de Auto-Evaluación Algorítmica & Salud del Sistema -->
-    <div class="card p-5 space-y-3 border-l-4 border-l-purple-500">
-      <div class="flex items-center justify-between flex-wrap gap-2">
-        <div class="flex items-center gap-2">
-          <span>🧠</span>
-          <h3 class="text-xs uppercase font-black tracking-wider text-purple-400">Auto-Evaluación Algorítmica & Salud del Sistema</h3>
-        </div>
-        <span class="text-xs text-gray-400 font-mono">Monitoreo continuo cada 5-10 trades con auto-adaptación</span>
-      </div>
-      <div id="self-eval-container">
-        <!-- Inyectado por JS -->
-      </div>
-    </div>
-
-    <!-- Auditoría Detallada PnL por Trade (Ciclos Completos Cerrados) -->
-    <div class="card p-5 space-y-3 border-l-4 border-l-emerald-500">
-      <div class="flex items-center justify-between flex-wrap gap-2">
-        <div class="flex items-center gap-2">
-          <span>💰</span>
-          <h3 class="text-xs uppercase font-black tracking-wider text-emerald-400">Auditoría PnL por Trade (Ciclos Completos de Entrada a Cierre)</h3>
-        </div>
-        <span class="text-xs text-gray-400 font-mono">Desglose transparente: Dónde se ganó y perdió dinero</span>
-      </div>
-      <div class="overflow-x-auto">
-        <table class="w-full text-left text-xs">
-          <thead>
-            <tr class="text-gray-400 border-b border-gray-800 font-mono text-[11px]">
-              <th class="pb-2.5">HORA CIERRE</th>
-              <th class="pb-2.5">PAR</th>
-              <th class="pb-2.5">RESULTADO</th>
-              <th class="pb-2.5">ENTRADA</th>
-              <th class="pb-2.5">SALIDA</th>
-              <th class="pb-2.5">PNL NETO</th>
-              <th class="pb-2.5">FEE + SLIP</th>
-              <th class="pb-2.5">DURACIÓN</th>
-              <th class="pb-2.5 text-right">MOTIVO DE SALIDA</th>
-            </tr>
-          </thead>
-          <tbody id="audit-tbody" class="divide-y divide-gray-800/60 font-mono">
-            <!-- Filas inyectadas por JS -->
-          </tbody>
-        </table>
-      </div>
+    <!-- CONTENEDORES LEGACY MANTENIDOS EN OCULTO (Zero Errores de JS) -->
+    <div class="hidden" style="display:none;" aria-hidden="true">
+      <div id="pid-p-metric"></div>
+      <div id="pid-i-metric"></div>
+      <div id="pid-d-metric"></div>
+      <div id="pid-acc-metric"></div>
+      <div id="param-next-trade"></div>
+      <div id="param-pct-badge"></div>
+      <div id="param-slots"></div>
+      <div id="param-tp1-pct"></div>
+      <div id="param-min-score"></div>
+      <div id="pending-limits-section"></div>
+      <div id="pending-limits-container"></div>
+      <div id="positions-count-badge"></div>
+      <div id="positions-container"></div>
+      <div id="btc-regime-badge"></div>
+      <div id="macro-btc-price"></div>
+      <div id="macro-btc-change"></div>
+      <div id="macro-btc-ema50"></div>
+      <div id="macro-btc-adx"></div>
+      <div id="macro-btc-summary"></div>
+      <div id="news-status-badge"></div>
+      <div id="news-sentiment-badge"></div>
+      <div id="news-update-time"></div>
+      <div id="news-veto-count"></div>
+      <div id="news-summary-text"></div>
+      <div id="news-alerts-container"></div>
+      <div id="meta-samples-badge"></div>
+      <div id="meta-labeling-container"></div>
+      <div id="self-eval-container"></div>
     </div>
 
     <!-- Cajita de Tendencias & Pulso de Convicción Multi-Agente (Limpio & Compacto) -->

@@ -211,22 +211,8 @@ Responde ÚNICAMENTE un objeto JSON válido con este formato:
         return False, ""
 
     def start_background_worker(self):
-        """Inicia el hilo en segundo plano que consulta noticias cada poll_interval segundos."""
-        if self.is_running:
-            return
-
-        def _worker():
-            self.is_running = True
-            print("  🌐 [CENTINELA NOTICIAS NVIDIA] Worker iniciado en segundo plano.", flush=True)
-            while self.is_running:
-                try:
-                    self.scan_once()
-                except Exception as ex:
-                    print(f"  [News Worker Error] {ex}", flush=True)
-                time.sleep(self.poll_interval)
-
-        t = threading.Thread(target=_worker, daemon=True, name="NvidiaNewsSentinelThread")
-        t.start()
+        """Modo rápido: sin hilos de scraping en segundo plano."""
+        self.is_running = False
 
 
 # Instancia singleton para uso en el bot
