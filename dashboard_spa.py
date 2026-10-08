@@ -127,16 +127,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       </div>
 
       <div class="card p-4 border-t-2 border-t-yellow-500">
-        <div class="text-[11px] text-gray-400 uppercase font-bold tracking-wider">Cosecha Malla Viva</div>
+        <div class="text-[11px] text-gray-400 uppercase font-bold tracking-wider">PnL Flotante (En Juego)</div>
         <div class="text-2xl md:text-3xl font-extrabold mt-1 font-mono flex items-baseline gap-1">
           <span id="kpi-unrealized-val">$0.0000</span>
           <span class="text-xs text-gray-500 font-medium">USDT</span>
         </div>
-        <div id="kpi-unrealized-pct" class="text-xs font-semibold mt-1 text-gray-400">0.00% flotante</div>
+        <div id="kpi-unrealized-pct" class="text-xs font-semibold mt-1 text-gray-400">0.00% latente</div>
       </div>
 
       <div class="card p-4 border-t-2 border-t-purple-500">
-        <div class="text-[11px] text-gray-400 uppercase font-bold tracking-wider">PnL Realizado Total</div>
+        <div class="text-[11px] text-gray-400 uppercase font-bold tracking-wider">Ganancia Cosechada (Realizada)</div>
         <div class="text-2xl md:text-3xl font-extrabold mt-1 font-mono text-emerald-400 flex items-baseline gap-1">
           <span id="kpi-realized-val">+$0.0000</span>
           <span class="text-xs text-gray-500 font-medium">USDT</span>

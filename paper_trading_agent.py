@@ -1636,11 +1636,10 @@ def update_live_state(bot: PaperBot, prices: Dict[str, float],
                 total_cost_basis += cost_of_buy
                 unrealized_pnl += (line["amount"] * curr_p - cost_of_buy)
 
-    # El PnL realizado suma el acumulado de bot y el cosechado en mallas
-    grid_realized = sum(g.realized_pnl for g in bot.grids.values())
-    realized_pnl = bot.total_realized_pnl() + grid_realized
-            
-    unrealized_pct = (unrealized_pnl / total_cost_basis * 100) if total_cost_basis > 0 else 0.0
+    # PnL Realizado total y PnL Flotante exactos por identidad contable estricta
+    realized_pnl = bot.total_realized_pnl()
+    unrealized_pnl = equity - INITIAL_CAPITAL - realized_pnl
+    unrealized_pct = (unrealized_pnl / holdings_val * 100) if holdings_val > 0 else 0.0
 
     recent_trades = []
     if os.path.exists(TRADES_LOG):
