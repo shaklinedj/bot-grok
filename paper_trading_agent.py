@@ -2036,20 +2036,32 @@ def run_paper_trading(reset_all: bool = False):
                             bot.wins += 1
                             bot.total_trades += 1
                             
-                            # Recolocar la orden de compra abajo
-                            buy_price = line["price"] / (1 + grid.step_pct)
-                            cost = line["amount"] * buy_price
-                            if bot.cash >= cost:
-                                bot.cash -= cost
-                                grid.lines.append({"price": buy_price, "side": "buy", "amount": line["amount"], "buy_price": buy_price, "active": True})
-                                print(f"  🕸️🔴 [MALLA SELL {sym}] Vendido a ${line['price']:.4f}. Ganancia: +${profit:.4f}. Recomprando a ${buy_price:.4f}", flush=True)
-                            else:
-                                print(f"  ⚠️ [MALLA {sym}] Saldo insuficiente para recolocar compra a ${buy_price:.4f}", flush=True)
+                            # RE-EVALUACIÓN CUANTITATIVA: ESCUDO ANTI-MECHAZOS (Anti-Wick Shield)
+                            regime_sell = get_symbol_1h_regime(sym)
+                            rsi_sell = regime_sell.get("rsi_1h", 50.0)
+                            upper_bb_sell = regime_sell.get("upper_bb", 999999.0)
+                            is_overextended = (rsi_sell >= 70.0) or (curr_p >= upper_bb_sell)
 
+                            if is_overextended:
+                                # Sobrecompra extrema / Clímax alcista: NO recomprar la punta de la mecha
+                                print(f"  🛡️⚠️ [ESCUDO ANTI-MECHAZOS {sym}] Venta cobrada en ${line['price']:.4f}. RSI 1h={rsi_sell:.1f} >= 70 o sobre Bollinger. Efectivo (+${net_usdt:.2f} USDT) protegido en caja líquida sin recomprar la punta de la mecha.", flush=True)
+                                grid.status_msg = f"Escudo Anti-Mechazos: RSI {rsi_sell:.1f} >= 70. Ganancia en caja, recompras congeladas en máximos."
+                            else:
+                                # Régimen sano dentro del rango: recolocar compra normal escalonada abajo
+                                buy_price = line["price"] / (1 + grid.step_pct)
+                                cost = line["amount"] * buy_price
+                                if bot.cash >= cost:
+                                    bot.cash -= cost
+                                    grid.lines.append({"price": buy_price, "side": "buy", "amount": line["amount"], "buy_price": buy_price, "active": True})
+                                    print(f"  🕸️🔴 [MALLA SELL {sym}] Vendido a ${line['price']:.4f}. Ganancia: +${profit:.4f}. Recomprando a ${buy_price:.4f}", flush=True)
+                                else:
+                                    print(f"  ⚠️ [MALLA {sym}] Saldo insuficiente para recolocar compra a ${buy_price:.4f}", flush=True)
+
+                            recompra_txt = "Anti-Mechazo (Caja Segura)" if is_overextended else f"Recompra lista en ${buy_price:.4f}"
                             bot.log_trade(
                                 symbol=sym, strategy="grid_sell", side="sell", price=line["price"], amount=line["amount"],
                                 pnl=profit, fee=fees, slippage=0.0,
-                                extra=f"Malla Escalón Cosechado: Ganancia neta +${profit:.4f} USDT | Recompra lista en ${buy_price:.4f}",
+                                extra=f"Malla Escalón Cosechado: Ganancia neta +${profit:.4f} USDT | {recompra_txt}",
                                 pos_id=grid.grid_id, status="CLOSED"
                             )
                             bot.save_portfolio_state()
