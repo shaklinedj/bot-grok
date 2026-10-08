@@ -548,7 +548,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         document.getElementById('param-pct-badge').innerText = 'IA usó ' + lastPct.toFixed(0) + '% última vez';
       }
       const slotsEl = document.getElementById('param-slots');
-      if (slotsEl) slotsEl.innerText = totalOccupied + ' / 3 máx';
+      if (slotsEl) slotsEl.innerText = gridCount + ' Malla(s) / 3 máx';
 
       const unrealVal = Number(data.unrealized_pnl || 0);
       const unrealPct = Number(data.unrealized_pct || 0);
