@@ -353,8 +353,8 @@ class GridPosition:
     ticks_without_fill: int = 0
     last_fill_ts: float = field(default_factory=time.time)
     dynamic_adjustments_count: int = 0
-    recent_trend_slope: float = 0.0
     fills_count: int = 0
+    freeze_buys: bool = False
 
     def to_dict(self):
         d = asdict(self)
@@ -2001,8 +2001,9 @@ def run_paper_trading(reset_all: bool = False):
                     active_buys = [l for l in grid.lines if l["active"] and l["side"] == "buy"]
                     active_sells = [l for l in grid.lines if l["active"] and l["side"] == "sell"]
                     
-                    # Si todas las compras se habían ejecutado y solo quedaban ventas, colocar compras escalonadas abajo
-                    if len(active_buys) < 2 and bot.cash >= 10.0:
+                    # Si todas las compras se habían ejecutado y solo quedaban ventas, colocar compras escalonadas abajo (Solo si no está congelado por caída)
+                    is_buys_frozen = getattr(grid, "freeze_buys", False)
+                    if len(active_buys) < 2 and bot.cash >= 10.0 and not is_buys_frozen:
                         rebalance_cap = min(bot.cash * 0.7, 25.0)
                         lines_to_add = 3
                         sub_cap = rebalance_cap / lines_to_add
@@ -2012,39 +2013,80 @@ def run_paper_trading(reset_all: bool = False):
                             grid.lines.append({"price": p_buy, "side": "buy", "amount": sub_cap / p_buy, "active": True})
                             print(f"  🕸️🟢 [REBALANCEO DINÁMICO {sym}] Compra simétrica recolocada a ${p_buy:.4f}", flush=True)
                     
-                    # Ajustar precios de las órdenes existentes con el nuevo paso cerca del precio vivo
+                    # Ajustar precios de las órdenes existentes cerca del precio vivo si el precio se alejó
                     for idx, l in enumerate(sorted([x for x in grid.lines if x['active'] and x['side'] == 'sell'], key=lambda x: x['price'])):
                         l['price'] = curr_p * (1 + (grid.step_pct * (idx + 1)))
-                    for idx, l in enumerate(sorted([x for x in grid.lines if x['active'] and x['side'] == 'buy'], key=lambda x: -x['price'])):
-                        l['price'] = curr_p * (1 - (grid.step_pct * (idx + 1)))
+                    if not is_buys_frozen:
+                        for idx, l in enumerate(sorted([x for x in grid.lines if x['active'] and x['side'] == 'buy'], key=lambda x: -x['price'])):
+                            l['price'] = curr_p * (1 - (grid.step_pct * (idx + 1)))
 
-                # 2. TRAILING DINÁMICO DE SUBIDA / BAJADA (Desplazamiento de Malla con la Tendencia):
-                # Si el precio escapa más del 1.2% por encima del techo o por debajo del piso
-                is_out = (curr_p > grid.grid_upper * 1.012) or (curr_p < grid.grid_lower * 0.988)
-                if is_out:
+                # 2. GESTIÓN DE RUPTURA: MODO PACIENTE EN CAÍDAS vs TRAILING EN SUBIDAS
+                # A. Ruptura de Piso hacia abajo (El precio cae por debajo del piso de la malla):
+                if curr_p < grid.grid_lower:
+                    grid.freeze_buys = True  # Pausar compras para NO comprar la caída ni añadir riesgo
                     grid.out_of_range_ticks = getattr(grid, "out_of_range_ticks", 0) + 1
-                    direction_str = "SUBIDA FUERTE" if curr_p > grid.grid_upper else "CAÍDA FUERTE"
-                    grid.status_msg = f"Trailing activo ({direction_str})"
+                    dist_below_floor_pct = ((grid.grid_lower - curr_p) / grid.grid_lower) * 100
+                    grid.status_msg = f"Modo Paciente: Caída -{dist_below_floor_pct:.1f}% bajo piso. Compras congeladas, esperando rebote hacia ventas."
                     
-                    if grid.out_of_range_ticks >= 8:  # ~25 segundos fuera de rango confirmado
-                        # Reciclar y reubicar la malla centrada en el NUEVO precio para no perder el tren
+                    # Salida de emergencia ÚNICAMENTE ante colapso extremo sostenido (> 5% bajo el piso por más de 180 ticks / ~10-12 mins)
+                    if curr_p < (grid.grid_lower * 0.95) and grid.out_of_range_ticks >= 180:
+                        print(f"  🛑⚠️ [STOP DE EMERGENCIA {sym}] Colapso sostenido >5% por debajo del piso. Liquidando posición para proteger capital restante...", flush=True)
+                        total_buy_cost = 0.0
+                        total_sell_val = 0.0
                         recovered_cash = 0.0
+                        sold_tokens = 0.0
                         for l in grid.lines:
                             if not l["active"]:
                                 continue
                             if l["side"] == "buy":
                                 recovered_cash += (l["price"] * l["amount"])
                             elif l["side"] == "sell":
+                                buy_cost = l["amount"] * (l["price"] / (1 + grid.step_pct))
                                 sell_val = (l["amount"] * curr_p) * (1 - FEE_RATE)
+                                total_buy_cost += buy_cost
+                                total_sell_val += sell_val
                                 recovered_cash += sell_val
+                                sold_tokens += l["amount"]
                             l["active"] = False
 
+                        liquidation_loss = total_sell_val - total_buy_cost
+                        grid.realized_pnl += liquidation_loss
+                        bot.total_realized_pnl_acc += liquidation_loss
+                        bot.cash += recovered_cash
+                        if liquidation_loss < 0:
+                            bot.losses += 1
+                        else:
+                            bot.wins += 1
+                        bot.total_trades += 1
+                        bot.log_trade(
+                            symbol=sym, strategy="grid_emergency_stop", side="sell", price=curr_p, amount=sold_tokens,
+                            pnl=round(liquidation_loss, 4), fee=round(total_sell_val * FEE_RATE, 4), slippage=0.0,
+                            extra=f"Cierre de Emergencia por Ruptura: Pérdida neta {liquidation_loss:+.4f} USDT | Liberados ${recovered_cash:.2f}",
+                            pos_id=grid.grid_id, status="CLOSED"
+                        )
+                        grid.active = False
+                        grid.status_msg = f"Stop de emergencia ejecutado ({liquidation_loss:+.2f} USDT)"
+                        bot.save_portfolio_state()
+
+                # B. Ruptura de Techo hacia arriba (Tendencia alcista fuerte):
+                elif curr_p > grid.grid_upper * 1.012:
+                    grid.freeze_buys = False
+                    grid.out_of_range_ticks = getattr(grid, "out_of_range_ticks", 0) + 1
+                    grid.status_msg = f"Trailing alcista activo: Subida fuerte (+{((curr_p/grid.grid_upper)-1)*100:.1f}%)"
+                    if grid.out_of_range_ticks >= 15:  # ~35s confirmado
+                        # Todas las órdenes de venta ya se cobraron con beneficio. Reciclar para re-armar arriba.
+                        recovered_cash = sum((l["price"] * l["amount"]) for l in grid.lines if l["active"] and l["side"] == "buy")
+                        for l in grid.lines:
+                            l["active"] = False
                         bot.cash += recovered_cash
                         grid.active = False
-                        grid.status_msg = f"Trailing ejecutado ({direction_str})"
+                        grid.status_msg = "Trailing alcista: Capital liberado para acompañar la subida"
                         bot.save_portfolio_state()
-                        print(f"  🚀🔄 [TRAILING DINÁMICO {sym}] Tendencia de {direction_str} detectada. Malla corrida hacia ${curr_p:.4f} liberando ${recovered_cash:.2f} para re-armar en el nuevo flujo.", flush=True)
+                        print(f"  🚀🟢 [TRAILING ALCISTA {sym}] Rompimiento alcista exitoso. Malla reciclada liberando ${recovered_cash:.2f} para re-armar en el nuevo flujo.", flush=True)
+
+                # C. En Rango Normal:
                 else:
+                    grid.freeze_buys = False
                     grid.out_of_range_ticks = 0
 
             manage_pending_limit_orders(bot, prices)
