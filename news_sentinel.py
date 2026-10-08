@@ -71,24 +71,8 @@ class NvidiaNewsSentinel:
             print(f"  [Error Guardar Estado Noticias] {e}", flush=True)
 
     def fetch_coin_news(self, symbol: str) -> List[str]:
-        """Busca en vivo en Internet y Google News las noticias más recientes sobre la moneda específica."""
-        base_coin = symbol.split("/")[0].upper()
-        headlines = []
-        try:
-            query = urllib.parse.quote(f"{base_coin} crypto")
-            url = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                tree = ET.fromstring(resp.read())
-                for item in tree.findall(".//item")[:4]:
-                    t_el = item.find("title")
-                    if t_el is not None and t_el.text:
-                        clean_t = t_el.text.strip()
-                        if clean_t and clean_t not in headlines:
-                            headlines.append(clean_t)
-        except Exception as e:
-            pass
-        return headlines[:4]
+        """Modo rápido: retorna sin realizar peticiones de red síncronas bloqueantes."""
+        return []
 
     def fetch_latest_headlines(self) -> List[str]:
         """Extrae los titulares más recientes de CoinTelegraph RSS."""

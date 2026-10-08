@@ -75,6 +75,19 @@ class TradeAuditor:
         if not raw_trades:
             return pd.DataFrame()
 
+        portfolio_file = os.path.join(self.logs_dir, "portfolio_state.json")
+        active_grid_ids = set()
+        if os.path.exists(portfolio_file):
+            try:
+                import json
+                with open(portfolio_file, "r", encoding="utf-8") as pf:
+                    p_data = json.load(pf)
+                    for g in p_data.get("grids", {}).values():
+                        if g.get("active") and g.get("grid_id"):
+                            active_grid_ids.add(g.get("grid_id"))
+            except Exception:
+                pass
+
         df = pd.DataFrame(raw_trades)
         cycles = []
         for pos_id, group in df.groupby('position_id'):
@@ -97,9 +110,7 @@ class TradeAuditor:
             exit_row = final_exit.iloc[-1]
             has_tp1 = not exits[exits['strategy'].str.contains('tp1', case=False, na=False)].empty
             
-            is_grid = str(pos_id).startswith('grid_')
-            has_grid_closed = not group[group['strategy'].str.contains('stop|liquidation|close', case=False, na=False)].empty
-            is_still_open = is_grid and (not has_grid_closed)
+            is_still_open = (pos_id in active_grid_ids)
             
             net_pnl = exits['pnl'].sum()
             total_fees = group['fee'].sum()

@@ -955,24 +955,19 @@ def select_best_opportunities(bot: PaperBot, top_n: int = 6) -> List[Dict]:
             vol = t.get("quoteVolume", 0) or 0
             pct = t.get("percentage", 0) or 0
             last_p = t.get("last", 0) or 0
-            # Filtro de Alta Liquidez: Mínimo $25M en 24h para garantizar velocidad institucional y cero trampas ilíquidas
-            if vol >= 25_000_000 and last_p > 0:
+            # Filtro de Liquidez Institucional: Mínimo $15M en 24h para garantizar ejecución fluida
+            if vol >= 15_000_000 and last_p > 0:
                 candidates.append((sym, vol, pct, last_p))
 
-        # Canasta Cuantitativa Dinámica de Alta Velocidad (LONG y SHORT):
-        # 1. Candidatos LONG: monedas altamente líquidas en acumulación o rebote (-4.0% a +9.0%)
-        long_pool = [c for c in candidates if -4.0 <= c[2] <= 9.0]
-        # Ordenar por volumen y dinamismo (las más negociadas y activas del exchange)
-        by_vol = sorted(long_pool, key=lambda x: x[1], reverse=True)[:14]
-        by_pullback = sorted([c for c in long_pool if -4.0 <= c[2] <= 1.5], key=lambda x: x[1], reverse=True)[:10]
-
-        # 2. Candidatos SHORT: monedas sobre-extendidas (+6.0% a +40.0%) con volumen alto listas para reversión rápida
-        short_pool = [c for c in candidates if 6.0 <= c[2] <= 40.0]
-        by_pump = sorted(short_pool, key=lambda x: x[2], reverse=True)[:12]
+        # Canasta Cuantitativa Especializada para Mallas (Grid Mean-Reversion):
+        # Seleccionamos activos en rango saludable (-4.5% a +6.0%), evitando cimas de pumps parabólicos
+        grid_pool = [c for c in candidates if -4.5 <= c[2] <= 6.0]
+        by_vol = sorted(grid_pool, key=lambda x: x[1], reverse=True)[:15]
+        by_accumulation = sorted([c for c in grid_pool if -4.0 <= c[2] <= 1.0], key=lambda x: x[1], reverse=True)[:10]
 
         seen = set()
         top_candidates = []
-        for item in by_vol + by_pullback + by_pump:
+        for item in by_vol + by_accumulation:
             if item[0] not in seen:
                 seen.add(item[0])
                 top_candidates.append(item)
@@ -2142,16 +2137,11 @@ def run_paper_trading(reset_all: bool = False):
                             sym = best_candidate["symbol"]
                             analysis = best_candidate["analysis"]
 
-                            print(f"\n  🏛️ [CANDIDATO DE ORO #1 -> COMITÉ MULTI-AGENTE] Investigando noticias web y deliberando sobre {sym}...", flush=True)
-                            coin_news_live = news_sentinel.fetch_coin_news(sym)
-                            if coin_news_live:
-                                print(f"  🌐 [INTERNET SCAN] {len(coin_news_live)} titulares recientes encontrados para {sym}:", flush=True)
-                                for cnl in coin_news_live[:2]:
-                                    print(f"     • {cnl}", flush=True)
+                            print(f"\n  🏛️ [EVALUACIÓN CUANTITATIVA -> COMITÉ INSTITUCIONAL] Analizando parámetros óptimos para {sym}...", flush=True)
                             news_ctx = {
-                                "sentiment": news_sentinel.market_sentiment,
-                                "summary": news_sentinel.summary_text,
-                                "coin_news": coin_news_live
+                                "sentiment": "NEUTRAL",
+                                "summary": "Supervisión cuantitativa de libro y microestructura en tiempo real",
+                                "coin_news": []
                             }
                             committee_verdict = agent_committee.deliberate_opportunity(best_candidate, macro_engine.btc_macro_state, news_ctx)
                             deliberation_cooldown[sym] = now_ts
