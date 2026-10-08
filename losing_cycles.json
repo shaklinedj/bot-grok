@@ -1,0 +1,602 @@
+[
+  {
+    "pid": "pos_1790724497269",
+    "symbol": "UNI/USDT",
+    "pnl": -0.7012,
+    "start": "2026-09-29T20:28:17.270003",
+    "end": "2026-09-29T21:24:24.433874",
+    "entry_price": 8.933892,
+    "exit_price": 8.78147,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790725517522",
+    "symbol": "PUMP/USDT",
+    "pnl": -0.0225,
+    "start": "2026-09-29T20:45:17.523626",
+    "end": "2026-09-29T21:08:11.933971",
+    "entry_price": 0.005873,
+    "exit_price": 0.005873,
+    "reason": "Escudo Break-Even (+0.20% Protegido)"
+  },
+  {
+    "pid": "pos_1790726918102",
+    "symbol": "AAVE/USDT",
+    "pnl": -0.4183,
+    "start": "2026-09-29T21:08:38.102740",
+    "end": "2026-09-29T21:23:42.967963",
+    "entry_price": 165.256922,
+    "exit_price": 162.191605,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790727836542",
+    "symbol": "AVAX/USDT",
+    "pnl": -0.0075,
+    "start": "2026-09-29T21:23:56.542754",
+    "end": "2026-09-29T22:19:44.455291",
+    "entry_price": 11.390537,
+    "exit_price": 11.39789,
+    "reason": "Escudo Break-Even (+0.20% Protegido)"
+  },
+  {
+    "pid": "pos_1790730872404",
+    "symbol": "BABY/USDT",
+    "pnl": -0.0082,
+    "start": "2026-09-29T22:14:32.404156",
+    "end": "2026-09-29T22:30:38.376027",
+    "entry_price": 0.013966,
+    "exit_price": 0.013974,
+    "reason": "Escudo Break-Even (+0.20% Protegido)"
+  },
+  {
+    "pid": "pos_1790731226025",
+    "symbol": "AVAX/USDT",
+    "pnl": -0.3668,
+    "start": "2026-09-29T22:20:26.026539",
+    "end": "2026-09-30T00:18:41.866289",
+    "entry_price": 11.422702,
+    "exit_price": 11.233746,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790731879120",
+    "symbol": "UNI/USDT",
+    "pnl": -0.3391,
+    "start": "2026-09-29T22:31:19.120314",
+    "end": "2026-09-30T00:08:27.239588",
+    "entry_price": 8.881976,
+    "exit_price": 8.737907,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790737800387",
+    "symbol": "PUMP/USDT",
+    "pnl": -0.6194,
+    "start": "2026-09-30T00:10:00.387615",
+    "end": "2026-09-30T00:35:54.067646",
+    "entry_price": 0.005862,
+    "exit_price": 0.00568,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790745089664",
+    "symbol": "QNT/USDT",
+    "pnl": -0.0539,
+    "start": "2026-09-30T02:11:29.664566",
+    "end": "2026-09-30T02:22:33.774881",
+    "entry_price": 282.828972,
+    "exit_price": 282.596593,
+    "reason": "Escudo Break-Even (+0.20% Protegido)"
+  },
+  {
+    "pid": "pos_1790745783958",
+    "symbol": "QNT/USDT",
+    "pnl": -0.0693,
+    "start": "2026-09-30T02:23:03.959188",
+    "end": "2026-09-30T02:25:10.374562",
+    "entry_price": 284.126111,
+    "exit_price": 283.754348,
+    "reason": "Escudo Break-Even (+0.20% Protegido)"
+  },
+  {
+    "pid": "pos_1790749433979",
+    "symbol": "AAVE/USDT",
+    "pnl": -0.3633,
+    "start": "2026-09-30T03:23:53.980094",
+    "end": "2026-09-30T03:49:07.997659",
+    "entry_price": 161.936264,
+    "exit_price": 159.320678,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790750386407",
+    "symbol": "WLD/USDT",
+    "pnl": -0.058,
+    "start": "2026-09-30T03:39:46.407097",
+    "end": "2026-09-30T03:56:40.742942",
+    "entry_price": 0.49639,
+    "exit_price": 0.496118,
+    "reason": "Escudo Break-Even (+0.20% Protegido)"
+  },
+  {
+    "pid": "pos_1790751346961",
+    "symbol": "BABY/USDT",
+    "pnl": -0.3737,
+    "start": "2026-09-30T03:55:46.961002",
+    "end": "2026-09-30T04:14:39.730719",
+    "entry_price": 0.014156,
+    "exit_price": 0.013923,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790751645181",
+    "symbol": "SUI/USDT",
+    "pnl": -0.0136,
+    "start": "2026-09-30T04:00:45.181749",
+    "end": "2026-09-30T04:32:43.315028",
+    "entry_price": 1.156116,
+    "exit_price": 1.156857,
+    "reason": "Escudo Break-Even (+0.20% Protegido)"
+  },
+  {
+    "pid": "pos_1790756155645",
+    "symbol": "BABY/USDT",
+    "pnl": -0.3714,
+    "start": "2026-09-30T05:15:55.646864",
+    "end": "2026-09-30T08:16:40.959813",
+    "entry_price": 0.014169,
+    "exit_price": 0.013934,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790757011541",
+    "symbol": "SUI/USDT",
+    "pnl": -0.0272,
+    "start": "2026-09-30T05:30:11.541049",
+    "end": "2026-09-30T06:52:56.360396",
+    "entry_price": 1.160966,
+    "exit_price": 1.16128,
+    "reason": "Escudo Break-Even (+0.20% Protegido)"
+  },
+  {
+    "pid": "pos_1790762046352",
+    "symbol": "PUMP/USDT",
+    "pnl": -0.0005,
+    "start": "2026-09-30T06:54:06.352057",
+    "end": "2026-09-30T07:39:52.446478",
+    "entry_price": 0.005774,
+    "exit_price": 0.00578,
+    "reason": "Escudo Break-Even (+0.20% Protegido)"
+  },
+  {
+    "pid": "pos_1790764821304",
+    "symbol": "SUI/USDT",
+    "pnl": -0.5388,
+    "start": "2026-09-30T07:40:21.304171",
+    "end": "2026-09-30T08:11:39.962207",
+    "entry_price": 1.162073,
+    "exit_price": 1.146584,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790767073893",
+    "symbol": "ENA/USDT",
+    "pnl": -0.0264,
+    "start": "2026-09-30T08:17:53.894442",
+    "end": "2026-09-30T09:07:19.165633",
+    "entry_price": 0.254645,
+    "exit_price": 0.254719,
+    "reason": "Escudo Break-Even (+0.20% Protegido)"
+  },
+  {
+    "pid": "pos_1790769551802",
+    "symbol": "PUMP/USDT",
+    "pnl": -0.3887,
+    "start": "2026-09-30T08:59:11.802582",
+    "end": "2026-09-30T09:42:07.373514",
+    "entry_price": 0.005755,
+    "exit_price": 0.005701,
+    "reason": "Escudo Break-Even (+0.20% Protegido)"
+  },
+  {
+    "pid": "pos_1790774173785",
+    "symbol": "PUMP/USDT",
+    "pnl": -1.086,
+    "start": "2026-09-30T10:16:13.786252",
+    "end": "2026-09-30T10:36:01.193729",
+    "entry_price": 0.005768,
+    "exit_price": 0.005608,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790774675381",
+    "symbol": "QNT/USDT",
+    "pnl": -0.0981,
+    "start": "2026-09-30T10:24:35.382869",
+    "end": "2026-09-30T10:52:35.182883",
+    "entry_price": 302.508849,
+    "exit_price": 301.364069,
+    "reason": "Escudo Break-Even (+0.20% Protegido)"
+  },
+  {
+    "pid": "pos_1790775448560",
+    "symbol": "PUMP/USDT",
+    "pnl": -0.0844,
+    "start": "2026-09-30T10:37:28.561764",
+    "end": "2026-09-30T11:16:11.923291",
+    "entry_price": 0.005672,
+    "exit_price": 0.005664,
+    "reason": "Escudo Break-Even (+0.20% Protegido)"
+  },
+  {
+    "pid": "pos_1790776396558",
+    "symbol": "QNT/USDT",
+    "pnl": -1.9801,
+    "start": "2026-09-30T10:53:16.558389",
+    "end": "2026-09-30T11:00:23.327924",
+    "entry_price": 303.883765,
+    "exit_price": 287.829483,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790776990656",
+    "symbol": "UNI/USDT",
+    "pnl": -0.5053,
+    "start": "2026-09-30T11:03:10.656517",
+    "end": "2026-09-30T11:19:17.641437",
+    "entry_price": 8.989015,
+    "exit_price": 8.871507,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790777799445",
+    "symbol": "AAVE/USDT",
+    "pnl": -0.6616,
+    "start": "2026-09-30T11:16:39.445739",
+    "end": "2026-09-30T11:40:25.930728",
+    "entry_price": 160.964079,
+    "exit_price": 158.136861,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790778046802",
+    "symbol": "UNI/USDT",
+    "pnl": -0.5633,
+    "start": "2026-09-30T11:20:46.802207",
+    "end": "2026-09-30T11:32:51.463118",
+    "entry_price": 8.897745,
+    "exit_price": 8.765286,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790778801019",
+    "symbol": "WLD/USDT",
+    "pnl": -0.1584,
+    "start": "2026-09-30T11:33:21.020932",
+    "end": "2026-09-30T11:35:03.276633",
+    "entry_price": 0.535611,
+    "exit_price": 0.533724,
+    "reason": "Escudo Break-Even (+0.20% Protegido)"
+  },
+  {
+    "pid": "pos_1790778943353",
+    "symbol": "WLD/USDT",
+    "pnl": -0.0232,
+    "start": "2026-09-30T11:35:43.354879",
+    "end": "2026-09-30T11:41:17.542310",
+    "entry_price": 0.535549,
+    "exit_price": 0.535729,
+    "reason": "Escudo Break-Even (+0.20% Protegido)"
+  },
+  {
+    "pid": "pos_1790779343849",
+    "symbol": "ZEC/USDT",
+    "pnl": -0.612,
+    "start": "2026-09-30T11:42:23.849770",
+    "end": "2026-09-30T12:24:39.798732",
+    "entry_price": 1437.486478,
+    "exit_price": 1413.672394,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790791385741",
+    "symbol": "ZEC/USDT",
+    "pnl": -0.4393,
+    "start": "2026-09-30T15:03:05.741734",
+    "end": "2026-09-30T15:39:52.563400",
+    "entry_price": 1446.103532,
+    "exit_price": 1422.552971,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790814633613",
+    "symbol": "PHA/USDT",
+    "pnl": -0.805,
+    "start": "2026-09-30T21:30:33.613248",
+    "end": "2026-09-30T21:48:11.471380",
+    "entry_price": 0.07655,
+    "exit_price": 0.074965,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790818286101",
+    "symbol": "SOL/USDT",
+    "pnl": -0.0473,
+    "start": "2026-09-30T22:31:26.102208",
+    "end": "2026-09-30T23:17:03.630613",
+    "entry_price": 118.17318,
+    "exit_price": 118.135492,
+    "reason": "Barrera Temporal: Cierre preventivo por estancamiento (>45m)"
+  },
+  {
+    "pid": "pos_1790829187945",
+    "symbol": "WLD/USDT",
+    "pnl": -0.2213,
+    "start": "2026-10-01T01:33:07.945133",
+    "end": "2026-10-01T02:19:11.040676",
+    "entry_price": 0.53493,
+    "exit_price": 0.531703,
+    "reason": "Barrera Temporal: Cierre preventivo por estancamiento (>45m)"
+  },
+  {
+    "pid": "pos_1790830168121",
+    "symbol": "QNT/USDT",
+    "pnl": -0.0689,
+    "start": "2026-10-01T01:49:28.121220",
+    "end": "2026-10-01T01:56:07.427642",
+    "entry_price": 291.42598,
+    "exit_price": 290.600425,
+    "reason": "Escudo Break-Even (+0.20% Protegido)"
+  },
+  {
+    "pid": "pos_1790832203448",
+    "symbol": "WLD/USDT",
+    "pnl": -0.0178,
+    "start": "2026-10-01T02:23:23.448636",
+    "end": "2026-10-01T03:08:37.876786",
+    "entry_price": 0.53253,
+    "exit_price": 0.532747,
+    "reason": "Barrera Temporal: Cierre preventivo por estancamiento (>45m)"
+  },
+  {
+    "pid": "pos_1790838630135",
+    "symbol": "PLUME/USDT",
+    "pnl": -0.4674,
+    "start": "2026-10-01T04:10:30.136979",
+    "end": "2026-10-01T04:25:22.601078",
+    "entry_price": 0.0201,
+    "exit_price": 0.019725,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790840199458",
+    "symbol": "SUI/USDT",
+    "pnl": -0.1338,
+    "start": "2026-10-01T04:36:39.459415",
+    "end": "2026-10-01T05:25:23.576690",
+    "entry_price": 1.15129,
+    "exit_price": 1.144887,
+    "reason": "Barrera Temporal: Cierre preventivo por estancamiento (>45m)"
+  },
+  {
+    "pid": "pos_1790841986384",
+    "symbol": "NEAR/USDT",
+    "pnl": -0.4453,
+    "start": "2026-10-01T05:06:26.385394",
+    "end": "2026-10-01T06:03:15.325726",
+    "entry_price": 5.2914,
+    "exit_price": 5.19406,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790843357964",
+    "symbol": "PLUME/USDT",
+    "pnl": -0.1824,
+    "start": "2026-10-01T05:29:17.965996",
+    "end": "2026-10-01T06:21:46.443430",
+    "entry_price": 0.01959,
+    "exit_price": 0.019474,
+    "reason": "Barrera Temporal: Cierre preventivo por estancamiento (>45m)"
+  },
+  {
+    "pid": "pos_1790846135559",
+    "symbol": "NEAR/USDT",
+    "pnl": -0.4407,
+    "start": "2026-10-01T06:15:35.561383",
+    "end": "2026-10-01T07:05:39.238405",
+    "entry_price": 5.23351,
+    "exit_price": 5.12922,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790847739354",
+    "symbol": "AAVE/USDT",
+    "pnl": -0.1171,
+    "start": "2026-10-01T06:42:19.354435",
+    "end": "2026-10-01T07:42:30.509103",
+    "entry_price": 165.58816,
+    "exit_price": 164.732742,
+    "reason": "Barrera Temporal: Cierre preventivo por estancamiento (>45m)"
+  },
+  {
+    "pid": "pos_1790851505503",
+    "symbol": "STX/USDT",
+    "pnl": -0.4421,
+    "start": "2026-10-01T07:45:05.503964",
+    "end": "2026-10-01T08:07:22.705280",
+    "entry_price": 0.38772,
+    "exit_price": 0.380227,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790853891854",
+    "symbol": "QNT/USDT",
+    "pnl": -0.4815,
+    "start": "2026-10-01T08:24:51.854913",
+    "end": "2026-10-01T08:36:19.485168",
+    "entry_price": 284.30026,
+    "exit_price": 277.93641,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790858013823",
+    "symbol": "NEAR/USDT",
+    "pnl": -0.4203,
+    "start": "2026-10-01T09:33:33.824173",
+    "end": "2026-10-01T10:04:20.188400",
+    "entry_price": 5.10477,
+    "exit_price": 4.990555,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790858013826",
+    "symbol": "JASMY/USDT",
+    "pnl": -0.3938,
+    "start": "2026-10-01T09:33:33.827453",
+    "end": "2026-10-01T09:50:03.888232",
+    "entry_price": 0.00588,
+    "exit_price": 0.005778,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790859200449",
+    "symbol": "JASMY/USDT",
+    "pnl": -0.0465,
+    "start": "2026-10-01T09:53:20.449183",
+    "end": "2026-10-01T09:57:43.148295",
+    "entry_price": 0.00576,
+    "exit_price": 0.005756,
+    "reason": "Escudo Break-Even (+0.20% Protegido)"
+  },
+  {
+    "pid": "pos_1790859860183",
+    "symbol": "STX/USDT",
+    "pnl": -0.1108,
+    "start": "2026-10-01T10:04:20.184922",
+    "end": "2026-10-01T10:54:43.384963",
+    "entry_price": 0.37684,
+    "exit_price": 0.374896,
+    "reason": "Barrera Temporal: Cierre preventivo por estancamiento (>45m)"
+  },
+  {
+    "pid": "pos_1790861157259",
+    "symbol": "NIGHT/USDT",
+    "pnl": -0.5335,
+    "start": "2026-10-01T10:25:57.261234",
+    "end": "2026-10-01T10:27:51.520397",
+    "entry_price": 0.041806,
+    "exit_price": 0.040739,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790861825576",
+    "symbol": "PHA/USDT",
+    "pnl": -0.3891,
+    "start": "2026-10-01T10:37:05.577969",
+    "end": "2026-10-01T10:45:19.300608",
+    "entry_price": 0.07485,
+    "exit_price": 0.073581,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790865088919",
+    "symbol": "PLUME/USDT",
+    "pnl": -0.3789,
+    "start": "2026-10-01T11:31:28.919391",
+    "end": "2026-10-01T11:52:15.724315",
+    "entry_price": 0.0189,
+    "exit_price": 0.01857,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790865751453",
+    "symbol": "QNT/USDT",
+    "pnl": -0.3752,
+    "start": "2026-10-01T11:42:31.453486",
+    "end": "2026-10-01T11:55:25.611540",
+    "entry_price": 266.68556,
+    "exit_price": 261.630591,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790867168738",
+    "symbol": "SUI/USDT",
+    "pnl": -0.0345,
+    "start": "2026-10-01T12:06:08.739011",
+    "end": "2026-10-01T12:30:18.884200",
+    "entry_price": 1.13932,
+    "exit_price": 1.138388,
+    "reason": "Escudo Break-Even (+0.20% Protegido)"
+  },
+  {
+    "pid": "pos_1790867168741",
+    "symbol": "PLUME/USDT",
+    "pnl": -0.3694,
+    "start": "2026-10-01T12:06:08.744760",
+    "end": "2026-10-01T12:30:18.892742",
+    "entry_price": 0.01868,
+    "exit_price": 0.018341,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790869556975",
+    "symbol": "GLMR/USDT",
+    "pnl": -0.023499999999999993,
+    "start": "2026-10-01T12:45:56.975170",
+    "end": "2026-10-01T14:12:14.613789",
+    "entry_price": 0.00919,
+    "exit_price": 0.009117,
+    "reason": "Runner Trailing Stop Agresivo"
+  },
+  {
+    "pid": "pos_1790870722999",
+    "symbol": "HEI/USDT",
+    "pnl": -0.3782,
+    "start": "2026-10-01T13:05:23.000779",
+    "end": "2026-10-01T13:38:41.112131",
+    "entry_price": 0.1506,
+    "exit_price": 0.147583,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790879661635",
+    "symbol": "QNT/USDT",
+    "pnl": -0.0212,
+    "start": "2026-10-01T15:34:21.635598",
+    "end": "2026-10-01T15:49:08.537935",
+    "entry_price": 263.89116,
+    "exit_price": 263.844426,
+    "reason": "Escudo Break-Even (+0.20% Protegido)"
+  },
+  {
+    "pid": "pos_1790881389638",
+    "symbol": "STX/USDT",
+    "pnl": -0.3733,
+    "start": "2026-10-01T16:03:09.639050",
+    "end": "2026-10-01T16:38:56.643319",
+    "entry_price": 0.37954,
+    "exit_price": 0.372347,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  },
+  {
+    "pid": "pos_1790883646155",
+    "symbol": "JASMY/USDT",
+    "pnl": -0.0479,
+    "start": "2026-10-01T16:40:46.156217",
+    "end": "2026-10-01T16:58:57.525606",
+    "entry_price": 0.00559,
+    "exit_price": 0.005581,
+    "reason": "Escudo Break-Even (+0.20% Protegido)"
+  },
+  {
+    "pid": "pos_1790890243339",
+    "symbol": "MOVE/USDT",
+    "pnl": -0.6676,
+    "start": "2026-10-01T18:30:43.339171",
+    "end": "2026-10-01T18:43:37.218405",
+    "entry_price": 0.0105,
+    "exit_price": 0.010121,
+    "reason": "Stop Loss Inicial Ce\u00f1ido"
+  }
+]

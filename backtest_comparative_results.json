@@ -1,0 +1,16 @@
+{
+  "summary": {
+    "total_trades": 25,
+    "original_loss": -14.7574,
+    "strategy_b_pnl": 3.379123601014026,
+    "bounced_count": 16,
+    "avoided_count": 6,
+    "won_count": 11
+  },
+  "trades": [
+    {
+      "symbol": "QNT/USDT",
+      "entry_time": "2026-09-30T10:53:16.558389",
+      "original_loss": -1.9801,
+      "original_reason": "Stop Loss Inicial Ce\u00f1ido",
+      "was_in_crest": 

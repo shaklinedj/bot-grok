@@ -1,0 +1,2215 @@
+"""
+Paper Trading Agent - Versión Cuantitativa Auto-Evolutiva v11
+============================================================================================
+Novedades Arquitecturales v11:
+1. Flujo de Capital Ultra-Concentrado (Cero Trades Pequeños de $3):
+   - Monto mínimo estricto por trade: $25.00 USDT (MIN_ORDER_USDT = 25.0).
+   - Máximo 2 posiciones concurrentes (48% del Equity cada una, desplegando el 96% del capital).
+   - Si los 2 slots están ocupados, el bot no programa ni busca trades con el cambio residual.
+   - Estado claro en consola y UI: "Slots 100% Ocupados (2/2) | Flujo Concentrado en Mercado".
+2. Dashboard Dinámico Reactivo en Tiempo Real (Cero Parpadeos / No HTML Estático):
+   - Servidor HTTP integrado en subproceso daemon (puerto 8888).
+   - Endpoint REST: /api/state con datos en vivo cada segundo.
+   - Frontend SPA reactivo: actualiza el DOM en tiempo real vía JavaScript/Fetch sin recargar la página.
+   - Gráfico de Equity interactivo SVG punto por punto.
+   - Barras de progreso visuales en vivo hacia el TP1 y Stop Loss.
+   - Filtros instantáneos por estado (Todas, Abiertas, Ganadas, Cerradas) y buscador de tokens.
+3. Modo Sniper Agresivo:
+   - Escaneo cada 45s de los 20 pares más volátiles de Binance.
+   - Micro-Candado Break-Even a los +0.65% de ganancia (+0.20% asegurado neto).
+   - TP1 ágil al +1.40% (50% asegurado en caja para rotación del interés compuesto).
+   - Runner supersónico al +1.90% con Trailing Stop ceñido (0.65x ATR).
+"""
+
+import sys
+import io
+import os
+import time
+import csv
+import json
+import random
+import math
+import threading
+import http.server
+from datetime import datetime
+from typing import List, Dict, Optional, Tuple
+from dataclasses import dataclass, field, asdict
+from dotenv import load_dotenv
+
+load_dotenv()
+
+if sys.platform == "win32":
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+import ccxt
+import pandas as pd
+import numpy as np
+import dashboard_spa
+from self_eval import TradeAuditor
+from meta_labeling import MetaLabelingGatekeeper, compute_kaufman_efficiency_ratio
+from macro_radar import MacroRegimeEngine, evaluate_multi_factor_arsenal, fetch_order_book_microstructure
+from news_sentinel import news_sentinel
+from ai_auditor import ai_auditor
+from agent_committee import agent_committee
+
+
+# ====================== CONFIGURACIÓN GENERAL ======================
+INITIAL_CAPITAL = 80.0
+MIN_EQUITY_RATIO = 0.60                 # Umbral de supervivencia: 60% ($48.00 USDT)
+MAX_RISK_SLOTS = 1                      # 1 Solo Slot Francotirador Concentrado para cuentas < $150
+MAX_TOTAL_POSITIONS = 3                 # Máximo total incluyendo runners libres de riesgo (Reciclaje Dinámico)
+TOP_N_SCAN = 12                         # Considerar y mostrar las 12 mejores oportunidades del mercado
+COMPOUND_ALLOCATION_PCT = 0.99          # 99% del Equity total en 1 solo trade de alta convicción
+MIN_ORDER_USDT = 25.0                   # Mínimo $25.00 USDT (cero micro-órdenes)
+
+CHECK_INTERVAL_SECONDS = 1.5            # Ticks reactivos de alta velocidad cada 1.5 segundos
+FAST_SCAN_INTERVAL_SECONDS = 20         # Escaneo micro 15m / PID cada 20 segundos
+MACRO_SCAN_INTERVAL_SECONDS = 60        # Auditoría macro 4h / 1d cada 60 segundos
+FEE_RATE = 0.001                        # 0.10% Binance Maker/Taker
+HTTP_PORT = 8888                        # Puerto para el dashboard dinámico en vivo
+
+# Parámetros Institucionales Recalibrados (Post-Mortem de 88 trades)
+EARLY_BREAK_EVEN_TRIGGER_PCT = 2.50     # Blindar solo tras despegue REAL al +2.50% (el 1.80% anterior causaba falsas activaciones)
+EARLY_BREAK_EVEN_LOCK_PCT = 0.50        # Precio asegurado: +0.50% (cubre comisiones con margen)
+DEFAULT_TP1_GAIN_PCT = 2.20             # TP1 alcanzable al +2.20% (el 2.80% anterior solo se alcanzaba 27% del tiempo)
+RUNNER_TRAILING_TRIGGER_PCT = 3.20      # Activar trailing del runner al +3.20%
+RUNNER_ATR_MULT = 2.00                  # Trailing holgado (2.0x ATR): deja respirar al runner
+
+
+# Directorios de Logs y Estados Persistentes
+LOG_DIR = "paper_logs"
+EQUITY_LOG = os.path.join(LOG_DIR, "equity_history.csv")
+TRADES_LOG = os.path.join(LOG_DIR, "trades.csv")
+BRAIN_STATE_FILE = os.path.join(LOG_DIR, "brain_state.json")
+PORTFOLIO_STATE_FILE = os.path.join(LOG_DIR, "portfolio_state.json")
+DASHBOARD_HTML_LOCAL = os.path.join(LOG_DIR, "dashboard.html")
+LIVE_STATE_FILE_LOCAL = os.path.join(LOG_DIR, "live_state.json")
+
+ARTIFACT_DIR = r"C:\Users\Dell\.gemini\antigravity\brain\b5df651c-3f00-4891-beb9-ba32792ed811"
+DASHBOARD_HTML_ARTIFACT = os.path.join(ARTIFACT_DIR, "dashboard.html")
+LIVE_STATE_FILE_ARTIFACT = os.path.join(ARTIFACT_DIR, "live_state.json")
+
+STABLE_BASES = {
+    "USDC", "FDUSD", "TUSD", "USDP", "DAI", "BUSD", "EUR", "GBP", "USD1",
+    "USDE", "PYUSD", "AEUR", "EURI", "USTC", "WBTC", "BTCST", "RLUSD", "USDS"
+}
+
+LAST_AGENT_PCT: float = 0.0  # Último % decidido por los agentes IA (para el dashboard)
+
+# ====================== EXCHANGE ======================
+exchange = ccxt.binance({
+    "enableRateLimit": True,
+    "options": {"defaultType": "spot"},
+    "timeout": 12000
+})
+
+LATEST_LIVE_STATE: Dict = {}
+
+
+# ====================== CEREBRO DE APRENDIZAJE POR REFUERZO ======================
+class ReinforcementBrain:
+    def __init__(self):
+        self.generation = 1
+        self.learning_rate = 0.08
+        
+        self.weights = {
+            "w_adx": 1.40,
+            "w_pullback": 2.50,
+            "w_rsi": 1.50,
+            "w_volatility": 1.80,
+            "w_volume": 1.80
+        }
+        
+        self.tp1_gain_pct = DEFAULT_TP1_GAIN_PCT
+        self.sl_atr_mult = 2.80                  # Stop Loss AMPLIO fuera del ruido (2.80x ATR) — el 2.20x anterior disparaba 32 SL falsos
+        self.min_score_required = 65.0           # Umbral institucional alto (Cero entradas por entrar)
+        
+        self.coin_pnl_memory: Dict[str, List[float]] = {}
+        self.coin_blacklist_until: Dict[str, float] = {}
+        self.evolution_history: List[Dict] = []
+        self.mfe_samples: List[float] = []
+        
+        self.load_state()
+
+    def save_state(self):
+        try:
+            os.makedirs(LOG_DIR, exist_ok=True)
+            data = {
+                "generation": self.generation,
+                "weights": self.weights,
+                "tp1_gain_pct": round(self.tp1_gain_pct, 3),
+                "sl_atr_mult": round(self.sl_atr_mult, 3),
+                "min_score_required": round(self.min_score_required, 2),
+                "evolution_history": self.evolution_history[-10:],
+                "mfe_samples": self.mfe_samples[-30:]
+            }
+            with open(BRAIN_STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception:
+            pass
+
+    def load_state(self):
+        if os.path.exists(BRAIN_STATE_FILE):
+            try:
+                with open(BRAIN_STATE_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self.generation = data.get("generation", 1)
+                    self.weights = data.get("weights", self.weights)
+                    self.tp1_gain_pct = max(1.80, float(data.get("tp1_gain_pct", DEFAULT_TP1_GAIN_PCT)))
+                    self.sl_atr_mult = max(2.50, float(data.get("sl_atr_mult", 2.80)))
+                    self.min_score_required = max(60.0, float(data.get("min_score_required", 65.0)))
+                    self.evolution_history = data.get("evolution_history", [])
+                    self.mfe_samples = data.get("mfe_samples", [])
+            except Exception:
+                pass
+
+    def evaluate_signature_score(self, adx: float, dist_ema20: float, rsi: float, atr_pct: float, volume_m: float) -> float:
+        adx_norm = min(10.0, max(0.0, (adx - 18.0) / 2.5))
+        pullback_norm = max(0.0, 10.0 - abs(dist_ema20) * 3.5)
+        rsi_norm = max(0.0, 10.0 - max(0.0, (rsi - 48.0) / 2.0))
+        volat_norm = min(10.0, max(0.0, atr_pct * 1.8))
+        vol_norm = min(10.0, max(0.0, math.log10(max(1.0, volume_m)) * 4.0))
+
+        score = (
+            (adx_norm * self.weights["w_adx"]) +
+            (pullback_norm * self.weights["w_pullback"]) +
+            (rsi_norm * self.weights["w_rsi"]) +
+            (volat_norm * self.weights["w_volatility"]) +
+            (vol_norm * self.weights["w_volume"])
+        ) * 1.3
+        return round(score, 1)
+
+    def learn_from_trade(self, symbol: str, strategy: str, entry_p: float, exit_p: float,
+                          pnl: float, exit_reason: str, max_gain_pct: float, features: Dict):
+        """
+        Aprendizaje dinámico genuino:
+        - Si el trade pierde: NO ceñir el SL (eso causa más pérdidas). En su lugar,
+          AUMENTAR la exigencia de entrada (min_score_required) y vetar la moneda si tropieza dos veces.
+        - Si el trade gana: premiar la paciencia y normalizar gradualmente el filtro.
+        """
+        self.generation += 1
+        self.mfe_samples.append(max_gain_pct)
+        if len(self.mfe_samples) > 30:
+            self.mfe_samples.pop(0)
+
+        if symbol not in self.coin_pnl_memory:
+            self.coin_pnl_memory[symbol] = []
+        self.coin_pnl_memory[symbol].append(pnl)
+
+        # Blacklist automática de 12 horas si una moneda genera 2 pérdidas seguidas
+        if len(self.coin_pnl_memory[symbol]) >= 2 and all(x < 0 for x in self.coin_pnl_memory[symbol][-2:]):
+            self.coin_blacklist_until[symbol] = time.time() + (12 * 3600)
+            print(f"  🧠 [Cerebro Cuántico] VETO ESTRICTO para {symbol} por 12h tras 2 pérdidas consecutivas.", flush=True)
+
+        change_summary = []
+        if pnl > 0:
+            self.weights["w_pullback"] = min(3.5, self.weights["w_pullback"] + self.learning_rate * 0.4)
+            self.weights["w_volume"] = min(3.0, self.weights["w_volume"] + self.learning_rate * 0.5)
+            # Recompensar éxito relajando suavemente hacia la base
+            self.min_score_required = max(65.0, self.min_score_required - 1.0)
+            change_summary.append("Trade Ganador: Filtro normalizado y pesos reforzados en Volumen")
+        else:
+            # Disciplina defensiva: aumentar exigencia de entrada ante pérdidas
+            self.min_score_required = min(85.0, self.min_score_required + 2.5)
+            self.weights["w_pullback"] = min(4.0, self.weights["w_pullback"] + self.learning_rate * 0.8)
+            # Mantener Stop Loss en zona segura fuera del ruido (mínimo 2.50x ATR)
+            self.sl_atr_mult = max(2.50, self.sl_atr_mult)
+            change_summary.append(f"Trade Perdedor: Score mínimo elevado a {self.min_score_required:.1f} pts (Mayor Selectividad)")
+
+        record = {
+            "gen": self.generation,
+            "timestamp": datetime.now().strftime("%H:%M:%S"),
+            "symbol": symbol,
+            "pnl": round(pnl, 4),
+            "max_gain": round(max_gain_pct, 2),
+            "exit_reason": exit_reason,
+            "adaptation": " | ".join(change_summary)
+        }
+        self.evolution_history.append(record)
+        if len(self.evolution_history) > 10:
+            self.evolution_history.pop(0)
+
+        self.save_state()
+        print(f"  🧠 [EVOLUCIÓN CEREBRO GEN #{self.generation}] {symbol} -> {record['adaptation']}", flush=True)
+
+    def is_blacklisted(self, symbol: str) -> bool:
+        if symbol in self.coin_blacklist_until:
+            if time.time() < self.coin_blacklist_until[symbol]:
+                return True
+            else:
+                del self.coin_blacklist_until[symbol]
+        return False
+
+
+brain = ReinforcementBrain()
+auditor = TradeAuditor(LOG_DIR)
+meta_gate = MetaLabelingGatekeeper(LOG_DIR)
+macro_engine = MacroRegimeEngine(exchange)
+
+
+def on_ai_auditor_parameter_tuning(adjustment: Dict, audit_record: Dict):
+    """
+    Función activa que permite al Auditor Forense (NVIDIA NIM) modificar
+    parámetros operativos de ReinforcementBrain en tiempo real.
+    """
+    param = str(adjustment.get("parametro", "")).lower().strip()
+    new_val = adjustment.get("nuevo_valor")
+    reason = adjustment.get("justificacion", "Ajuste preventivo post-auditoría.")
+    sym = audit_record.get("symbol", "")
+
+    if not new_val:
+        return
+
+    old_val = None
+    applied = False
+    log_msg = ""
+
+    if "sl" in param or "atr" in param:
+        try:
+            val_float = max(1.80, min(3.00, float(new_val)))
+            old_val = brain.sl_atr_mult
+            brain.sl_atr_mult = round(val_float, 2)
+            applied = True
+            log_msg = f"Stop Loss ATR ajustado de {old_val}x -> {brain.sl_atr_mult}x"
+        except Exception:
+            pass
+
+    elif "score" in param:
+        try:
+            val_float = max(55.0, min(85.0, float(new_val)))
+            old_val = brain.min_score_required
+            brain.min_score_required = round(val_float, 1)
+            applied = True
+            log_msg = f"Score Mínimo Requerido ajustado de {old_val} -> {brain.min_score_required} pts"
+        except Exception:
+            pass
+
+    elif "tp" in param:
+        try:
+            val_float = max(1.20, min(4.50, float(new_val)))
+            old_val = brain.tp1_gain_pct
+            brain.tp1_gain_pct = round(val_float, 2)
+            applied = True
+            log_msg = f"Objetivo TP1 ajustado de +{old_val}% -> +{brain.tp1_gain_pct}%"
+        except Exception:
+            pass
+
+    elif "cooldown" in param and sym:
+        brain.coin_blacklist_until[sym] = time.time() + (12 * 3600)
+        applied = True
+        log_msg = f"Veto temporal activado para {sym} por 12h"
+
+    if applied:
+        brain.save_state()
+        print(f"\n  ⚙️ [AUDITOR ACTIVO NVIDIA] PARÁMETRO AJUSTADO EN TIEMPO REAL: {log_msg} | Razón: {reason}\n", flush=True)
+        if "tuning_history" not in ai_auditor.system_memory:
+            ai_auditor.system_memory["tuning_history"] = []
+        ai_auditor.system_memory["tuning_history"].append({
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "parameter": param,
+            "old_value": old_val,
+            "new_value": new_val,
+            "symbol": sym,
+            "reason": reason
+        })
+        ai_auditor.system_memory["tuning_history"] = ai_auditor.system_memory["tuning_history"][-20:]
+        ai_auditor.save_memory()
+
+
+ai_auditor.register_tuning_handler(on_ai_auditor_parameter_tuning)
+
+
+# ====================== ESTRUCTURAS DE DATOS ======================
+
+@dataclass
+class GridLine:
+    price: float
+    side: str  # "buy" or "sell"
+    amount: float
+    active: bool = True
+
+@dataclass
+class GridPosition:
+    grid_id: str
+    symbol: str
+    grid_upper: float
+    grid_lower: float
+    grid_lines: int
+    step_pct: float
+    capital_total: float
+    capital_per_line: float
+    lines: list
+    realized_pnl: float = 0.0
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    active: bool = True
+    status_msg: str = "Grid Activa"
+    out_of_range_ticks: int = 0
+    ticks_without_fill: int = 0
+    last_fill_ts: float = field(default_factory=time.time)
+    dynamic_adjustments_count: int = 0
+    recent_trend_slope: float = 0.0
+
+    def to_dict(self):
+        d = asdict(self)
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict):
+        clean_d = {k: v for k, v in d.items() if k in cls.__dataclass_fields__}
+        return cls(**clean_d)
+
+@dataclass
+class PendingLimitOrder:
+    order_id: str
+    symbol: str
+    limit_price: float
+    capital: float
+    atr_val: float
+    atr_pct: float
+    analysis: Dict
+    volume_24h: float
+    side: str = "long"  # "long" o "short"
+    created_at: float = field(default_factory=time.time)
+    expires_at: float = 0.0
+    status: str = "PENDING"  # PENDING, FILLED, EXPIRED, CANCELED
+
+    def to_dict(self):
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(d: dict):
+        return PendingLimitOrder(**d)
+
+
+@dataclass
+class LongPosition:
+    position_id: str
+    symbol: str
+    initial_amount: float
+    amount: float
+    entry_price: float
+    stop_loss: float
+    initial_sl: float
+    trailing_stop: float
+    features_at_entry: Dict = field(default_factory=dict)
+    tp1_hit: bool = False
+    break_even_activated: bool = False
+    trailing_activated: bool = False
+    highest_price: float = 0.0
+    lowest_price: float = 99999999.0
+    capital_allocated: float = 0.0
+    realized_pnl: float = 0.0
+    atr_at_entry: float = 0.0
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    active: bool = True
+    strategy: str = "long"
+    side: str = "long"  # "long" o "short"
+    total_checks: int = 0
+    max_gain_pct: float = 0.0
+    status_msg: str = "BUSCANDO TP1 🎯"
+    entry_time: float = 0.0
+
+    def __post_init__(self):
+        if self.side == "short" and self.strategy == "long":
+            self.strategy = "short"
+        if not self.entry_time:
+            try:
+                if self.created_at:
+                    dt = datetime.fromisoformat(self.created_at)
+                    self.entry_time = dt.timestamp()
+                else:
+                    self.entry_time = time.time()
+            except Exception:
+                self.entry_time = time.time()
+
+    def to_dict(self):
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(d: dict):
+        clean_d = d.copy()
+        if "side" not in clean_d:
+            clean_d["side"] = "short" if "short" in clean_d.get("strategy", "").lower() else "long"
+        if "lowest_price" not in clean_d:
+            clean_d["lowest_price"] = clean_d.get("entry_price", 99999999.0)
+        if "entry_time" not in clean_d or not clean_d["entry_time"]:
+            try:
+                c_at = clean_d.get("created_at", "")
+                if c_at:
+                    clean_d["entry_time"] = datetime.fromisoformat(c_at).timestamp()
+                else:
+                    clean_d["entry_time"] = time.time()
+            except Exception:
+                clean_d["entry_time"] = time.time()
+        return LongPosition(**clean_d)
+
+
+class PaperBot:
+    def __init__(self):
+        self.cash = INITIAL_CAPITAL
+        self.holdings: Dict[str, float] = {}
+        self.longs: Dict[str, LongPosition] = {}
+        self.grids: Dict[str, GridPosition] = {}
+        self.pending_orders: Dict[str, PendingLimitOrder] = {}
+        self.is_alive = True
+        self.death_reason: Optional[str] = None
+        self.start_time = datetime.now()
+        self.total_fees_paid = 0.0
+        self.total_slippage_cost = 0.0
+        self.total_realized_pnl_acc = 0.0
+
+        self.wins = 0
+        self.losses = 0
+        self.total_trades = 0
+        self.trades_since_eval = 0
+        self.latest_self_eval: Dict = {}
+        self.latest_pnl_audit: List[Dict] = []
+        self.peak_equity = INITIAL_CAPITAL
+        self.max_drawdown = 0.0
+        self.drawdown_ticks = 0
+        self.btc_risk_off = False
+        self.btc_change_6h = 0.0
+
+
+        os.makedirs(LOG_DIR, exist_ok=True)
+        self._init_logs()
+        self.load_portfolio_state()
+
+    def _init_logs(self):
+        if not os.path.exists(EQUITY_LOG):
+            with open(EQUITY_LOG, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    "timestamp", "equity", "cash", "holdings_value",
+                    "open_longs", "realized_pnl_total", "fees_paid",
+                    "slippage_cost", "max_drawdown"
+                ])
+        if not os.path.exists(TRADES_LOG):
+            with open(TRADES_LOG, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    "timestamp", "symbol", "strategy", "side", "price", "amount",
+                    "pnl", "fee", "slippage", "extra_info", "position_id", "status"
+                ])
+
+    def save_portfolio_state(self):
+        try:
+            data = {
+                "cash": round(self.cash, 4),
+                "holdings": {k: round(v, 8) for k, v in self.holdings.items() if v > 1e-8},
+                "longs": {k: v.to_dict() for k, v in self.longs.items() if v.active},
+                "grids": {k: v.to_dict() for k, v in self.grids.items() if v.active},
+                "total_fees_paid": round(self.total_fees_paid, 4),
+                "total_slippage_cost": round(self.total_slippage_cost, 4),
+                "total_realized_pnl_acc": round(self.total_realized_pnl_acc, 4),
+                "wins": self.wins,
+                "losses": self.losses,
+                "total_trades": self.total_trades,
+                "updated_at": datetime.now().isoformat()
+            }
+            with open(PORTFOLIO_STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            print(f"  [Error Guardar Estado Portafolio] {e}", flush=True)
+
+    def load_portfolio_state(self):
+        if os.path.exists(PORTFOLIO_STATE_FILE):
+            try:
+                with open(PORTFOLIO_STATE_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self.cash = float(data.get("cash", INITIAL_CAPITAL))
+                    self.holdings = data.get("holdings", {})
+                    self.total_fees_paid = float(data.get("total_fees_paid", 0.0))
+                    self.total_slippage_cost = float(data.get("total_slippage_cost", 0.0))
+                    self.total_realized_pnl_acc = float(data.get("total_realized_pnl_acc", 0.0))
+                    self.wins = int(data.get("wins", 0))
+                    self.losses = int(data.get("losses", 0))
+                    self.total_trades = int(data.get("total_trades", 0))
+
+                    longs_data = data.get("longs", {})
+                    for sym, pos_dict in longs_data.items():
+                        try:
+                            self.longs[sym] = LongPosition.from_dict(pos_dict)
+                        except Exception:
+                            pass
+
+                    grids_data = data.get("grids", {})
+                    for sym, g_dict in grids_data.items():
+                        try:
+                            self.grids[sym] = GridPosition.from_dict(g_dict)
+                        except Exception:
+                            pass
+                print(f"  📂 [PORTAFOLIO CARGADO] Efectivo: ${self.cash:.2f} USDT | Mallas Activas: {len(self.grids)} | Posiciones: {len(self.longs)}", flush=True)
+            except Exception as e:
+                print(f"  [Error Cargar Estado Portafolio] {e}", flush=True)
+
+    def get_holdings_value(self, prices: Dict[str, float]) -> float:
+        val = 0.0
+        # Posiciones Spot / Long tradicionales
+        for symbol, amount in self.holdings.items():
+            p = prices.get(symbol)
+            if p is None or p <= 0:
+                if symbol in self.longs and self.longs[symbol].entry_price > 0:
+                    p = self.longs[symbol].entry_price
+                else:
+                    p = 0.0
+            val += amount * p
+        return val
+
+    def get_equity(self, prices: Dict[str, float]) -> float:
+        # Equity = Efectivo libre + valor de longs + PnL flotante de shorts + Valor de las Mallas
+        equity = self.cash + self.get_holdings_value(prices)
+        for sym, pos in self.longs.items():
+            if pos.active and getattr(pos, "side", "long") == "short":
+                curr_p = prices.get(sym, pos.entry_price)
+                if curr_p and curr_p > 0:
+                    short_flot_pnl = (pos.entry_price - curr_p) * pos.amount
+                    equity += (pos.capital_allocated + short_flot_pnl)
+                    
+        # Calcular valor bloqueado y flotante en mallas activas
+        for sym, grid in self.grids.items():
+            if not grid.active:
+                continue
+            curr_p = prices.get(sym, grid.grid_upper)
+            for line in grid.lines:
+                if not line["active"]:
+                    continue
+                if line["side"] == "buy":
+                    # Dinero retenido en orden de compra
+                    equity += (line["price"] * line["amount"])
+                elif line["side"] == "sell":
+                    # Valor actual de la moneda que estamos holdeando para vender
+                    equity += (line["amount"] * curr_p)
+                    
+        return equity
+
+    def total_realized_pnl(self) -> float:
+        pos_pnl = sum(l.realized_pnl for l in self.longs.values())
+        return self.total_realized_pnl_acc + pos_pnl
+
+    def active_risk_positions_count(self) -> int:
+        """Cuenta posiciones que aún no han cobrado TP1 + órdenes límite pendientes."""
+        risk_active = len([l for l in self.longs.values() if l.active and not l.tp1_hit])
+        pending = len(self.pending_orders)
+        return risk_active + pending
+
+    def open_positions_count(self) -> int:
+        return len([l for l in self.longs.values() if l.active]) + len(self.pending_orders)
+
+    def run_self_evaluation(self):
+        """Auto-evaluación algorítmica periódica (cada 5-10 trades) con ajuste adaptativo."""
+        try:
+            report = auditor.evaluate_last_n_trades(10)
+            recs = auditor.generate_adaptations()
+            audit_list = auditor.get_pnl_audit()
+            self.latest_self_eval = {
+                "report": report,
+                "recommendations": recs,
+                "evaluated_at": datetime.now().isoformat()
+            }
+            self.latest_pnl_audit = audit_list[:30]
+
+            # Aplicar adaptaciones automáticas
+            if "coin_blacklist" in recs:
+                for item in recs["coin_blacklist"]:
+                    coin = item.split(" ")[0]
+                    brain.coin_blacklist_until[coin] = time.time() + (12 * 3600)
+                    print(f"  🧠 [AUTO-ADAPTACIÓN] {coin} bloqueado por 12h tras racha negativa.", flush=True)
+
+            if "low_winrate" in recs:
+                brain.min_score_required = min(85.0, max(65.0, brain.min_score_required + 2.0))
+                print(f"  🧠 [AUTO-ADAPTACIÓN] Win rate bajo -> Score mínimo endurecido a {brain.min_score_required:.1f} pts (Filtro Estricto)", flush=True)
+
+            if "tp1_too_ambitious" in recs:
+                brain.tp1_gain_pct = max(1.80, brain.tp1_gain_pct - 0.08)
+                print(f"  🧠 [AUTO-ADAPTACIÓN] TP1 re-calibrado a +{brain.tp1_gain_pct:.2f}%", flush=True)
+
+            wr = report.get('overall', {}).get('win_rate', 0) * 100
+            exp = report.get('overall', {}).get('expectancy', 0)
+            fric = report.get('friction', {}).get('total_friction_cost', 0)
+            print(f"  🧠 [AUTO-EVALUACIÓN REALIZADA] WinRate Últimos 10: {wr:.1f}% | Esperanza: ${exp:+.4f} | Fricción: ${fric:.2f}", flush=True)
+
+            # Re-entrenamiento automático continuo del Centinela de Riesgo
+            meta_gate.train_model()
+        except Exception as e:
+            print(f"  [Error Auto-Evaluación] {e}", flush=True)
+
+    def check_survival(self, equity: float) -> bool:
+        if not self.is_alive:
+            return False
+        if equity < INITIAL_CAPITAL * MIN_EQUITY_RATIO:
+            self.drawdown_ticks += 1
+            if self.drawdown_ticks >= 4:
+                self.is_alive = False
+                self.death_reason = f"Equity cayó a {equity:.2f} USDT ({equity / INITIAL_CAPITAL * 100:.1f}%) confirmado por 4 ticks"
+                return False
+        else:
+            self.drawdown_ticks = 0
+        return True
+
+
+    def log_equity(self, equity: float, prices: Dict[str, float]):
+        with open(EQUITY_LOG, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                datetime.now().isoformat(),
+                round(equity, 4),
+                round(self.cash, 4),
+                round(self.get_holdings_value(prices), 4),
+                len([l for l in self.longs.values() if l.active]),
+                round(self.total_realized_pnl(), 4),
+                round(self.total_fees_paid, 4),
+                round(self.total_slippage_cost, 4),
+                round(self.max_drawdown * 100, 2)
+            ])
+
+    def log_trade(self, symbol: str, strategy: str, side: str, price: float,
+                  amount: float, pnl: float, fee: float, slippage: float,
+                  extra: str = "", pos_id: str = "", status: str = "OPEN"):
+        with open(TRADES_LOG, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                datetime.now().isoformat(), symbol, strategy, side,
+                round(price, 6), round(amount, 6), round(pnl, 4),
+                round(fee, 4), round(slippage, 4), extra, pos_id, status
+            ])
+
+        if status in ("CLOSED", "PARTIAL_CLOSED") and pnl != 0:
+            self.total_trades += 1
+            if pnl > 0:
+                self.wins += 1
+            else:
+                self.losses += 1
+            self.total_realized_pnl_acc += pnl
+            self.trades_since_eval += 1
+            if self.trades_since_eval >= 5:
+                self.trades_since_eval = 0
+                self.run_self_evaluation()
+
+        self.save_portfolio_state()
+
+    def win_rate(self) -> float:
+        if self.total_trades == 0:
+            return 0.0
+        return (self.wins / self.total_trades) * 100
+
+    def update_drawdown(self, equity: float):
+        if equity > self.peak_equity:
+            self.peak_equity = equity
+        if self.peak_equity > 0:
+            dd = (self.peak_equity - equity) / self.peak_equity
+            if dd > self.max_drawdown:
+                self.max_drawdown = dd
+
+    def reset_and_close_all(self, target_cash: float = INITIAL_CAPITAL):
+        print(f"\n⚡ [REINICIO TOTAL SOLICITADO] Limpiando portafolio e iniciando en ${target_cash:.2f} USDT...", flush=True)
+        self.cash = target_cash
+        self.holdings.clear()
+        self.longs.clear()
+        self.save_portfolio_state()
+        print(f"⚡ [REINICIO COMPLETADO] Efectivo Disponible: ${self.cash:.2f} USDT | Posiciones: 0\n", flush=True)
+
+
+# ====================== ANÁLISIS CUANTITATIVO AGRESIVO ======================
+def _compute_rsi(series: pd.Series, period: int = 14) -> float:
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+    avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+    return float(rsi.iloc[-1]) if not np.isnan(rsi.iloc[-1]) else 50.0
+
+
+def _compute_adx_full(df: pd.DataFrame, period: int = 14):
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+
+    up = high.diff()
+    down = -low.diff()
+    plus_dm = np.where((up > down) & (up > 0), up, 0.0)
+    minus_dm = np.where((down > up) & (down > 0), down, 0.0)
+
+    tr = pd.concat([
+        high - low,
+        (high - close.shift()).abs(),
+        (low - close.shift()).abs()
+    ], axis=1).max(axis=1)
+
+    atr = tr.ewm(alpha=1/period, adjust=False).mean()
+    plus_di = 100 * pd.Series(plus_dm, index=df.index).ewm(alpha=1/period, adjust=False).mean() / atr
+    minus_di = 100 * pd.Series(minus_dm, index=df.index).ewm(alpha=1/period, adjust=False).mean() / atr
+    dx = (abs(plus_di - minus_di) / (plus_di + minus_di).replace(0, np.nan)) * 100
+    adx = dx.ewm(alpha=1/period, adjust=False).mean()
+
+    return adx, plus_di, minus_di, atr
+
+
+def compute_pid_and_squeeze(df_15m: pd.DataFrame) -> Dict:
+    """
+    Control PID & Indicador Predictivo de Despegue (Launchpad Anticipator).
+    - SP = EMA20 de 15m (equilibrio dinámico).
+    - Error e(t) = ((Close - EMA20) / EMA20) * 100.
+    - P (Proporcional): Distancia porcentual actual al equilibrio.
+    - I (Integral): Media de error en las últimas 5 velas (acumulación en soporte).
+    - D (Derivada / Velocidad): v(t) = Close[t] - Close[t-1].
+    - Acc (Aceleración de 2do orden): a(t) = v[t] - v[t-1] = Close[t] - 2*Close[t-1] + Close[t-2].
+      La física cuantitativa dicta que la aceleración debe ser positiva (a > 0) antes de la vela de despegue.
+    - Squeeze de Volatilidad (Bollinger Bands 20, 2.0 vs Keltner Channel 20, 1.5 ATR):
+      Ratio de compresión = (BB_Width / KC_Width). Si <= 1.0, el resorte está comprimido (coiling).
+    """
+    close = df_15m["close"]
+    high = df_15m["high"]
+    low = df_15m["low"]
+    n = len(close)
+    if n < 20:
+        return {
+            "P": 0.0, "I": 0.0, "D": 0.0, "Acc": 0.0,
+            "sq_ratio": 1.0, "squeeze_on": False,
+            "is_launchpad": False, "stage": "INSUFFICIENT_DATA", "anticipatory_boost": 0.0
+        }
+
+    ema20 = close.ewm(span=20).mean()
+    err = ((close - ema20) / ema20) * 100
+    p_val = float(err.iloc[-1])
+    i_val = float(err.iloc[-5:].mean()) if n >= 5 else p_val
+    v = close.diff()
+    a = v.diff()
+    d_val = float(v.iloc[-1])
+    acc_val = float(a.iloc[-1])
+
+    # Squeeze John Carter TTM
+    std20 = close.rolling(20).std()
+    bb_width = 4.0 * std20
+    tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
+    atr14 = tr.rolling(14).mean()
+    kc_width = 3.0 * atr14
+
+    last_bb_w = float(bb_width.iloc[-1]) if not np.isnan(bb_width.iloc[-1]) else 1.0
+    last_kc_w = float(kc_width.iloc[-1]) if not np.isnan(kc_width.iloc[-1]) and float(kc_width.iloc[-1]) > 0 else 1.0
+    sq_ratio = last_bb_w / last_kc_w if last_kc_w > 0 else 1.0
+    squeeze_on = (sq_ratio <= 1.0)
+
+    # Evaluación Predictiva:
+    # 1. Compresión de resorte: sq_ratio <= 1.08
+    # 2. Aceleración positiva (inflexión alcista iniciada): acc_val > 0
+    # 3. En piso de lanzamiento: -1.5 <= p_val <= 0.15
+    is_launchpad = (sq_ratio <= 1.08) and (acc_val > 0) and (-1.5 <= p_val <= 0.15)
+
+    if is_launchpad:
+        stage = "🚀 LAUNCHPAD (PRE-DESPEGUE)"
+        boost = 30.0
+    elif squeeze_on:
+        stage = "🟡 COILING COMPRESIÓN"
+        boost = 15.0
+    elif p_val > 0.25:
+        stage = "🔴 CRESTA EXTENDIDA"
+        boost = -50.0
+    else:
+        stage = "⚪ TRANSICIÓN NEUTRA"
+        boost = 0.0
+
+    return {
+        "P": round(p_val, 2),
+        "I": round(i_val, 2),
+        "D": round(d_val, 6),
+        "Acc": round(acc_val, 6),
+        "sq_ratio": round(sq_ratio, 2),
+        "squeeze_on": bool(squeeze_on),
+        "is_launchpad": bool(is_launchpad),
+        "stage": stage,
+        "anticipatory_boost": boost
+    }
+
+
+# ponytail: dead code — retained for reference
+def get_sniper_analysis_aggressive(symbol: str, df_15m: pd.DataFrame, df_1h: pd.DataFrame, volume_m: float, btc_mom: float = 0.0) -> Dict:
+    if len(df_1h) < 30 or len(df_15m) < 20:
+        return {"recommendation": "skip", "score": 0.0}
+
+    close_1h = df_1h["close"]
+    ema20_1h = close_1h.ewm(span=20).mean().iloc[-1]
+    ema50_1h = close_1h.ewm(span=50).mean().iloc[-1]
+    adx_1h_s, plus_1h, minus_1h, atr_1h_s = _compute_adx_full(df_1h, 14)
+    adx_1h = float(adx_1h_s.iloc[-1])
+    di_spread_1h = float(plus_1h.iloc[-1]) - float(minus_1h.iloc[-1])
+    atr_pct_1h = (float(atr_1h_s.iloc[-1]) / close_1h.iloc[-1]) * 100
+    atr_val_1h = float(atr_1h_s.iloc[-1])
+
+    macro_bullish = ((ema20_1h >= ema50_1h * 0.998) and (di_spread_1h >= 1.0)) or (adx_1h >= 24.0 and di_spread_1h > 0)
+
+    close_15m = df_15m["close"]
+    open_15m = df_15m["open"]
+    high_15m = df_15m["high"]
+    low_15m = df_15m["low"]
+    ema20_15m = close_15m.ewm(span=20).mean().iloc[-1]
+    rsi_15m = _compute_rsi(close_15m, 14)
+    dist_to_ema20_15m = ((close_15m.iloc[-1] / ema20_15m) - 1) * 100
+
+    last_candle_bullish = (close_15m.iloc[-1] >= open_15m.iloc[-1] * 0.998) or (
+        (close_15m.iloc[-1] - low_15m.iloc[-1]) > (high_15m.iloc[-1] - close_15m.iloc[-1])
+    )
+
+    # CÁLCULO PREDICTIVO PID & SQUEEZE:
+    pid_sq = compute_pid_and_squeeze(df_15m)
+
+    # VETO ESTRICTO ANTI-CRESTA (Anti-FOMO / Cero compras en techos de ola):
+    is_extended_crest = (dist_to_ema20_15m > 0.20) or (rsi_15m > 56.5) or (pid_sq["stage"].startswith("🔴"))
+
+    # PISO DE LANZAMIENTO / SOPORTE EXACTO:
+    is_at_support_valley = (-1.8 <= dist_to_ema20_15m <= 0.15) and (33.0 <= rsi_15m <= 56.0)
+
+    # CÁLCULO DE EFICIENCIA DIRECCIONAL DE KAUFMAN (KER) & BIAS DE MONEDA:
+    ker_val = compute_kaufman_efficiency_ratio(close_15m, 14)
+    pnl_hist = brain.coin_pnl_memory.get(symbol, [])
+    coin_bias_val = round(sum(pnl_hist[-3:]), 3) if pnl_hist else 0.0
+
+    features_dict = {
+        "adx": round(adx_1h, 1),
+        "dist_ema20": round(dist_to_ema20_15m, 2),
+        "rsi": round(rsi_15m, 1),
+        "atr_pct": round(atr_pct_1h, 2),
+        "volume_m": round(volume_m, 1),
+        "pid_p": pid_sq["P"],
+        "pid_d": pid_sq["D"],
+        "pid_acc": pid_sq["Acc"],
+        "sq_ratio": pid_sq["sq_ratio"],
+        "stage": pid_sq["stage"],
+        "is_launchpad": pid_sq["is_launchpad"],
+        "ker": ker_val,
+        "btc_mom": btc_mom,
+        "coin_bias": coin_bias_val
+    }
+
+    # SEÑAL TÉCNICA PRIMARIA (Modelo Nivel 1 - PID / Squeeze / Soporte):
+    is_primary_long = (
+        macro_bullish
+        and is_at_support_valley
+        and not is_extended_crest
+        and (pid_sq["is_launchpad"] or last_candle_bullish)
+        and (atr_pct_1h >= 1.5)
+        and (not brain.is_blacklisted(symbol))
+    )
+
+    # GATEKEEPER SECUNDARIO (Meta-Labeling de Marcos López de Prado - Nivel 2):
+    meta_veto = False
+    p_win = 0.50
+    bet_multiplier = 1.0
+    meta_reason = "No evaluado (sin señal primaria)"
+
+    if is_primary_long:
+        meta_veto, p_win, bet_multiplier, meta_reason = meta_gate.predict_probability(symbol, features_dict)
+        if meta_veto:
+            rec = "skip"
+            print(f"  🛡️ [META-LABELING VETO] {symbol}: {meta_reason}", flush=True)
+        else:
+            rec = "long"
+            print(f"  ✅ [META-LABELING APROBADO] {symbol} (P={p_win:.1%}, Bet={bet_multiplier:.2f}x, KER={ker_val:.2f})", flush=True)
+    else:
+        rec = "skip"
+
+    rl_score = 0.0
+    return {
+        "score": rl_score,
+        "recommendation": rec,
+        "adx_1h": round(adx_1h, 1),
+        "rsi_15m": round(rsi_15m, 1),
+        "dist_ema20_15m": round(dist_to_ema20_15m, 2),
+        "atr_pct": round(atr_pct_1h, 2),
+        "atr_value": atr_val_1h,
+        "pid_p": pid_sq["P"],
+        "pid_d": pid_sq["D"],
+        "pid_acc": pid_sq["Acc"],
+        "sq_ratio": pid_sq["sq_ratio"],
+        "stage": pid_sq["stage"],
+        "is_launchpad": pid_sq["is_launchpad"],
+        "ker": ker_val,
+        "p_win": p_win,
+        "bet_multiplier": bet_multiplier,
+        "meta_reason": meta_reason,
+        "features": features_dict
+    }
+
+
+
+# ====================== ESCÁNER DE MERCADO MULTI-FACTOR (MACRO + MICRO) ======================
+def select_best_opportunities(bot: PaperBot, top_n: int = 6) -> List[Dict]:
+    try:
+        tickers = exchange.fetch_tickers()
+        candidates = []
+        for sym, t in tickers.items():
+            if not sym.endswith("/USDT"):
+                continue
+            base = sym.split("/")[0]
+            if base in STABLE_BASES:
+                continue
+            vol = t.get("quoteVolume", 0) or 0
+            pct = t.get("percentage", 0) or 0
+            last_p = t.get("last", 0) or 0
+            # Filtro de Alta Liquidez: Mínimo $25M en 24h para garantizar velocidad institucional y cero trampas ilíquidas
+            if vol >= 25_000_000 and last_p > 0:
+                candidates.append((sym, vol, pct, last_p))
+
+        # Canasta Cuantitativa Dinámica de Alta Velocidad (LONG y SHORT):
+        # 1. Candidatos LONG: monedas altamente líquidas en acumulación o rebote (-4.0% a +9.0%)
+        long_pool = [c for c in candidates if -4.0 <= c[2] <= 9.0]
+        # Ordenar por volumen y dinamismo (las más negociadas y activas del exchange)
+        by_vol = sorted(long_pool, key=lambda x: x[1], reverse=True)[:14]
+        by_pullback = sorted([c for c in long_pool if -4.0 <= c[2] <= 1.5], key=lambda x: x[1], reverse=True)[:10]
+
+        # 2. Candidatos SHORT: monedas sobre-extendidas (+6.0% a +40.0%) con volumen alto listas para reversión rápida
+        short_pool = [c for c in candidates if 6.0 <= c[2] <= 40.0]
+        by_pump = sorted(short_pool, key=lambda x: x[2], reverse=True)[:12]
+
+        seen = set()
+        top_candidates = []
+        for item in by_vol + by_pullback + by_pump:
+            if item[0] not in seen:
+                seen.add(item[0])
+                top_candidates.append(item)
+    except Exception as e:
+        print(f"  [Scan Error] {e}", flush=True)
+        return []
+
+    btc_macro = macro_engine.btc_macro_state
+    bot.btc_risk_off = btc_macro.get("is_risk_off", False)
+
+    results = []
+    for symbol, volume, pct_chg, last_price in top_candidates:
+        if symbol in bot.longs or symbol in bot.pending_orders:
+            continue
+
+        # Veto de Seguridad por Noticias Críticas (NVIDIA NIM AI)
+        is_news_vetoed, news_reason = news_sentinel.is_symbol_blacklisted(symbol)
+        if is_news_vetoed:
+            print(f"  🚨 [VETO NOTICIAS NVIDIA] {symbol}: {news_reason}", flush=True)
+            continue
+
+        try:
+            macro_info = macro_engine.analyze_coin_macro(symbol)
+            ohlcv_15m = exchange.fetch_ohlcv(symbol, "15m", limit=30)
+            ohlcv_1h = exchange.fetch_ohlcv(symbol, "1h", limit=30)
+            if not ohlcv_15m or not ohlcv_1h:
+                continue
+
+            df_15m = pd.DataFrame(ohlcv_15m, columns=["ts", "open", "high", "low", "close", "volume"])
+            df_1h = pd.DataFrame(ohlcv_1h, columns=["ts", "open", "high", "low", "close", "volume"])
+            vol_m = volume / 1_000_000
+
+            # Evaluación con Arsenal Multi-Factor Completo (6 Pilares)
+            analysis = evaluate_multi_factor_arsenal(
+                symbol, df_15m, df_1h, macro_info, btc_macro, vol_m
+            )
+
+            # Filtro Antiestancamiento de Volatilidad Viva:
+            # Exigir ATR mínimo >= 1.20% para asegurar que el activo tiene movimiento y cosecha rápida
+            coin_atr_pct = analysis.get("features", {}).get("atr_pct", analysis.get("atr_pct", 0.0))
+            if coin_atr_pct < 1.20:
+                continue
+
+            # Evaluación de Microestructura LOB (Order Book Depth 10)
+            lob = fetch_order_book_microstructure(exchange, symbol, depth=10)
+            analysis["lob"] = lob
+            if "features" not in analysis:
+                analysis["features"] = {}
+            analysis["features"]["obi"] = lob["obi"]
+            analysis["features"]["spread_pct"] = lob["spread_pct"]
+            is_rec_short = (analysis.get("recommendation") == "short")
+            analysis["features"]["is_short"] = is_rec_short
+            analysis["features"]["direction"] = "short" if is_rec_short else "long"
+
+            # Gatekeeper Cuantitativo: Evaluar probabilidad para todos los candidatos
+            meta_veto, p_win, bet_mult, meta_reason = meta_gate.predict_probability(symbol, analysis.get("features", {}))
+            analysis["p_win"] = p_win
+            analysis["bet_multiplier"] = bet_mult
+
+            # Telemetría de Radar Cuantitativo (Datos objetivos para el Comité Multi-Agente)
+            stage_txt = analysis.get("squeeze_state", "COILING")
+            ker_val = analysis.get("ker", 0.35)
+            print(f"  📊 [RADAR CANDIDATO] {symbol} | Score: {analysis['score']:.1f} | OBI={lob['obi']:+.2f} | KER={ker_val:.2f} | Sq={stage_txt}", flush=True)
+
+            # Mantener en la lista de resultados para que el usuario y la oficina vean TODAS las monedas auditadas
+            results.append({
+                "symbol": symbol,
+                "score": analysis["score"],
+                "analysis": analysis,
+                "volume": volume,
+                "price": last_price,
+                "stage": analysis.get("squeeze_state", "COILING"),
+                "macro_bias": macro_info.get("macro_bias", "NEUTRAL"),
+                "limit_buy_price": analysis.get("limit_buy_price", last_price),
+                "obv_slope": analysis.get("obv_slope", 0.0),
+                "vol_surge": analysis.get("vol_surge", 1.0),
+                "ker": analysis.get("ker", 0.35),
+                "obi": lob.get("obi", 0.0),
+                "spread_pct": lob.get("spread_pct", 0.0),
+                "p_win": p_win,
+                "bet_multiplier": bet_mult
+            })
+        except Exception:
+            continue
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+    return results[:top_n]
+
+
+# ====================== EJECUCIÓN REALISTA ======================
+def apply_slippage(price: float, side: str, atr_pct: float, volume_24h: float, is_limit: bool = False) -> Tuple[float, float]:
+    """
+    Slippage realista:
+    - Órdenes LIMIT (Maker): Slippage = 0 SIEMPRE (se ejecutan al precio fijado).
+    - Órdenes MARKET (Taker): Slippage micro (0.01% a 0.03% max) proporcional a liquidez.
+    """
+    if is_limit:
+        return price, 0.0
+    # Market order: slippage mínimo realista
+    max_slip_pct = 0.0003  # 0.03% máximo
+    if volume_24h < 15_000_000:
+        max_slip_pct = 0.0005  # 0.05% para baja liquidez
+    slip_pct = random.uniform(0, max_slip_pct)
+    executed = price * (1 + slip_pct) if side == "buy" else price * (1 - slip_pct)
+    return executed, slip_pct
+
+
+# ====================== FLUJO CONCENTRADO E INTERÉS COMPUESTO ======================
+def calculate_compound_order_size(bot: PaperBot, equity: float) -> float:
+    """
+    Calcula el tamaño de la orden con RECICLAJE DINÁMICO DE SLOTS:
+    - Si ya hay 2 posiciones en fase de riesgo inicial (sin TP1 cobrado), retorna 0.
+    - Si una posición cobra TP1 y su SL está blindado en Break-Even, LIBERA SU SLOT.
+    - Asigna hasta el 48% del Equity (~$38.80) o el 96% de la caja libre disponible.
+    - Mínimo $25.00 USDT por trade (cero órdenes residuales enanas).
+    """
+    if bot.active_risk_positions_count() >= MAX_RISK_SLOTS or bot.open_positions_count() >= MAX_TOTAL_POSITIONS:
+        return 0.0
+
+    target_capital = equity * COMPOUND_ALLOCATION_PCT
+    max_affordable_capital = bot.cash * 0.96
+    capital = min(target_capital, max_affordable_capital)
+
+    if capital < MIN_ORDER_USDT:
+        return 0.0
+
+    return round(capital, 2)
+
+
+
+# ====================== MOTOR DE ÓRDENES LÍMITE PREDICTIVAS (CERO SLIPPAGE / MAKER) ======================
+# ====================== MOTOR DE ÓRDENES LÍMITE PREDICTIVAS (CERO SLIPPAGE / MAKER) ======================
+def place_limit_buy(bot: PaperBot, symbol: str, capital: float, current_price: float,
+                    analysis: Dict, volume_24h: float, side: str = "long", is_retest: bool = False) -> bool:
+    """
+    Coloca una orden LÍMITE predictiva en el soporte (para Long) o resistencia (para Short).
+    En lugar de pagar slippage y fees taker persiguiendo velas,
+    el bot fija su orden límite pasiva (Maker) esperando la absorción institucional.
+    Si is_retest=True, exige un retroceso más profundo para confirmar el retesteo.
+    """
+    bet_mult = float(analysis.get("bet_multiplier", 1.0))
+    capital = max(MIN_ORDER_USDT, round(capital * bet_mult, 2))
+
+    if capital < MIN_ORDER_USDT:
+        return False
+
+    if symbol in bot.longs or symbol in bot.pending_orders:
+        return False
+
+    reserved_cash = sum(o.capital for o in bot.pending_orders.values())
+    fee_estimate = capital * FEE_RATE
+    if (bot.cash - reserved_cash) < (capital + fee_estimate):
+        return False
+
+    # Cálculo predictivo del precio límite Tight Maker (Mejor Bid / Profundidad Nivel 1)
+    offset_base = 0.0030 if is_retest else 0.0010
+    limit_price = float(analysis.get("limit_order_price", analysis.get("limit_buy_price", 0.0)))
+    if side == "short":
+        if limit_price <= 0.0 or limit_price <= current_price:
+            limit_price = current_price * (1 + offset_base)
+        else:
+            limit_price = min(limit_price, current_price * (1.0050 if is_retest else 1.0020))
+        pull_offset_pct = (limit_price - current_price) / current_price
+    else:
+        if limit_price <= 0.0 or limit_price >= current_price:
+            limit_price = current_price * (1 - offset_base)
+        else:
+            limit_price = max(limit_price, current_price * (0.9950 if is_retest else 0.9980))
+        pull_offset_pct = (current_price - limit_price) / current_price
+
+    atr_val = float(analysis.get("atr_value", current_price * 0.02))
+    atr_pct = float(analysis.get("atr_pct", 2.0))
+
+    order_id = f"lim_{int(time.time()*1000)}"
+    forward_target = float(analysis.get("forward_target", 0.0))
+    rr_ratio = float(analysis.get("rr_ratio", 0.0))
+    validity_secs = 600 if is_retest else 360
+
+    order = PendingLimitOrder(
+        order_id=order_id,
+        symbol=symbol,
+        limit_price=limit_price,
+        capital=capital,
+        atr_val=atr_val,
+        atr_pct=atr_pct,
+        analysis=analysis,
+        volume_24h=volume_24h,
+        side=side,
+        created_at=time.time(),
+        expires_at=time.time() + validity_secs,
+        status="PENDING"
+    )
+    bot.pending_orders[symbol] = order
+    meta_gate.register_signal(order_id, symbol, analysis.get("features", {}))
+    tactic_label = "ESPERAR RETESTEO" if is_retest else "MAKER LÍMITE"
+    dir_label = "SHORT (Venta en Resistencia)" if side == "short" else "LONG (Compra en Soporte)"
+    print(f"  🎯 [ORDEN {tactic_label} {dir_label}] {symbol} (Gen #{brain.generation})", flush=True)
+    print(f"       Precio Actual: ${current_price:.5f} -> LÍMITE: ${limit_price:.5f} ({'+' if side == 'short' else '-'}{pull_offset_pct*100:.2f}%)", flush=True)
+    if forward_target > 0:
+        print(f"       🎯 Target Predictivo: ${forward_target:.5f} | R:R Proyectado: {rr_ratio:.2f}x", flush=True)
+    print(f"       Capital: ${capital:.2f} | Válida: {validity_secs}s | Deslizamiento: $0.00 (Maker Pasivo)", flush=True)
+    return True
+
+
+def manage_pending_limit_orders(bot: PaperBot, prices: Dict[str, float]):
+    """
+    Verifica las órdenes límite pendientes:
+    - Si el precio de mercado toca o cruza el precio límite -> EJECUTADA (Cero Slippage).
+    - Si expira el tiempo sin retroceder -> CANCELADA (Previene persecución en FOMO/Crestas).
+    """
+    now_ts = time.time()
+    for symbol, order in list(bot.pending_orders.items()):
+        curr_price = prices.get(symbol)
+        if curr_price is None or curr_price <= 0:
+            continue
+
+        is_filled = False
+        is_short = (getattr(order, "side", "long") == "short")
+        if not is_short and curr_price <= order.limit_price:
+            is_filled = True
+        elif is_short and curr_price >= order.limit_price:
+            is_filled = True
+
+        if is_filled:
+            executed_price = order.limit_price
+            amount = order.capital / executed_price
+            maker_fee = order.capital * (FEE_RATE * 0.75)  # Tarifa Maker con descuento (0.075%)
+
+            if bot.cash < (order.capital + maker_fee):
+                del bot.pending_orders[symbol]
+                continue
+
+            bot.cash -= (order.capital + maker_fee)
+            if not is_short:
+                bot.holdings[symbol] = bot.holdings.get(symbol, 0.0) + amount
+            bot.total_fees_paid += maker_fee
+
+            sl_dist = order.atr_val * brain.sl_atr_mult
+            if not is_short:
+                sl_price = executed_price - sl_dist
+                tp1_target = executed_price * (1 + brain.tp1_gain_pct / 100)
+            else:
+                sl_price = executed_price + sl_dist
+                tp1_target = executed_price * (1 - brain.tp1_gain_pct / 100)
+
+            pos_id = f"pos_{int(time.time()*1000)}"
+
+            pos = LongPosition(
+                position_id=pos_id,
+                symbol=symbol,
+                initial_amount=amount,
+                amount=amount,
+                entry_price=executed_price,
+                stop_loss=sl_price,
+                initial_sl=sl_price,
+                trailing_stop=sl_price,
+                highest_price=executed_price,
+                lowest_price=executed_price,
+                capital_allocated=order.capital,
+                atr_at_entry=order.atr_val,
+                features_at_entry=order.analysis.get("features", {}),
+                side="short" if is_short else "long",
+                strategy="short_limit" if is_short else "long_limit"
+            )
+            bot.longs[symbol] = pos
+            meta_gate.register_signal(pos_id, symbol, order.analysis.get("features", {}))
+
+            strat_name = "short_limit" if is_short else "long_limit"
+            side_str = "sell" if is_short else "buy"
+            bot.log_trade(
+                symbol=symbol, strategy=strat_name, side=side_str, price=executed_price, amount=amount,
+                pnl=0.0, fee=maker_fee, slippage=0.0,
+                extra=f"Entrada Límite Maker ({'SHORT' if is_short else 'LONG'}): SL=${sl_price:.5f} | TP1=${tp1_target:.5f} (±{brain.tp1_gain_pct:.2f}%)",
+                pos_id=pos_id, status="OPEN"
+            )
+
+            fill_tag = "RESISTENCIA (SHORT)" if is_short else "SOPORTE (LONG)"
+            print(f"  ⚡ [LÍMITE EJECUTADA EN {fill_tag}] {symbol} @ ${executed_price:.5f}!", flush=True)
+            print(f"       Capital: ${order.capital:.2f} | Deslizamiento: $0.0000 (Maker) | SL: ${sl_price:.5f} | TP1: ${tp1_target:.5f}", flush=True)
+            del bot.pending_orders[symbol]
+            bot.save_portfolio_state()
+
+        elif now_ts >= order.expires_at:
+            print(f"  ⏱️ [LÍMITE EXPIRADA SIN FILL] {symbol} @ ${order.limit_price:.5f} (Nivel no alcanzado; liberando slot)", flush=True)
+            del bot.pending_orders[symbol]
+
+
+# ====================== EJECUCIÓN AGRESIVA A MERCADO (BREAKOUT / TAKER) ======================
+def open_market_trade(bot: PaperBot, symbol: str, capital: float, current_price: float,
+                      analysis: Dict, volume_24h: float, side: str = "long", extra_info: str = "") -> bool:
+    """
+    Ejecuta una orden a mercado inmediata si el comité multi-agente decide BREAKOUT_MARKET.
+    Aplica cálculo de slippage realista y tarifa taker.
+    """
+    if capital < MIN_ORDER_USDT:
+        return False
+
+    fee_estimate = capital * FEE_RATE
+    total_cost_required = capital + fee_estimate
+
+    if bot.cash < total_cost_required:
+        return False
+
+    atr_val = analysis.get("atr_value", current_price * 0.02)
+    atr_pct = analysis.get("atr_pct", 2.0)
+    is_short = (side == "short")
+    slip_side = "sell" if is_short else "buy"
+
+    executed_price, slip_pct = apply_slippage(current_price, slip_side, atr_pct, volume_24h, is_limit=False)
+    amount = capital / executed_price
+    actual_fee = capital * FEE_RATE
+
+    bot.cash -= (capital + actual_fee)
+    if not is_short:
+        bot.holdings[symbol] = bot.holdings.get(symbol, 0.0) + amount
+    bot.total_fees_paid += actual_fee
+    bot.total_slippage_cost += abs(executed_price - current_price) * amount
+
+    sl_dist = atr_val * brain.sl_atr_mult
+    if not is_short:
+        sl_price = executed_price - sl_dist
+        tp1_target = executed_price * (1 + brain.tp1_gain_pct / 100)
+    else:
+        sl_price = executed_price + sl_dist
+        tp1_target = executed_price * (1 - brain.tp1_gain_pct / 100)
+
+    pos_id = f"pos_{int(time.time()*1000)}"
+
+    pos = LongPosition(
+        position_id=pos_id,
+        symbol=symbol,
+        initial_amount=amount,
+        amount=amount,
+        entry_price=executed_price,
+        stop_loss=sl_price,
+        initial_sl=sl_price,
+        trailing_stop=sl_price,
+        highest_price=executed_price,
+        lowest_price=executed_price,
+        capital_allocated=capital,
+        atr_at_entry=atr_val,
+        features_at_entry=analysis.get("features", {}),
+        side="short" if is_short else "long",
+        strategy="short_market" if is_short else "long_market"
+    )
+    bot.longs[symbol] = pos
+
+    trade_strat = "short_market" if is_short else "long_market"
+    trade_side_log = "sell" if is_short else "buy"
+    info_tag = f"SL=${sl_price:.5f} | TP1=${tp1_target:.5f} (±{brain.tp1_gain_pct:.2f}%) | {extra_info}"
+    bot.log_trade(
+        symbol=symbol, strategy=trade_strat, side=trade_side_log, price=executed_price, amount=amount,
+        pnl=0.0, fee=actual_fee, slippage=abs(executed_price - current_price) * amount,
+        extra=info_tag, pos_id=pos_id, status="OPEN"
+    )
+
+    dir_tag = "SHORT" if is_short else "LONG"
+    print(f"  ⚡ [EJECUCIÓN MARKET BREAKOUT {dir_tag}] {symbol} @ ${executed_price:.5f} (Toma de Liquidez Inmediata)", flush=True)
+    print(f"       Capital: ${capital:.2f} | Fee: ${actual_fee:.4f} | Deslizamiento: {slip_pct*100:.3f}% | SL: ${sl_price:.5f} | TP1: ${tp1_target:.5f}", flush=True)
+    bot.save_portfolio_state()
+    return True
+
+
+def open_long(bot: PaperBot, symbol: str, capital: float, current_price: float,
+              analysis: Dict, volume_24h: float) -> bool:
+    return open_market_trade(bot, symbol, capital, current_price, analysis, volume_24h, side="long")
+
+
+def manage_longs(bot: PaperBot, prices: Dict[str, float], atrs: Dict[str, float]):
+    """
+    Gestiona todas las posiciones vivas (LONG y SHORT):
+    - Long: gana si precio sube, pierde si cae por debajo de SL.
+    - Short: gana si precio cae, pierde si sube por encima de SL.
+    """
+    for symbol, pos in list(bot.longs.items()):
+        if not pos.active:
+            continue
+
+        price = prices.get(symbol)
+        if price is None or price <= 0:
+            continue
+
+        pos.total_checks += 1
+        is_short = (getattr(pos, "side", "long") == "short")
+
+        # Cálculo de rentabilidad porcentual
+        if not is_short:
+            gain_pct = ((price / pos.entry_price) - 1) * 100
+            if price > pos.highest_price:
+                pos.highest_price = price
+        else:
+            gain_pct = ((pos.entry_price / price) - 1) * 100
+            if price < getattr(pos, "lowest_price", 99999999.0):
+                pos.lowest_price = price
+
+        if gain_pct > pos.max_gain_pct:
+            pos.max_gain_pct = gain_pct
+
+        atr = atrs.get(symbol, pos.atr_at_entry)
+
+        # 1. ESCUDO BREAK-EVEN TEMPRANO (+1.80% DE GANANCIA)
+        if not pos.break_even_activated and (gain_pct >= EARLY_BREAK_EVEN_TRIGGER_PCT or pos.max_gain_pct >= EARLY_BREAK_EVEN_TRIGGER_PCT):
+            if not is_short:
+                be_price = pos.entry_price * (1 + EARLY_BREAK_EVEN_LOCK_PCT / 100)
+                if be_price > pos.stop_loss:
+                    pos.stop_loss = be_price
+                    pos.trailing_stop = be_price
+                    pos.break_even_activated = True
+                    pos.status_msg = f"🛡️ BREAK-EVEN BLINDADO (+{EARLY_BREAK_EVEN_LOCK_PCT:.2f}% ASEGURADO)"
+                    print(f"  🛡️ [ESCUDO BREAK-EVEN LONG] {symbol} tocó +{gain_pct:.2f}%! SL elevado a ${be_price:.5f}", flush=True)
+                    bot.save_portfolio_state()
+            else:
+                be_price = pos.entry_price * (1 - EARLY_BREAK_EVEN_LOCK_PCT / 100)
+                if be_price < pos.stop_loss:
+                    pos.stop_loss = be_price
+                    pos.trailing_stop = be_price
+                    pos.break_even_activated = True
+                    pos.status_msg = f"🛡️ BREAK-EVEN BLINDADO (+{EARLY_BREAK_EVEN_LOCK_PCT:.2f}% ASEGURADO)"
+                    print(f"  🛡️ [ESCUDO BREAK-EVEN SHORT] {symbol} tocó +{gain_pct:.2f}%! SL bajado a ${be_price:.5f}", flush=True)
+                    bot.save_portfolio_state()
+
+        # 2. TOMA DE BENEFICIOS TP1 (15% para cubrir todas las comisiones y dejar 85% RUNNER)
+        if not pos.tp1_hit and gain_pct >= brain.tp1_gain_pct:
+            # Solo cerramos el 15% de la posición: cubre comisiones de entrada, salida y asegura ganancia neta en caja
+            close_amount = pos.amount * 0.15
+            slip_side = "buy" if is_short else "sell"
+            exec_p, _ = apply_slippage(price, slip_side, (atr / price) * 100, 20_000_000)
+
+            if not is_short:
+                revenue = close_amount * exec_p
+                fee = revenue * FEE_RATE
+                pnl_tp1 = revenue - fee - (close_amount * pos.entry_price)
+                bot.cash += (revenue - fee)
+                bot.holdings[symbol] = max(0.0, bot.holdings.get(symbol, 0.0) - close_amount)
+                be_price = pos.entry_price * 1.0025
+                pos.stop_loss = max(pos.stop_loss, be_price)
+                pos.trailing_stop = max(pos.trailing_stop, be_price)
+            else:
+                # En short: compramos de vuelta más barato para cerrar el 15%
+                cost_to_cover = close_amount * exec_p
+                fee = cost_to_cover * FEE_RATE
+                orig_capital = close_amount * pos.entry_price
+                pnl_tp1 = orig_capital - cost_to_cover - fee
+                # Retornamos el margen original + la ganancia neta a la caja
+                bot.cash += (orig_capital + pnl_tp1)
+                be_price = pos.entry_price * 0.9975
+                pos.stop_loss = min(pos.stop_loss, be_price)
+                pos.trailing_stop = min(pos.trailing_stop, be_price)
+            pos.capital_allocated -= (close_amount / pos.initial_amount) * pos.capital_allocated
+            pos.amount -= close_amount
+            pos.realized_pnl += pnl_tp1
+            bot.total_fees_paid += fee
+            pos.tp1_hit = True
+            pos.break_even_activated = True
+            pos.status_msg = "🎯 FEES CUBIERTOS (+15% EN CAJA) | 85% RUNNER LIBRE 🚀"
+
+            strat_tp1 = "short_tp1" if is_short else "long_tp1"
+            side_tp1 = "buy" if is_short else "sell"
+            bot.log_trade(
+                symbol=symbol, strategy=strat_tp1, side=side_tp1, price=exec_p, amount=close_amount,
+                pnl=pnl_tp1, fee=fee, slippage=0.0,
+                extra=f"TP1 Fee Buffer ({'SHORT' if is_short else 'LONG'}): +{gain_pct:.2f}% | SL en Break-Even ${pos.stop_loss:.5f} | 85% Runner Corriendo",
+                pos_id=pos.position_id, status="PARTIAL_CLOSED"
+            )
+            print(f"  🎯 [TP1 FEE BUFFER {'SHORT' if is_short else 'LONG'}] {symbol}: +{pnl_tp1:+.4f} USDT (Comisiones cubiertas). ¡85% de la posición corriendo libre!", flush=True)
+
+        # 3. TRAILING STOP AGRESIVO DEL RUNNER (+3.20% o más)
+        if pos.tp1_hit and gain_pct >= RUNNER_TRAILING_TRIGGER_PCT:
+            if not pos.trailing_activated:
+                pos.trailing_activated = True
+                print(f"  🚀 [RUNNER TRAILING AGRESIVO {'SHORT' if is_short else 'LONG'}] {symbol} superó +{gain_pct:.2f}%!", flush=True)
+
+            if pos.trailing_activated:
+                if not is_short:
+                    runner_trailing = price - (atr * RUNNER_ATR_MULT)
+                    if runner_trailing > pos.stop_loss:
+                        pos.stop_loss = runner_trailing
+                        pos.trailing_stop = runner_trailing
+                        pos.status_msg = f"🚀 RUNNER TRAILING ACTIVO (${pos.trailing_stop:.5f})"
+                else:
+                    runner_trailing = price + (atr * RUNNER_ATR_MULT)
+                    if runner_trailing < pos.stop_loss:
+                        pos.stop_loss = runner_trailing
+                        pos.trailing_stop = runner_trailing
+                        pos.status_msg = f"🚀 RUNNER TRAILING ACTIVO (${pos.trailing_stop:.5f})"
+
+        # 4. SALIDA Y CIERRE POR STOP LOSS, TRAILING O BARRERA TEMPORAL (Triple Barrier)
+        exit_reason = None
+        pos_entry_ts = getattr(pos, "entry_time", 0.0)
+        if not pos_entry_ts and getattr(pos, "created_at", ""):
+            try:
+                pos_entry_ts = datetime.fromisoformat(pos.created_at).timestamp()
+            except Exception:
+                pos_entry_ts = time.time()
+        elapsed_pos_sec = time.time() - pos_entry_ts if pos_entry_ts else 0.0
+
+        # Verificación de Stop Loss
+        hit_stop = (price <= pos.stop_loss) if not is_short else (price >= pos.stop_loss)
+        if hit_stop:
+            if pos.trailing_activated:
+                exit_reason = "Runner Trailing Stop Agresivo"
+            elif pos.break_even_activated:
+                exit_reason = "Escudo Break-Even (+0.20% Protegido)"
+            else:
+                exit_reason = "Stop Loss Inicial (2.2x ATR)"
+
+        if exit_reason:
+            slip_side = "buy" if is_short else "sell"
+            executed_price, slip_pct = apply_slippage(price, slip_side, (atr / price) * 100, 20_000_000)
+
+            if not is_short:
+                revenue = pos.amount * executed_price
+                fee = revenue * FEE_RATE
+                pnl_final = revenue - fee - (pos.amount * pos.entry_price)
+                bot.cash += (revenue - fee)
+                bot.holdings[symbol] = max(0.0, bot.holdings.get(symbol, 0.0) - pos.amount)
+                if bot.holdings.get(symbol, 0) < 1e-10:
+                    bot.holdings.pop(symbol, None)
+            else:
+                cost_to_cover = pos.amount * executed_price
+                fee = cost_to_cover * FEE_RATE
+                orig_capital = pos.amount * pos.entry_price
+                pnl_final = orig_capital - cost_to_cover - fee
+                # Retornar margen + ganancia neta de short
+                bot.cash += (orig_capital + pnl_final)
+
+            bot.total_fees_paid += fee
+            bot.total_slippage_cost += abs(executed_price - price) * pos.amount
+            total_trade_pnl = pos.realized_pnl + pnl_final
+            pos.realized_pnl = total_trade_pnl
+            pos.active = False
+
+            strat_exit = "short_exit" if is_short else "long_exit"
+            side_exit = "buy" if is_short else "sell"
+            bot.log_trade(
+                symbol=symbol, strategy=strat_exit, side=side_exit, price=executed_price, amount=pos.amount,
+                pnl=pnl_final, fee=fee, slippage=abs(executed_price - price) * pos.amount,
+                extra=exit_reason, pos_id=pos.position_id, status="CLOSED"
+            )
+
+            brain.learn_from_trade(
+                symbol=symbol, strategy="short" if is_short else "long", entry_p=pos.entry_price,
+                exit_p=executed_price, pnl=total_trade_pnl, exit_reason=exit_reason,
+                max_gain_pct=pos.max_gain_pct, features=pos.features_at_entry
+            )
+            meta_gate.label_trade_outcome(pos.position_id, total_trade_pnl)
+
+            pos_dir_tag = "SHORT" if is_short else "LONG"
+            print(f"  🏁 [CIERRE {pos_dir_tag}] {symbol} @ ${executed_price:.5f} | PnL Total: {total_trade_pnl:+.4f} USDT ({exit_reason})", flush=True)
+
+            # Auditoría Forense Asíncrona con IA de NVIDIA (NIM)
+            ai_auditor.audit_async({
+                "symbol": symbol,
+                "side": "short" if is_short else "long",
+                "net_pnl": total_trade_pnl,
+                "entry_price": pos.entry_price,
+                "exit_price": executed_price,
+                "hold_min": elapsed_pos_sec / 60.0,
+                "exit_reason": exit_reason,
+                "entry_score": getattr(pos, "entry_score", 50.0)
+            })
+
+            del bot.longs[symbol]
+            bot.save_portfolio_state()
+
+
+# ====================== STREAMING DE ESTADO EN VIVO ======================
+def update_live_state(bot: PaperBot, prices: Dict[str, float],
+                      latest_opportunities: List[Dict], cycle_num: int):
+    global LATEST_LIVE_STATE
+    equity = bot.get_equity(prices)
+    holdings_val = bot.get_holdings_value(prices)
+    # Calcular PnL Flotante de Posiciones Sniper y de Mallas Activas
+    total_cost_basis = 0.0
+    unrealized_pnl = 0.0
+    for pos in bot.longs.values():
+        if not pos.active:
+            continue
+        total_cost_basis += pos.amount * pos.entry_price
+        curr_p = prices.get(pos.symbol, pos.entry_price)
+        if getattr(pos, "side", "long") != "short":
+            unrealized_pnl += (curr_p - pos.entry_price) * pos.amount
+        else:
+            unrealized_pnl += (pos.entry_price - curr_p) * pos.amount
+
+    # Incorporar mallas en flotante y valor retenido
+    for grid in bot.grids.values():
+        if not grid.active:
+            continue
+        curr_p = prices.get(grid.symbol, grid.grid_upper)
+        for line in grid.lines:
+            if not line["active"]:
+                continue
+            if line["side"] == "buy":
+                total_cost_basis += (line["price"] * line["amount"])
+            elif line["side"] == "sell":
+                # Monedas compradas a la espera de venta límite arriba
+                cost_of_buy = line["amount"] * (line["price"] / (1 + grid.step_pct))
+                total_cost_basis += cost_of_buy
+                unrealized_pnl += (line["amount"] * curr_p - cost_of_buy)
+
+    # El PnL realizado suma el acumulado de bot y el cosechado en mallas
+    grid_realized = sum(g.realized_pnl for g in bot.grids.values())
+    realized_pnl = bot.total_realized_pnl() + grid_realized
+            
+    unrealized_pct = (unrealized_pnl / total_cost_basis * 100) if total_cost_basis > 0 else 0.0
+
+    recent_trades = []
+    if os.path.exists(TRADES_LOG):
+        try:
+            import collections
+            with open(TRADES_LOG, "r", encoding="utf-8") as f:
+                f.readline()  # skip header
+                last_lines = collections.deque(f, maxlen=250)
+                reader = csv.reader(last_lines)
+                all_t = list(reader)
+                for t in all_t[::-1]:
+                    if len(t) >= 6:
+                        recent_trades.append({
+                            "timestamp": t[0],
+                            "symbol": t[1],
+                            "strategy": t[2],
+                            "side": t[3],
+                            "price": t[4],
+                            "amount": t[5],
+                            "pnl": t[6] if len(t) > 6 else 0,
+                            "fee": t[7] if len(t) > 7 else 0,
+                            "slippage": t[8] if len(t) > 8 else 0,
+                            "extra_info": t[9] if len(t) > 9 else "",
+                            "position_id": t[10] if len(t) > 10 else "",
+                            "status": t[11] if len(t) > 11 else ("OPEN" if t[3].lower() == "buy" else "CLOSED")
+                        })
+        except Exception:
+            pass
+
+    equity_hist = []
+    if os.path.exists(EQUITY_LOG):
+        try:
+            import collections
+            with open(EQUITY_LOG, "r", encoding="utf-8") as f:
+                f.readline()  # skip header
+                last_lines = collections.deque(f, maxlen=50)
+                reader = csv.reader(last_lines)
+                for row in reader:
+                    if len(row) > 1:
+                        equity_hist.append(float(row[1]))
+        except Exception:
+            pass
+    if not equity_hist:
+        equity_hist = [equity]
+
+    positions_list = []
+    for pos in bot.longs.values():
+        if not pos.active:
+            continue
+        curr_p = prices.get(pos.symbol, pos.entry_price)
+        is_pos_short = (getattr(pos, "side", "long") == "short")
+        
+        if not is_pos_short:
+            flot_dollar = (curr_p - pos.entry_price) * pos.amount
+            flot_pct = ((curr_p / pos.entry_price) - 1) * 100 if pos.entry_price > 0 else 0.0
+            tp1_target_p = pos.entry_price * (1 + brain.tp1_gain_pct / 100)
+        else:
+            flot_dollar = (pos.entry_price - curr_p) * pos.amount
+            flot_pct = ((pos.entry_price / curr_p) - 1) * 100 if curr_p > 0 else 0.0
+            tp1_target_p = pos.entry_price * (1 - brain.tp1_gain_pct / 100)
+
+        curr_val = pos.capital_allocated + flot_dollar
+        positions_list.append({
+            "symbol": pos.symbol,
+            "side": getattr(pos, "side", "long"),
+            "strategy": pos.strategy,
+            "entry_price": round(pos.entry_price, 7),
+            "current_price": round(curr_p, 7),
+            "amount": round(pos.amount, 4),
+            "capital": round(curr_val, 2),
+            "capital_initial": round(pos.capital_allocated, 2),
+            "capital_current": round(curr_val, 2),
+            "floating_pnl": round(flot_dollar, 4),
+            "floating_pct": round(flot_pct, 2),
+            "max_gain_pct": round(pos.max_gain_pct, 2),
+            "tp1_price": round(tp1_target_p, 7),
+            "stop_loss": round(pos.stop_loss, 7),
+            "tp1_hit": pos.tp1_hit,
+            "break_even_activated": pos.break_even_activated,
+            "status_msg": pos.status_msg,
+            "position_id": pos.position_id
+        })
+
+    compound_sz = calculate_compound_order_size(bot, equity)
+
+    # Lista de órdenes límite pendientes para la UI
+    pending_list = []
+    now_ts = time.time()
+    for s, po in bot.pending_orders.items():
+        curr_p = prices.get(s, po.limit_price)
+        dist_to_limit = ((curr_p / po.limit_price) - 1) * 100 if po.limit_price > 0 else 0.0
+        rem_sec = max(0, int(po.expires_at - now_ts))
+        pending_list.append({
+            "order_id": po.order_id,
+            "symbol": po.symbol,
+            "side": getattr(po, "side", "long"),
+            "limit_price": round(po.limit_price, 7),
+            "price": round(po.limit_price, 7),
+            "current_price": round(curr_p, 7),
+            "capital": round(po.capital, 2),
+            "distance_pct": round(dist_to_limit, 2),
+            "remaining_sec": rem_sec,
+            "status": po.status
+        })
+
+    LATEST_LIVE_STATE = {
+        "timestamp": datetime.now().isoformat(),
+        "cycle": cycle_num,
+        "generation": brain.generation,
+        "equity": round(equity, 2),
+        "initial_capital": INITIAL_CAPITAL,
+        "cash": round(bot.cash, 2),
+        "holdings_val": round(holdings_val, 2),
+        "unrealized_pnl": round(unrealized_pnl, 4),
+        "unrealized_pct": round(unrealized_pct, 2),
+        "realized_pnl": round(realized_pnl, 4),
+        "win_rate": round(bot.win_rate(), 1),
+        "wins": bot.wins,
+        "losses": bot.losses,
+        "total_trades": bot.total_trades,
+        "tp1_gain_pct": round(brain.tp1_gain_pct, 2),
+        "min_score": round(brain.min_score_required, 1),
+        "weights": brain.weights,
+        "compound_size": compound_sz,
+        "positions": positions_list,
+        "grids": [{**g.to_dict(), "current_price": prices.get(g.symbol, (g.grid_upper + g.grid_lower) / 2.0)} for g in bot.grids.values() if g.active],
+        "pending_limit_orders": pending_list,
+        "pnl_audit": bot.latest_pnl_audit or [],
+        "self_eval": bot.latest_self_eval or {},
+        "meta_model": meta_gate.get_summary(),
+        "scanner_opportunities": latest_opportunities,
+        "btc_macro": macro_engine.btc_macro_state,
+        "news_sentinel": {
+            "sentiment": news_sentinel.market_sentiment,
+            "summary": news_sentinel.summary_text,
+            "alerts": news_sentinel.recent_alerts[:6],
+            "blacklisted": list(news_sentinel.blacklisted_symbols),
+            "last_update": time.strftime("%H:%M:%S", time.localtime(news_sentinel.last_update_ts)) if news_sentinel.last_update_ts else "Iniciando..."
+        },
+        "ai_audits": ai_auditor.audits[-6:],
+        "system_memory": ai_auditor.system_memory,
+        "committee_deliberations": agent_committee.deliberations[-5:],
+        "active_parameters": {
+            "sl_atr_mult": brain.sl_atr_mult,
+            "min_score": brain.min_score_required,
+            "tp1_pct": brain.tp1_gain_pct
+        },
+        "recent_trades": recent_trades,
+        "equity_history": equity_hist,
+        "last_agent_pct": LAST_AGENT_PCT
+    }
+
+    try:
+        with open(LIVE_STATE_FILE_LOCAL, "w", encoding="utf-8") as f:
+            json.dump(LATEST_LIVE_STATE, f)
+        if os.path.exists(ARTIFACT_DIR):
+            with open(LIVE_STATE_FILE_ARTIFACT, "w", encoding="utf-8") as f:
+                json.dump(LATEST_LIVE_STATE, f)
+
+        # Sincronizar HTML con estado inicial pre-cargado
+        html_spa = dashboard_spa.get_dashboard_spa_html(initial_state=LATEST_LIVE_STATE)
+        with open(DASHBOARD_HTML_LOCAL, "w", encoding="utf-8") as f:
+            f.write(html_spa)
+        if os.path.exists(ARTIFACT_DIR):
+            with open(DASHBOARD_HTML_ARTIFACT, "w", encoding="utf-8") as f:
+                f.write(html_spa)
+    except Exception:
+        pass
+
+
+# ====================== SERVIDOR HTTP REACTIVO PARA DASHBOARD DINÁMICO ======================
+class DynamicDashboardHandler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        if self.path in ("/api/state", "/live_state.json"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.end_headers()
+            self.wfile.write(json.dumps(LATEST_LIVE_STATE).encode("utf-8"))
+        elif self.path in ("/", "/dashboard", "/dashboard.html"):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            html_content = dashboard_spa.get_dashboard_spa_html(initial_state=LATEST_LIVE_STATE)
+            self.wfile.write(html_content.encode("utf-8"))
+        elif self.path in ("/office", "/office.html"):
+            office_file = os.path.join(LOG_DIR, "office.html")
+            if os.path.exists(office_file):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                with open(office_file, "r", encoding="utf-8") as f:
+                    self.wfile.write(f.read().encode("utf-8"))
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        pass
+
+
+def start_live_http_server(port: int = HTTP_PORT):
+    try:
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", port), DynamicDashboardHandler)
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        print(f"  🌐 [DASHBOARD DINÁMICO EN VIVO] Accede en: http://localhost:{port}", flush=True)
+    except Exception as e:
+        print(f"  [Dashboard HTTP Server Warning] {e}", flush=True)
+
+
+# ====================== LOOP PRINCIPAL ======================
+def run_paper_trading(reset_all: bool = False):
+    bot = PaperBot()
+
+    if reset_all:
+        bot.reset_and_close_all(target_cash=INITIAL_CAPITAL)
+
+    # Sincronizar archivos HTML del Dashboard SPA
+    html_spa = dashboard_spa.get_dashboard_spa_html()
+    try:
+        with open(DASHBOARD_HTML_LOCAL, "w", encoding="utf-8") as f:
+            f.write(html_spa)
+        if os.path.exists(ARTIFACT_DIR):
+            with open(DASHBOARD_HTML_ARTIFACT, "w", encoding="utf-8") as f:
+                f.write(html_spa)
+    except Exception:
+        pass
+
+    # Iniciar servidor HTTP en vivo
+    start_live_http_server(HTTP_PORT)
+
+    print("=" * 80, flush=True)
+    print("  BINANCE SPOT PAPER TRADING BOT v11 - CONTROL PREDICTIVO PID & FLUJO CONCENTRADO", flush=True)
+    print(f"  • Anticipación Predictiva        -> Inflexión PID (d²P/dt² > 0) + Squeeze Volatilidad", flush=True)
+    print(f"  • Veto Estricto Anti-Cresta      -> Prohibido comprar en techos de ola", flush=True)
+    print(f"  • Capital Autónomo IA            -> IA decide % (Hasta {MAX_TOTAL_POSITIONS} posiciones concurrentes)", flush=True)
+    print(f"  • Mínimo por Trade              -> ${MIN_ORDER_USDT:.2f} USDT Estricto (cero migajas)", flush=True)
+    print(f"  • Dashboard Reactivo en Vivo    -> Streaming continuo en http://localhost:{HTTP_PORT}", flush=True)
+    print(f"  • Saldo Disponible: ${bot.cash:.2f} USDT | Saldo Base: ${INITIAL_CAPITAL:.2f} USDT", flush=True)
+    print("=" * 80, flush=True)
+
+    cycle = 0
+    last_scan_time = 0
+    latest_opportunities = []
+    if os.path.exists(LIVE_STATE_FILE_LOCAL):
+        try:
+            with open(LIVE_STATE_FILE_LOCAL, "r", encoding="utf-8") as f:
+                latest_opportunities = json.load(f).get("scanner_opportunities", [])
+        except Exception:
+            pass
+
+    last_known_prices: Dict[str, float] = {}
+    cached_atrs: Dict[str, tuple] = {}  # symbol -> (atr_value, cached_timestamp)
+    deliberation_cooldown: Dict[str, float] = {}
+
+    # Ejecutar primera auto-evaluación con el historial previo
+    bot.run_self_evaluation()
+    
+    # Inicializar estado macro antes de empezar para la UI
+    macro_engine.run_macro_cycle(["BTC/USDT", "ETH/USDT"])
+
+    # Iniciar Centinela IA de Noticias (NVIDIA NIM) en segundo plano
+    news_sentinel.start_background_worker()
+
+    while bot.is_alive:
+        try:
+            cycle += 1
+            now_ts = time.time()
+            now_str = datetime.now().strftime("%H:%M:%S")
+
+            prices, volumes, atrs = {}, {}, {}
+            monitored_symbols = set(list(bot.holdings.keys()) + list(bot.longs.keys()) + list(bot.pending_orders.keys()) + [g.symbol for g in bot.grids.values() if g.active])
+
+            for sym in monitored_symbols:
+                try:
+                    t = exchange.fetch_ticker(sym)
+                    last_p = float(t["last"])
+                    prices[sym] = last_p
+                    last_known_prices[sym] = last_p
+                    volumes[sym] = float(t.get("quoteVolume", 15_000_000) or 15_000_000)
+                    
+                    # Cache de ATR 1h (TTL: 60s) para ticks ultra-rápidos de 1.5s sin latencia de red
+                    if sym in cached_atrs and (now_ts - cached_atrs[sym][1]) < 60.0:
+                        atrs[sym] = cached_atrs[sym][0]
+                    else:
+                        ohlcv = exchange.fetch_ohlcv(sym, "1h", limit=20)
+                        df = pd.DataFrame(ohlcv, columns=["ts", "o", "h", "l", "c", "v"])
+                        tr = pd.concat([
+                            df["h"] - df["l"],
+                            (df["h"] - df["c"].shift()).abs(),
+                            (df["l"] - df["c"].shift()).abs()
+                        ], axis=1).max(axis=1)
+                        atr_v = float(tr.mean())
+                        atrs[sym] = atr_v
+                        cached_atrs[sym] = (atr_v, now_ts)
+                except Exception:
+                    if sym in last_known_prices:
+                        prices[sym] = last_known_prices[sym]
+                    elif sym in bot.longs and bot.longs[sym].entry_price > 0:
+                        prices[sym] = bot.longs[sym].entry_price
+                    elif sym in bot.pending_orders:
+                        prices[sym] = bot.pending_orders[sym].limit_price
+                    if sym in cached_atrs:
+                        atrs[sym] = cached_atrs[sym][0]
+
+            # 1. Gestionar Órdenes Límite Pendientes (Maker / Cero Slippage)
+            # Procesar Mallas (Grid Engine)
+            for sym, grid in list(bot.grids.items()):
+                if not grid.active:
+                    continue
+                curr_p = prices.get(sym)
+                if not curr_p:
+                    continue
+                
+                # Check lines
+                for line in grid.lines:
+                    if not line["active"]:
+                        continue
+                        
+                    if line["side"] == "buy":
+                        if curr_p <= line["price"]:
+                            # Ejecutar Compra Limit
+                            fees = (line["amount"] * line["price"]) * FEE_RATE
+                            line["active"] = False
+                            grid.ticks_without_fill = 0
+                            grid.last_fill_ts = time.time()
+                            
+                            # Crear orden de venta en el siguiente escalón
+                            sell_price = line["price"] * (1 + grid.step_pct)
+                            amt_after_fee = line["amount"] * (1 - FEE_RATE)
+                            
+                            grid.lines.append({"price": sell_price, "side": "sell", "amount": amt_after_fee, "active": True})
+                            bot.log_trade(
+                                symbol=sym, strategy="grid_buy", side="buy", price=line["price"], amount=line["amount"],
+                                pnl=0.0, fee=fees, slippage=0.0,
+                                extra=f"Malla Escalón Comprado: Venta colocada en ${sell_price:.4f} (+{grid.step_pct*100:.2f}%)",
+                                pos_id=grid.grid_id, status="OPEN"
+                            )
+                            print(f"  🕸️🟢 [MALLA BUY {sym}] Comprado a ${line['price']:.4f}. Venta colocada a ${sell_price:.4f}", flush=True)
+                            
+                    elif line["side"] == "sell":
+                        if curr_p >= line["price"]:
+                            # Ejecutar Venta Limit
+                            gross = line["amount"] * line["price"]
+                            fees = gross * FEE_RATE
+                            net_usdt = gross - fees
+                            
+                            line["active"] = False
+                            grid.ticks_without_fill = 0
+                            grid.last_fill_ts = time.time()
+                            
+                            # Ganancia de esta línea
+                            buy_cost = line["amount"] * (line["price"] / (1 + grid.step_pct))
+                            profit = net_usdt - buy_cost
+                            grid.realized_pnl += profit
+                            bot.total_realized_pnl_acc += profit
+                            bot.cash += net_usdt
+                            bot.wins += 1
+                            bot.total_trades += 1
+                            
+                            # Recolocar la orden de compra abajo
+                            buy_price = line["price"] / (1 + grid.step_pct)
+                            cost = line["amount"] * buy_price
+                            if bot.cash >= cost:
+                                bot.cash -= cost
+                                grid.lines.append({"price": buy_price, "side": "buy", "amount": line["amount"], "active": True})
+                                print(f"  🕸️🔴 [MALLA SELL {sym}] Vendido a ${line['price']:.4f}. Ganancia: +${profit:.4f}. Recomprando a ${buy_price:.4f}", flush=True)
+                            else:
+                                print(f"  ⚠️ [MALLA {sym}] Saldo insuficiente para recolocar compra a ${buy_price:.4f}", flush=True)
+
+                            bot.log_trade(
+                                symbol=sym, strategy="grid_sell", side="sell", price=line["price"], amount=line["amount"],
+                                pnl=profit, fee=fees, slippage=0.0,
+                                extra=f"Malla Escalón Cosechado: Ganancia neta +${profit:.4f} USDT | Recompra lista en ${buy_price:.4f}",
+                                pos_id=grid.grid_id, status="CLOSED"
+                            )
+
+                # =========================================================================
+                # 🤖 SUPERVISOR DINÁMICO DE MALLA (Vigilancia Inteligente y No Estática)
+                # =========================================================================
+                grid.ticks_without_fill = getattr(grid, "ticks_without_fill", 0) + 1
+
+                # 1. COMPRESIÓN DINÁMICA POR ESTANCAMIENTO (Micro-Intervalos Adaptativos):
+                # Si la moneda lateraliza en seco sin cruzar ninguna línea por ~60 segundos (>25 ticks)
+                # y el paso entre líneas aún permite margen (> 0.40% libre de comisiones):
+                if grid.ticks_without_fill >= 25 and grid.step_pct > 0.0042:
+                    old_step = grid.step_pct
+                    # Comprimir el intervalo un 12% para acercar las órdenes al precio vivo
+                    grid.step_pct = max(0.0040, grid.step_pct * 0.88)
+                    grid.dynamic_adjustments_count = getattr(grid, "dynamic_adjustments_count", 0) + 1
+                    grid.ticks_without_fill = 0 # Resetear contador
+                    grid.status_msg = f"Intervalos comprimidos ({old_step*100:.2f}% -> {grid.step_pct*100:.2f}%)"
+                    
+                    # Reajustar la distribución de escalones para que SIEMPRE haya compras abajo y ventas arriba
+                    active_buys = [l for l in grid.lines if l["active"] and l["side"] == "buy"]
+                    active_sells = [l for l in grid.lines if l["active"] and l["side"] == "sell"]
+                    
+                    # Si todas las compras se habían ejecutado y solo quedaban ventas, colocar compras escalonadas abajo
+                    if len(active_buys) < 2 and bot.cash >= 10.0:
+                        rebalance_cap = min(bot.cash * 0.7, 25.0)
+                        lines_to_add = 3
+                        sub_cap = rebalance_cap / lines_to_add
+                        for step_i in range(1, lines_to_add + 1):
+                            p_buy = curr_p * (1 - (grid.step_pct * step_i))
+                            bot.cash -= sub_cap
+                            grid.lines.append({"price": p_buy, "side": "buy", "amount": sub_cap / p_buy, "active": True})
+                            print(f"  🕸️🟢 [REBALANCEO DINÁMICO {sym}] Compra simétrica recolocada a ${p_buy:.4f}", flush=True)
+                    
+                    # Ajustar precios de las órdenes existentes con el nuevo paso
+                    for idx, l in enumerate(sorted([x for x in grid.lines if x['active'] and x['side'] == 'sell'], key=lambda x: x['price'])):
+                        l['price'] = curr_p * (1 + (grid.step_pct * (idx + 1)))
+                    for idx, l in enumerate(sorted([x for x in grid.lines if x['active'] and x['side'] == 'buy'], key=lambda x: -x['price'])):
+                        l['price'] = curr_p * (1 - (grid.step_pct * (idx + 1)))
+                    print(f"  ⚡ [SUPERVISOR DINÁMICO {sym}] Activo lateral sin fills. Paso comprimido de {old_step*100:.2f}% a {grid.step_pct*100:.2f}% para forzar rotación rápida.", flush=True)
+
+                # 2. TRAILING DINÁMICO DE SUBIDA / BAJADA (Desplazamiento de Malla con la Tendencia):
+                # Si el precio escapa más del 1.2% por encima del techo o por debajo del piso
+                is_out = (curr_p > grid.grid_upper * 1.012) or (curr_p < grid.grid_lower * 0.988)
+                if is_out:
+                    grid.out_of_range_ticks = getattr(grid, "out_of_range_ticks", 0) + 1
+                    direction_str = "SUBIDA FUERTE" if curr_p > grid.grid_upper else "CAÍDA FUERTE"
+                    grid.status_msg = f"Trailing activo ({direction_str})"
+                    
+                    if grid.out_of_range_ticks >= 8:  # ~25 segundos fuera de rango confirmado
+                        # Reciclar y reubicar la malla centrada en el NUEVO precio para no perder el tren
+                        recovered_cash = 0.0
+                        for l in grid.lines:
+                            if not l["active"]:
+                                continue
+                            if l["side"] == "buy":
+                                recovered_cash += (l["price"] * l["amount"])
+                            elif l["side"] == "sell":
+                                sell_val = (l["amount"] * curr_p) * (1 - FEE_RATE)
+                                recovered_cash += sell_val
+                            l["active"] = False
+
+                        bot.cash += recovered_cash
+                        grid.active = False
+                        grid.status_msg = f"Trailing ejecutado ({direction_str})"
+                        bot.save_portfolio_state()
+                        print(f"  🚀🔄 [TRAILING DINÁMICO {sym}] Tendencia de {direction_str} detectada. Malla corrida hacia ${curr_p:.4f} liberando ${recovered_cash:.2f} para re-armar en el nuevo flujo.", flush=True)
+                else:
+                    grid.out_of_range_ticks = 0
+
+            manage_pending_limit_orders(bot, prices)
+
+            # 2. Gestionar Posiciones Long Vivas (TP1, Break-Even, Trailing, SL)
+            if bot.longs:
+                try:
+                    manage_longs(bot, prices, atrs)
+                except Exception as err:
+                    print(f"  [Error Posición] {err}", flush=True)
+
+            equity = bot.get_equity(prices)
+            bot.log_equity(equity, prices)
+            bot.update_drawdown(equity)
+
+            if not bot.check_survival(equity):
+                print(f"\n[ALERTA] BOT DETENIDO POR SUPERVIVENCIA: {bot.death_reason}", flush=True)
+                break
+
+            # Actualización de Régimen Macro Independiente (cada 60s)
+            if macro_engine.is_update_due():
+                macro_engine.run_macro_cycle(list(monitored_symbols) + ["BTC/USDT", "ETH/USDT"])
+
+            # Escaneo de Oportunidades del Mercado (Radar):
+            # Mantiene el radar del Dashboard SIEMPRE fresco (cada 20s si hay slots libres, cada 60s si estamos en trade)
+            slots_available = (bot.open_positions_count() < MAX_TOTAL_POSITIONS and len(bot.pending_orders) < MAX_TOTAL_POSITIONS)
+            scan_interval = FAST_SCAN_INTERVAL_SECONDS if slots_available else 60.0
+            scan_due = (now_ts - last_scan_time >= scan_interval) or (not latest_opportunities)
+
+            if scan_due:
+                latest_opportunities = select_best_opportunities(bot, TOP_N_SCAN)
+                last_scan_time = now_ts
+
+            # Disparo Francotirador: El Comité Multi-Agente delibera y decide si hay slots disponibles
+            if slots_available and latest_opportunities:
+                if cycle <= 2:
+                    if cycle == 1:
+                        print(f"  🛡️ [CALENTAMIENTO DEL SISTEMA] Sincronizando feeds y radar multi-factor (Ciclo {cycle}/2)...", flush=True)
+                else:
+                    if bot.cash >= MIN_ORDER_USDT:
+                        # Selección exclusiva de la Moneda #1 Absoluta (Candidato de Oro del Radar)
+                        best_candidate = None
+                        for opp in latest_opportunities:
+                            sym = opp["symbol"]
+                            if sym in bot.longs or sym in bot.pending_orders:
+                                continue
+                            if (now_ts - deliberation_cooldown.get(sym, 0.0)) < 75.0:
+                                continue
+                            best_candidate = opp
+                            break  # Solo tomamos la mejor opción única
+
+                        if best_candidate:
+                            sym = best_candidate["symbol"]
+                            analysis = best_candidate["analysis"]
+
+                            print(f"\n  🏛️ [CANDIDATO DE ORO #1 -> COMITÉ MULTI-AGENTE] Investigando noticias web y deliberando sobre {sym}...", flush=True)
+                            coin_news_live = news_sentinel.fetch_coin_news(sym)
+                            if coin_news_live:
+                                print(f"  🌐 [INTERNET SCAN] {len(coin_news_live)} titulares recientes encontrados para {sym}:", flush=True)
+                                for cnl in coin_news_live[:2]:
+                                    print(f"     • {cnl}", flush=True)
+                            news_ctx = {
+                                "sentiment": news_sentinel.market_sentiment,
+                                "summary": news_sentinel.summary_text,
+                                "coin_news": coin_news_live
+                            }
+                            committee_verdict = agent_committee.deliberate_opportunity(best_candidate, macro_engine.btc_macro_state, news_ctx)
+                            deliberation_cooldown[sym] = now_ts
+
+                            decision = committee_verdict.get("decision", "RECHAZADO")
+                            grid_upper = float(committee_verdict.get("grid_upper", 0.0))
+                            grid_lower = float(committee_verdict.get("grid_lower", 0.0))
+                            grid_lines = int(committee_verdict.get("grid_lines", 0))
+                            comm_mult = float(committee_verdict.get("multiplicador_capital", 0.50))
+                            razon = committee_verdict.get("razon_clave", "Consenso alcanzado")
+                            debate = committee_verdict.get("debate", {})
+
+                            print(f"       Centinela: {debate.get('centinela_macro', '')}", flush=True)
+                            print(f"       Arquitecto: {debate.get('arquitecto_mallas', '')}", flush=True)
+                            print(f"       Riesgo: {debate.get('jefe_riesgo', '')}", flush=True)
+                            print(f"       Ejecución: {debate.get('coordinador_ejecucion', '')}", flush=True)
+
+                            if decision != "APROBADO":
+                                print(f"  🛑 [COMITÉ RECHAZÓ {sym}] {razon}", flush=True)
+                            else:
+                                global LAST_AGENT_PCT
+                                available_funds = bot.cash * 0.98
+                                target_by_agents = round(available_funds * comm_mult, 2)
+                                adjusted_capital = max(MIN_ORDER_USDT, min(available_funds, target_by_agents))
+                                pct_display = round(comm_mult * 100, 0)
+                                LAST_AGENT_PCT = pct_display
+                                
+                                print(f"  🏛️ [MALLA APROBADA {sym}] Techo: ${grid_upper:.4f} | Piso: ${grid_lower:.4f} | Líneas: {grid_lines} | Capital: ${adjusted_capital:.2f} ({pct_display:.0f}%)", flush=True)
+                                
+                                # Instanciar la Malla
+                                if grid_lines >= 2 and grid_upper > grid_lower:
+                                    step_size = (grid_upper - grid_lower) / (grid_lines - 1)
+                                    step_pct = step_size / grid_lower
+                                    
+                                    # Malla Centrada (Neutral Grid Pionex-style)
+                                    cap_per_line = adjusted_capital / grid_lines
+                                    if cap_per_line >= 5.0:
+                                        lines = []
+                                        total_cash_needed = 0.0
+                                        buys_count = 0
+                                        sells_count = 0
+                                        current_price = best_candidate["price"]
+                                        
+                                        p = grid_lower
+                                        while p <= grid_upper + (step_size * 0.1): # Tolerancia de flotantes
+                                            if p < current_price:
+                                                # Orden Límite de Compra
+                                                lines.append({"price": p, "side": "buy", "amount": cap_per_line / p, "active": True})
+                                                total_cash_needed += cap_per_line
+                                                buys_count += 1
+                                            else:
+                                                # Orden Límite de Venta (Requiere compra a mercado inicial)
+                                                amount = cap_per_line / p
+                                                # Compramos a mercado al precio actual para poder colocar la venta límite
+                                                cost = amount * current_price * (1 + FEE_RATE)
+                                                lines.append({"price": p, "side": "sell", "amount": amount, "active": True})
+                                                total_cash_needed += cost
+                                                sells_count += 1
+                                            p += step_size
+                                            
+                                        if bot.cash >= total_cash_needed:
+                                            new_grid = GridPosition(
+                                                grid_id=f"grid_{int(time.time()*1000)}",
+                                                symbol=sym,
+                                                grid_upper=grid_upper,
+                                                grid_lower=grid_lower,
+                                                grid_lines=grid_lines,
+                                                step_pct=step_pct,
+                                                capital_total=total_cash_needed,
+                                                capital_per_line=cap_per_line,
+                                                lines=lines
+                                            )
+                                            bot.grids[sym] = new_grid
+                                            bot.cash -= total_cash_needed
+                                            print(f"  🕸️ [MALLA CENTRADA DESPLEGADA] {buys_count} Compras abajo, {sells_count} Ventas arriba preparadas.", flush=True)
+                                        else:
+                                            print(f"  ⚠️ [MALLA CANCELADA] Saldo insuficiente para armar la malla centrada.", flush=True)
+                                    else:
+                                        print(f"  ⚠️ [MALLA CANCELADA] Capital por línea (${cap_per_line:.2f}) es menor al mínimo de $5.", flush=True)
+                                # Actualizar estado en vivo en memoria y JSON para el frontend dinámico
+            update_live_state(bot, prices, latest_opportunities, cycle)
+
+            active_summary = []
+            for s, l in bot.longs.items():
+                p = prices.get(s, 0.0)
+                active_summary.append(f"{s}: ${p:.6f} [{l.status_msg}]")
+
+            pending_summary = []
+            for s, po in bot.pending_orders.items():
+                p = prices.get(s, po.limit_price)
+                pending_summary.append(f"⏳ LÍMITE {s} @ ${po.limit_price:.6f} (Actual: ${p:.6f})")
+
+            risk_slots = bot.active_risk_positions_count()
+            total_open = bot.open_positions_count()
+            free_runners = len([l for l in bot.longs.values() if l.tp1_hit])
+            if risk_slots >= MAX_RISK_SLOTS or total_open >= MAX_TOTAL_POSITIONS:
+                slot_info = f"SLOTS RIESGO OCUPADOS ({risk_slots}/2) | {free_runners} Runners Libres | En Juego: ${equity-bot.cash:.2f}"
+            else:
+                next_sz = calculate_compound_order_size(bot, equity)
+                slot_info = f"Caja Libre: ${bot.cash:.2f} (Slot Reciclado 🚀) | Próximo Trade: ${next_sz:.2f} | {free_runners} Runners Libres"
+
+            combined_str = " | ".join(active_summary + pending_summary) if (active_summary or pending_summary) else "0 Posiciones (Escaneando cada 45s)"
+
+            print(
+                f"[{now_str}] Tick #{cycle:04d} (Gen #{brain.generation}) | Equity: ${equity:.2f} | {slot_info} | {combined_str}",
+                flush=True
+            )
+
+            time.sleep(CHECK_INTERVAL_SECONDS)
+
+        except KeyboardInterrupt:
+            print("\n  Bot detenido manualmente.", flush=True)
+            break
+        except Exception as e:
+            print(f"  [Error Ciclo #{cycle}] {e}", flush=True)
+            time.sleep(CHECK_INTERVAL_SECONDS)
+
+
+if __name__ == "__main__":
+    run_paper_trading(reset_all=False)

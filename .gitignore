@@ -1,0 +1,40 @@
+# ==========================================
+# Binance Spot Paper Trading Bot - Git Ignore
+# ==========================================
+
+# 1. Credenciales y Secretos (Seguridad Estricta)
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# 2. Archivos Temporales y Cachés de Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+ENV/
+
+# 3. Logs de Ejecución y Estado Volátil en Tiempo Real
+paper_logs/*
+!paper_logs/.gitkeep
+paper_logs_backup_*/
+*.log
+equity_chart.png
+
+# 4. Archivos de Sistema Operativo e IDEs
+.DS_Store
+Thumbs.db
+desktop.ini
+NUL
+.idea/
+.vscode/
+*.swp
+*.swo
