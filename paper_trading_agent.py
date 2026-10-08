@@ -393,6 +393,7 @@ class GridLine:
     side: str  # "buy" or "sell"
     amount: float
     active: bool = True
+    buy_price: float = 0.0  # Costo real de compra inmutable para cálculo riguroso de PnL
 
 @dataclass
 class GridPosition:
@@ -637,7 +638,7 @@ class PaperBot:
         for sym, grid in self.grids.items():
             if not grid.active:
                 continue
-            curr_p = prices.get(sym, grid.grid_upper)
+            curr_p = prices.get(sym) or ((grid.grid_upper + grid.grid_lower) / 2.0)
             for line in grid.lines:
                 if not line["active"]:
                     continue
@@ -1597,12 +1598,15 @@ def manage_longs(bot: PaperBot, prices: Dict[str, float], atrs: Dict[str, float]
 
 
 # ====================== STREAMING DE ESTADO EN VIVO ======================
+LIVE_STATE_LOCK = threading.Lock()
+LAST_HTML_SYNC_TS = 0.0
+
 def update_live_state(bot: PaperBot, prices: Dict[str, float],
                       latest_opportunities: List[Dict], cycle_num: int):
-    global LATEST_LIVE_STATE
+    global LATEST_LIVE_STATE, LAST_HTML_SYNC_TS
     equity = bot.get_equity(prices)
     grid_market_val = sum(
-        (l["amount"] * prices.get(g.symbol, g.grid_upper)) if l["side"] == "sell" else (l["price"] * l["amount"])
+        (l["amount"] * (prices.get(g.symbol) or ((g.grid_upper + g.grid_lower) / 2.0))) if l["side"] == "sell" else (l["price"] * l["amount"])
         for g in bot.grids.values() if g.active
         for l in g.lines if l.get("active")
     )
@@ -1745,7 +1749,7 @@ def update_live_state(bot: PaperBot, prices: Dict[str, float],
             "status": po.status
         })
 
-    LATEST_LIVE_STATE = {
+    new_state = {
         "timestamp": datetime.now().isoformat(),
         "cycle": cycle_num,
         "generation": brain.generation,
@@ -1768,14 +1772,14 @@ def update_live_state(bot: PaperBot, prices: Dict[str, float],
         "grids": [
             {
                 **g.to_dict(),
-                "current_price": prices.get(g.symbol, (g.grid_upper + g.grid_lower) / 2.0),
+                "current_price": prices.get(g.symbol) or ((g.grid_upper + g.grid_lower) / 2.0),
                 "unrealized_pnl": round(sum(
-                    (l["amount"] * prices.get(g.symbol, (g.grid_upper + g.grid_lower) / 2.0) - (l["amount"] * (l["price"] / (1 + g.step_pct))))
+                    (l["amount"] * (prices.get(g.symbol) or ((g.grid_upper + g.grid_lower) / 2.0)) - (l["amount"] * l.get("buy_price", l["price"] / (1 + g.step_pct))))
                     for l in g.lines if l.get("active") and l.get("side") == "sell"
                 ), 4),
                 "fills_count": getattr(g, "fills_count", 0),
                 "market_value": round(sum(
-                    (l["amount"] * prices.get(g.symbol, g.grid_upper)) if l["side"] == "sell" else (l["price"] * l["amount"])
+                    (l["amount"] * (prices.get(g.symbol) or ((g.grid_upper + g.grid_lower) / 2.0))) if l["side"] == "sell" else (l["price"] * l["amount"])
                     for l in g.lines if l.get("active")
                 ), 2),
                 "tokens_held": round(sum(l["amount"] for l in g.lines if l.get("active") and l["side"] == "sell"), 4),
@@ -1801,20 +1805,26 @@ def update_live_state(bot: PaperBot, prices: Dict[str, float],
         "last_agent_pct": LAST_AGENT_PCT
     }
 
+    with LIVE_STATE_LOCK:
+        LATEST_LIVE_STATE = new_state
+
     try:
         with open(LIVE_STATE_FILE_LOCAL, "w", encoding="utf-8") as f:
-            json.dump(LATEST_LIVE_STATE, f)
+            json.dump(new_state, f)
         if os.path.exists(ARTIFACT_DIR):
             with open(LIVE_STATE_FILE_ARTIFACT, "w", encoding="utf-8") as f:
-                json.dump(LATEST_LIVE_STATE, f)
+                json.dump(new_state, f)
 
-        # Sincronizar HTML con estado inicial pre-cargado
-        html_spa = dashboard_spa.get_dashboard_spa_html(initial_state=LATEST_LIVE_STATE)
-        with open(DASHBOARD_HTML_LOCAL, "w", encoding="utf-8") as f:
-            f.write(html_spa)
-        if os.path.exists(ARTIFACT_DIR):
-            with open(DASHBOARD_HTML_ARTIFACT, "w", encoding="utf-8") as f:
+        # Sincronizar HTML a disco cada 30 segundos (evita 2400 escrituras pesadas innecesarias por hora)
+        now_write = time.time()
+        if (now_write - LAST_HTML_SYNC_TS) >= 30.0 or LAST_HTML_SYNC_TS == 0.0:
+            LAST_HTML_SYNC_TS = now_write
+            html_spa = dashboard_spa.get_dashboard_spa_html(initial_state=new_state)
+            with open(DASHBOARD_HTML_LOCAL, "w", encoding="utf-8") as f:
                 f.write(html_spa)
+            if os.path.exists(ARTIFACT_DIR):
+                with open(DASHBOARD_HTML_ARTIFACT, "w", encoding="utf-8") as f:
+                    f.write(html_spa)
     except Exception:
         pass
 
@@ -1822,36 +1832,44 @@ def update_live_state(bot: PaperBot, prices: Dict[str, float],
 # ====================== SERVIDOR HTTP REACTIVO PARA DASHBOARD DINÁMICO ======================
 class DynamicDashboardHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
-        if self.path in ("/api/state", "/live_state.json"):
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
-            self.end_headers()
-            self.wfile.write(json.dumps(LATEST_LIVE_STATE).encode("utf-8"))
-        elif self.path in ("/", "/dashboard", "/dashboard.html"):
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            html_content = dashboard_spa.get_dashboard_spa_html(initial_state=LATEST_LIVE_STATE)
-            self.wfile.write(html_content.encode("utf-8"))
-        elif self.path in ("/office", "/office.html"):
-            office_file = os.path.join(LOG_DIR, "office.html")
-            if os.path.exists(office_file):
+        try:
+            if self.path in ("/api/state", "/live_state.json"):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+                self.end_headers()
+                with LIVE_STATE_LOCK:
+                    state_bytes = json.dumps(LATEST_LIVE_STATE).encode("utf-8")
+                self.wfile.write(state_bytes)
+            elif self.path in ("/", "/dashboard", "/dashboard.html"):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
-                with open(office_file, "r", encoding="utf-8") as f:
-                    self.wfile.write(f.read().encode("utf-8"))
+                with LIVE_STATE_LOCK:
+                    current_snap = dict(LATEST_LIVE_STATE)
+                html_content = dashboard_spa.get_dashboard_spa_html(initial_state=current_snap)
+                self.wfile.write(html_content.encode("utf-8"))
+            elif self.path in ("/office", "/office.html"):
+                office_file = os.path.join(LOG_DIR, "office.html")
+                if os.path.exists(office_file):
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    with open(office_file, "r", encoding="utf-8") as f:
+                        self.wfile.write(f.read().encode("utf-8"))
+                else:
+                    self.send_response(404)
+                    self.end_headers()
             else:
                 self.send_response(404)
                 self.end_headers()
-
-        else:
-            self.send_response(404)
-            self.end_headers()
+        except (ConnectionResetError, BrokenPipeError):
+            pass
+        except Exception:
+            pass
 
     def log_message(self, format, *args):
         pass
@@ -1968,8 +1986,8 @@ def run_paper_trading(reset_all: bool = False):
                 if not curr_p:
                     continue
                 
-                # Check lines
-                for line in grid.lines:
+                # Check lines (iterando sobre copia estática para evitar mutación concurrente)
+                for line in list(grid.lines):
                     if not line["active"]:
                         continue
                         
@@ -1982,11 +2000,11 @@ def run_paper_trading(reset_all: bool = False):
                             grid.last_fill_ts = time.time()
                             grid.fills_count = getattr(grid, "fills_count", 0) + 1
                             
-                            # Crear orden de venta en el siguiente escalón
+                            # Crear orden de venta en el siguiente escalón con buy_price real guardado
                             sell_price = line["price"] * (1 + grid.step_pct)
                             amt_after_fee = line["amount"] * (1 - FEE_RATE)
                             
-                            grid.lines.append({"price": sell_price, "side": "sell", "amount": amt_after_fee, "active": True})
+                            grid.lines.append({"price": sell_price, "side": "sell", "amount": amt_after_fee, "buy_price": line["price"], "active": True})
                             bot.log_trade(
                                 symbol=sym, strategy="grid_buy", side="buy", price=line["price"], amount=line["amount"],
                                 pnl=0.0, fee=fees, slippage=0.0,
@@ -1994,6 +2012,7 @@ def run_paper_trading(reset_all: bool = False):
                                 pos_id=grid.grid_id, status="OPEN"
                             )
                             print(f"  🕸️🟢 [MALLA BUY {sym}] Comprado a ${line['price']:.4f}. Venta colocada a ${sell_price:.4f}", flush=True)
+                            bot.save_portfolio_state()
                             
                     elif line["side"] == "sell":
                         if curr_p >= line["price"]:
@@ -2007,8 +2026,9 @@ def run_paper_trading(reset_all: bool = False):
                             grid.last_fill_ts = time.time()
                             grid.fills_count = getattr(grid, "fills_count", 0) + 1
                             
-                            # Ganancia de esta línea
-                            buy_cost = line["amount"] * (line["price"] / (1 + grid.step_pct))
+                            # Ganancia real rigurosa basada en el precio de compra real guardado
+                            real_buy_price = line.get("buy_price", line["price"] / (1 + grid.step_pct))
+                            buy_cost = line["amount"] * real_buy_price
                             profit = net_usdt - buy_cost
                             grid.realized_pnl += profit
                             bot.total_realized_pnl_acc += profit
@@ -2021,7 +2041,7 @@ def run_paper_trading(reset_all: bool = False):
                             cost = line["amount"] * buy_price
                             if bot.cash >= cost:
                                 bot.cash -= cost
-                                grid.lines.append({"price": buy_price, "side": "buy", "amount": line["amount"], "active": True})
+                                grid.lines.append({"price": buy_price, "side": "buy", "amount": line["amount"], "buy_price": buy_price, "active": True})
                                 print(f"  🕸️🔴 [MALLA SELL {sym}] Vendido a ${line['price']:.4f}. Ganancia: +${profit:.4f}. Recomprando a ${buy_price:.4f}", flush=True)
                             else:
                                 print(f"  ⚠️ [MALLA {sym}] Saldo insuficiente para recolocar compra a ${buy_price:.4f}", flush=True)
@@ -2032,6 +2052,7 @@ def run_paper_trading(reset_all: bool = False):
                                 extra=f"Malla Escalón Cosechado: Ganancia neta +${profit:.4f} USDT | Recompra lista en ${buy_price:.4f}",
                                 pos_id=grid.grid_id, status="CLOSED"
                             )
+                            bot.save_portfolio_state()
 
                 # =========================================================================
                 # 🤖 SUPERVISOR DINÁMICO DE MALLA (Vigilancia Inteligente y No Estática)
@@ -2069,9 +2090,11 @@ def run_paper_trading(reset_all: bool = False):
                             grid.lines.append({"price": p_buy, "side": "buy", "amount": sub_cap / p_buy, "active": True})
                             print(f"  🕸️🟢 [REBALANCEO DINÁMICO {sym}] Compra simétrica recolocada a ${p_buy:.4f}", flush=True)
                     
-                    # Ajustar precios de las órdenes existentes cerca del precio vivo si el precio se alejó
+                    # Ajustar precios de órdenes existentes asegurando SIEMPRE ganancia neta (mínimo sobre buy_price)
                     for idx, l in enumerate(sorted([x for x in grid.lines if x['active'] and x['side'] == 'sell'], key=lambda x: x['price'])):
-                        l['price'] = curr_p * (1 + (grid.step_pct * (idx + 1)))
+                        min_sell_p = l.get('buy_price', curr_p) * (1 + FEE_RATE * 2)
+                        new_target = curr_p * (1 + (grid.step_pct * (idx + 1)))
+                        l['price'] = max(min_sell_p, new_target)
                     if not is_buys_frozen:
                         for idx, l in enumerate(sorted([x for x in grid.lines if x['active'] and x['side'] == 'buy'], key=lambda x: -x['price'])):
                             l['price'] = curr_p * (1 - (grid.step_pct * (idx + 1)))
@@ -2297,15 +2320,14 @@ def run_paper_trading(reset_all: bool = False):
                                         while p <= grid_upper + (step_size * 0.1): # Tolerancia de flotantes
                                             if p < current_price:
                                                 # Orden Límite de Compra
-                                                lines.append({"price": p, "side": "buy", "amount": cap_per_line / p, "active": True})
+                                                lines.append({"price": p, "side": "buy", "amount": cap_per_line / p, "buy_price": p, "active": True})
                                                 total_cash_needed += cap_per_line
                                                 buys_count += 1
                                             else:
-                                                # Orden Límite de Venta (Requiere compra a mercado inicial)
+                                                # Orden Límite de Venta (Requiere compra a mercado inicial a current_price)
                                                 amount = cap_per_line / p
-                                                # Compramos a mercado al precio actual para poder colocar la venta límite
                                                 cost = amount * current_price * (1 + FEE_RATE)
-                                                lines.append({"price": p, "side": "sell", "amount": amount, "active": True})
+                                                lines.append({"price": p, "side": "sell", "amount": amount, "buy_price": current_price, "active": True})
                                                 total_cash_needed += cost
                                                 sells_count += 1
                                             p += step_size
@@ -2324,6 +2346,7 @@ def run_paper_trading(reset_all: bool = False):
                                             )
                                             bot.grids[sym] = new_grid
                                             bot.cash -= total_cash_needed
+                                            bot.save_portfolio_state()
                                             print(f"  🕸️ [MALLA CENTRADA DESPLEGADA] {buys_count} Compras abajo, {sells_count} Ventas arriba preparadas.", flush=True)
                                         else:
                                             print(f"  ⚠️ [MALLA CANCELADA] Saldo insuficiente para armar la malla centrada.", flush=True)
