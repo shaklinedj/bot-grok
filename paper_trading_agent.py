@@ -2331,12 +2331,16 @@ def run_paper_trading(reset_all: bool = False):
                                 
                                 # Instanciar la Malla
                                 if grid_lines >= 2 and grid_upper > grid_lower:
+                                    # Ajuste institucional: garantizar que cada línea tenga tamaño contundente ($18 - $30 USDT)
+                                    if adjusted_capital >= 35.0:
+                                        target_lines = max(3, min(grid_lines, int(adjusted_capital // 20.0)))
+                                        grid_lines = min(grid_lines, target_lines)
                                     step_size = (grid_upper - grid_lower) / (grid_lines - 1)
                                     step_pct = step_size / grid_lower
                                     
                                     # Malla Centrada (Neutral Grid Pionex-style)
                                     cap_per_line = adjusted_capital / grid_lines
-                                    if cap_per_line >= 5.0:
+                                    if cap_per_line >= 12.0:
                                         lines = []
                                         total_cash_needed = 0.0
                                         buys_count = 0

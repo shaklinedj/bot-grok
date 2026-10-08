@@ -131,17 +131,18 @@ class QuantitativeAgentCommittee:
         raw_range_pct = (atr_pct / 100.0) * amplitud_malla_atr
         range_pct = max(0.014, min(0.042, raw_range_pct))
         
-        # Paso dinámico basado en spread y volatilidad: entre 0.45% y 0.70%
-        target_step = max(0.0045, min(0.0070, (spread_pct * 3.5) if spread_pct > 0.001 else 0.0055))
+        # Paso dinámico basado en spread y volatilidad: entre 0.55% y 0.80% (alta reactividad)
+        target_step = max(0.0055, min(0.0080, (spread_pct * 3.5) if spread_pct > 0.001 else 0.0065))
         calculated_lines = int(round((2 * range_pct) / target_step)) + 1
-        grid_lines = max(6, min(12, calculated_lines))
+        # Líneas concentradas (3 a 5 líneas) para órdenes institucionales contundentes (cero migajas de $5-$6)
+        grid_lines = max(3, min(5, calculated_lines))
         
         grid_upper = round(price * (1 + range_pct), 6)
         grid_lower = round(price * (1 - range_pct), 6)
         step_size_pct = ((grid_upper - grid_lower) / grid_lower) / (grid_lines - 1) * 100
         
-        # 2. Asignación Dinámica de Capital (Sizing Multifactorial Inteligente)
-        base_mult = 0.50
+        # 2. Asignación Dinámica de Capital (Sizing Multifactorial Concentrado)
+        base_mult = 0.75
 
         # Componente A: Score Cuantitativo Multivariable (0 a 100 pts)
         score_adj = (score - 50.0) * 0.005
@@ -162,11 +163,11 @@ class QuantitativeAgentCommittee:
 
         # Componente D: Régimen Macro de Bitcoin
         is_risk_off = btc_macro.get("is_risk_off", False) if isinstance(btc_macro, dict) else False
-        macro_mult = 0.75 if is_risk_off else 1.0
+        macro_mult = 0.85 if is_risk_off else 1.0
 
-        # Multiplicador dinámico integrado (entre 35% y 100% según las condiciones en vivo)
+        # Multiplicador dinámico integrado (entre 60% y 100% según las condiciones en vivo)
         raw_mult = (base_mult + score_adj + obi_adj + ker_adj) * macro_mult
-        mult_clean = round(max(0.35, min(1.00, raw_mult)), 2)
+        mult_clean = round(max(0.60, min(1.00, raw_mult)), 2)
 
         # 3. Filtros Cuantitativos Institucionales de Aprobación
         decision_clean = "APROBADO"
