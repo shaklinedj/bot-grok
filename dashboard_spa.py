@@ -834,16 +834,20 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         const sells = lines.filter(l => l.side === 'sell' && l.active).sort((a,b) => b.price - a.price); // Descending
         const currentPrice = g.current_price || g.grid_lower;
 
-        // Cálculos macro globales estilo Pionex / Institutional Grid
-        const totalProfit = (data && typeof data.realized_pnl === 'number' && data.realized_pnl > 0) ? data.realized_pnl : (Number(g.realized_pnl) || 0);
+        // Métricas EXCLUSIVAS de ESTA MALLA ABIERTA (Solo la Operación en Curso)
+        const gridProfit = Number(g.realized_pnl) || 0;
         const capTotal = Number(g.capital_total) || 57.43;
-        const roiPct = capTotal > 0 ? ((totalProfit / capTotal) * 100) : 0;
-        const totalFills = (data && typeof data.wins === 'number' && data.wins > 0) ? data.wins : ((data && typeof data.total_trades === 'number' && data.total_trades > 0) ? data.total_trades : 112);
-        const avgPerFill = totalFills > 0 ? (totalProfit / totalFills) : 0;
+        const gridRoiPct = capTotal > 0 ? ((gridProfit / capTotal) * 100) : 0;
+        const gridFloating = Number(g.unrealized_pnl) || 0;
+        const gridNetProfit = gridProfit + gridFloating;
+        const gridNetRoi = capTotal > 0 ? ((gridNetProfit / capTotal) * 100) : 0;
+        const gridFills = Number(g.fills_count) || (Number(g.dynamic_adjustments_count) || 0);
+        const avgPerFill = gridFills > 0 ? (gridProfit / gridFills) : 0;
         const rangeSpread = Number(g.grid_upper) - Number(g.grid_lower);
         const rangePct = rangeSpread > 0 ? Math.min(100, Math.max(0, ((currentPrice - Number(g.grid_lower)) / rangeSpread) * 100)) : 50;
         const capPerLine = Number(g.capital_per_line) || (capTotal / Math.max(1, (g.grid_lines || 9)));
         const statusMsg = g.status_msg || "Cosechando en Rango Dinámico";
+        const tickTime = (data && data.timestamp) ? data.timestamp.split('T')[1]?.split('.')[0] : '';
         
         // Generar filas para la cuadrícula de ventas (Rojas)
         let sellsCards = '';
@@ -920,7 +924,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <div>
               <div class="flex items-center gap-2 flex-wrap">
                 <span class="text-2xl font-black text-white tracking-tight">${g.symbol}</span>
-                <span class="text-xs bg-purple-500/20 text-purple-300 font-mono font-bold px-2 py-0.5 rounded border border-purple-500/30">MALLA CUANTITATIVA NEUTRAL (PIONEX-STYLE)</span>
+                <span class="text-xs bg-purple-500/20 text-purple-300 font-mono font-bold px-2 py-0.5 rounded border border-purple-500/30">MALLA CUANTITATIVA ACTIVA</span>
                 <span class="text-[11px] bg-emerald-500/10 text-emerald-400 font-mono font-semibold px-2 py-0.5 rounded border border-emerald-500/20 flex items-center gap-1">
                   <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>${statusMsg}
                 </span>
@@ -932,45 +936,52 @@ HTML_TEMPLATE = """<!DOCTYPE html>
               </div>
             </div>
             
-            <!-- Bloque de Precio Vivo Binance -->
+            <!-- Bloque de Precio Vivo Binance con Indicador de Pulso -->
             <div class="flex items-center gap-3">
               <div class="text-right bg-blue-950/40 border border-blue-500/50 rounded-lg px-4 py-2">
                 <div class="text-[10px] text-blue-300 font-bold uppercase tracking-wider flex items-center justify-end gap-1.5">
-                  <span class="w-2 h-2 rounded-full bg-blue-400 animate-ping inline-block"></span>
-                  Precio Binance
+                  <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block"></span>
+                  Precio Binance Vivo
                 </div>
                 <div class="text-xl font-black text-white font-mono">$${Number(currentPrice).toFixed(6)}</div>
+                <div class="text-[9px] text-gray-400 font-mono mt-0.5">Actualizado: ${tickTime || 'en vivo'}</div>
               </div>
             </div>
           </div>
 
-          <!-- 2. RESUMEN GLOBAL DE LA MALLA: KPI CARD MACRO (Estilo Pionex Portfolio) -->
+          <!-- 2. RESUMEN EXCLUSIVO DE ESTA OPERACIÓN (Estilo Pionex Open Grid) -->
           <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-gray-950/70 p-3.5 rounded-xl border border-purple-500/30 shadow-inner">
             <div class="border-r border-gray-800/80 pr-2">
-              <div class="text-[10px] text-gray-400 uppercase font-mono font-bold">Capital Comprometido</div>
+              <div class="text-[10px] text-gray-400 uppercase font-mono font-bold">Capital en Esta Malla</div>
               <div class="text-lg font-black font-mono text-white">$${capTotal.toFixed(2)} <span class="text-xs text-gray-400 font-normal">USDT</span></div>
-              <div class="text-[10px] text-gray-500 font-mono">~$${capPerLine.toFixed(2)} por escalón (${g.grid_lines || 9} líns)</div>
+              <div class="text-[10px] text-gray-500 font-mono">~$${capPerLine.toFixed(2)} / escalón (${g.grid_lines || 9} líns)</div>
             </div>
             
             <div class="border-r border-gray-800/80 pr-2">
               <div class="text-[10px] text-gray-400 uppercase font-mono font-bold flex items-center gap-1">
-                <span>Cosecha Neta Total</span>
+                <span>Cosecha en Esta Malla</span>
                 <span class="text-[9px] bg-emerald-500/20 text-emerald-300 px-1 rounded font-bold">GRID PROFIT</span>
               </div>
-              <div class="text-lg font-black font-mono text-emerald-400">+$${totalProfit.toFixed(2)} <span class="text-xs bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded font-bold">+${roiPct.toFixed(2)}%</span></div>
-              <div class="text-[10px] text-emerald-500/80 font-mono">Ganancia 100% asegurada en cartera</div>
+              <div class="text-lg font-black font-mono text-emerald-400">+$${gridProfit.toFixed(4)} <span class="text-xs bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded font-bold">+${gridRoiPct.toFixed(2)}%</span></div>
+              <div class="text-[10px] text-emerald-500/80 font-mono">${gridFills} fills en esta operación</div>
             </div>
 
             <div class="border-r border-gray-800/80 pr-2">
-              <div class="text-[10px] text-gray-400 uppercase font-mono font-bold">Micro-Rebotes Cerrados</div>
-              <div class="text-lg font-black font-mono text-purple-300">${totalFills} <span class="text-xs text-gray-400 font-normal">ciclos</span></div>
-              <div class="text-[10px] text-purple-400/80 font-mono">Efectividad: 100% Win Rate</div>
+              <div class="text-[10px] text-gray-400 uppercase font-mono font-bold flex items-center gap-1">
+                <span>Flotante de Tokens</span>
+                <span class="text-[9px] bg-blue-500/20 text-blue-300 px-1 rounded font-bold">FLOATING</span>
+              </div>
+              <div class="text-lg font-black font-mono ${gridFloating >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${gridFloating >= 0 ? '+' : ''}$${gridFloating.toFixed(4)}</div>
+              <div class="text-[10px] text-gray-500 font-mono">${sells.length} órdenes esperando rebote</div>
             </div>
 
             <div>
-              <div class="text-[10px] text-gray-400 uppercase font-mono font-bold">Ganancia Media / Escalón</div>
-              <div class="text-lg font-black font-mono text-cyan-300">+$${avgPerFill.toFixed(4)} <span class="text-xs text-gray-400 font-normal">/ fill</span></div>
-              <div class="text-[10px] text-cyan-400/80 font-mono">Alta Frecuencia (Paso ${(Number(g.step_pct)*100).toFixed(2)}%)</div>
+              <div class="text-[10px] text-gray-400 uppercase font-mono font-bold flex items-center gap-1">
+                <span>PnL Neto Operación</span>
+                <span class="text-[9px] bg-purple-500/20 text-purple-300 px-1 rounded font-bold">TOTAL MALLA</span>
+              </div>
+              <div class="text-lg font-black font-mono ${gridNetProfit >= 0 ? 'text-emerald-400' : 'text-amber-400'}">${gridNetProfit >= 0 ? '+' : ''}$${gridNetProfit.toFixed(4)} <span class="text-xs px-1.5 py-0.5 rounded font-bold bg-gray-800 text-gray-300">${gridNetRoi >= 0 ? '+' : ''}${gridNetRoi.toFixed(2)}%</span></div>
+              <div class="text-[10px] text-cyan-400/80 font-mono">Cosecha + Valor de Tokens</div>
             </div>
           </div>
 

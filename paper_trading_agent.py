@@ -354,6 +354,7 @@ class GridPosition:
     last_fill_ts: float = field(default_factory=time.time)
     dynamic_adjustments_count: int = 0
     recent_trend_slope: float = 0.0
+    fills_count: int = 0
 
     def to_dict(self):
         d = asdict(self)
@@ -1703,7 +1704,18 @@ def update_live_state(bot: PaperBot, prices: Dict[str, float],
         "weights": brain.weights,
         "compound_size": compound_sz,
         "positions": positions_list,
-        "grids": [{**g.to_dict(), "current_price": prices.get(g.symbol, (g.grid_upper + g.grid_lower) / 2.0)} for g in bot.grids.values() if g.active],
+        "grids": [
+            {
+                **g.to_dict(),
+                "current_price": prices.get(g.symbol, (g.grid_upper + g.grid_lower) / 2.0),
+                "unrealized_pnl": round(sum(
+                    (l["amount"] * prices.get(g.symbol, (g.grid_upper + g.grid_lower) / 2.0) - (l["amount"] * (l["price"] / (1 + g.step_pct))))
+                    for l in g.lines if l.get("active") and l.get("side") == "sell"
+                ), 4),
+                "fills_count": getattr(g, "fills_count", 0),
+            }
+            for g in bot.grids.values() if g.active
+        ],
         "pending_limit_orders": pending_list,
         "pnl_audit": bot.latest_pnl_audit or [],
         "self_eval": bot.latest_self_eval or {},
@@ -1912,6 +1924,7 @@ def run_paper_trading(reset_all: bool = False):
                             line["active"] = False
                             grid.ticks_without_fill = 0
                             grid.last_fill_ts = time.time()
+                            grid.fills_count = getattr(grid, "fills_count", 0) + 1
                             
                             # Crear orden de venta en el siguiente escalón
                             sell_price = line["price"] * (1 + grid.step_pct)
@@ -1936,6 +1949,7 @@ def run_paper_trading(reset_all: bool = False):
                             line["active"] = False
                             grid.ticks_without_fill = 0
                             grid.last_fill_ts = time.time()
+                            grid.fills_count = getattr(grid, "fills_count", 0) + 1
                             
                             # Ganancia de esta línea
                             buy_cost = line["amount"] * (line["price"] / (1 + grid.step_pct))
@@ -1968,16 +1982,20 @@ def run_paper_trading(reset_all: bool = False):
                 # =========================================================================
                 grid.ticks_without_fill = getattr(grid, "ticks_without_fill", 0) + 1
 
-                # 1. COMPRESIÓN DINÁMICA POR ESTANCAMIENTO (Micro-Intervalos Adaptativos):
-                # Si la moneda lateraliza en seco sin cruzar ninguna línea por ~60 segundos (>25 ticks)
-                # y el paso entre líneas aún permite margen (> 0.40% libre de comisiones):
-                if grid.ticks_without_fill >= 25 and grid.step_pct > 0.0042:
-                    old_step = grid.step_pct
-                    # Comprimir el intervalo un 12% para acercar las órdenes al precio vivo
-                    grid.step_pct = max(0.0040, grid.step_pct * 0.88)
-                    grid.dynamic_adjustments_count = getattr(grid, "dynamic_adjustments_count", 0) + 1
+                # 1. COMPRESIÓN DINÁMICA Y REBALANCEO POR ESTANCAMIENTO:
+                # Si la moneda lateraliza en seco sin cruzar ninguna línea por ~35-40 segundos (>25 ticks)
+                if grid.ticks_without_fill >= 25:
                     grid.ticks_without_fill = 0 # Resetear contador
-                    grid.status_msg = f"Intervalos comprimidos ({old_step*100:.2f}% -> {grid.step_pct*100:.2f}%)"
+                    
+                    # Si el paso aún permite compresión (> 0.40% libre de comisiones):
+                    if grid.step_pct > 0.0042:
+                        old_step = grid.step_pct
+                        grid.step_pct = max(0.0040, grid.step_pct * 0.88)
+                        grid.dynamic_adjustments_count = getattr(grid, "dynamic_adjustments_count", 0) + 1
+                        grid.status_msg = f"Intervalos comprimidos ({old_step*100:.2f}% -> {grid.step_pct*100:.2f}%)"
+                        print(f"  ⚡ [SUPERVISOR DINÁMICO {sym}] Sin fills. Paso comprimido de {old_step*100:.2f}% a {grid.step_pct*100:.2f}%.", flush=True)
+                    else:
+                        grid.status_msg = "Rebalanceando escalones cerca del precio vivo"
                     
                     # Reajustar la distribución de escalones para que SIEMPRE haya compras abajo y ventas arriba
                     active_buys = [l for l in grid.lines if l["active"] and l["side"] == "buy"]
@@ -1994,12 +2012,11 @@ def run_paper_trading(reset_all: bool = False):
                             grid.lines.append({"price": p_buy, "side": "buy", "amount": sub_cap / p_buy, "active": True})
                             print(f"  🕸️🟢 [REBALANCEO DINÁMICO {sym}] Compra simétrica recolocada a ${p_buy:.4f}", flush=True)
                     
-                    # Ajustar precios de las órdenes existentes con el nuevo paso
+                    # Ajustar precios de las órdenes existentes con el nuevo paso cerca del precio vivo
                     for idx, l in enumerate(sorted([x for x in grid.lines if x['active'] and x['side'] == 'sell'], key=lambda x: x['price'])):
                         l['price'] = curr_p * (1 + (grid.step_pct * (idx + 1)))
                     for idx, l in enumerate(sorted([x for x in grid.lines if x['active'] and x['side'] == 'buy'], key=lambda x: -x['price'])):
                         l['price'] = curr_p * (1 - (grid.step_pct * (idx + 1)))
-                    print(f"  ⚡ [SUPERVISOR DINÁMICO {sym}] Activo lateral sin fills. Paso comprimido de {old_step*100:.2f}% a {grid.step_pct*100:.2f}% para forzar rotación rápida.", flush=True)
 
                 # 2. TRAILING DINÁMICO DE SUBIDA / BAJADA (Desplazamiento de Malla con la Tendencia):
                 # Si el precio escapa más del 1.2% por encima del techo o por debajo del piso
