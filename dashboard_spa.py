@@ -105,7 +105,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           <span id="kpi-equity">$0.00</span>
           <span class="text-xs text-gray-500 font-medium">USDT</span>
         </div>
-        <div id="kpi-equity-pct" class="text-xs font-semibold mt-1 text-emerald-400">+0.00% (Base: $80.00)</div>
+        <div id="kpi-equity-pct" class="text-xs font-semibold mt-1 text-emerald-400">+0.00% (Base: $500.00)</div>
       </div>
 
       <div class="card p-4 border-t-2 border-t-blue-500">
@@ -515,8 +515,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       }
 
       // KPIs
-      const equity = Number(data.equity || 80.0);
-      const initCap = Number(data.initial_capital || 80.0);
+      const equity = Number(data.equity || 500.0);
+      const initCap = Number(data.initial_capital || 500.0);
       const eqPct = ((equity / initCap) - 1) * 100;
       
       const kpiEq = document.getElementById('kpi-equity');

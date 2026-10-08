@@ -34,6 +34,7 @@ import http.server
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass, field, asdict
+import urllib.request
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -59,12 +60,12 @@ from agent_committee import agent_committee
 
 
 # ====================== CONFIGURACIÓN GENERAL ======================
-INITIAL_CAPITAL = 80.0
-MIN_EQUITY_RATIO = 0.60                 # Umbral de supervivencia: 60% ($48.00 USDT)
-MAX_RISK_SLOTS = 1                      # 1 Solo Slot Francotirador Concentrado para cuentas < $150
-MAX_TOTAL_POSITIONS = 3                 # Máximo total incluyendo runners libres de riesgo (Reciclaje Dinámico)
+INITIAL_CAPITAL = 500.0
+MIN_EQUITY_RATIO = 0.60                 # Umbral de supervivencia: 60% ($300.00 USDT)
+MAX_RISK_SLOTS = 15                     # Múltiples mallas concurrentes simultáneas
+MAX_TOTAL_POSITIONS = 15                # Mallas ilimitadas según capital disponible en caja
 TOP_N_SCAN = 12                         # Considerar y mostrar las 12 mejores oportunidades del mercado
-COMPOUND_ALLOCATION_PCT = 0.99          # 99% del Equity total en 1 solo trade de alta convicción
+COMPOUND_ALLOCATION_PCT = 0.20          # Asignación prudente por oportunidad (~$40-$80 por malla)
 MIN_ORDER_USDT = 25.0                   # Mínimo $25.00 USDT (cero micro-órdenes)
 
 CHECK_INTERVAL_SECONDS = 1.5            # Ticks reactivos de alta velocidad cada 1.5 segundos
@@ -322,6 +323,66 @@ def on_ai_auditor_parameter_tuning(adjustment: Dict, audit_record: Dict):
 
 
 ai_auditor.register_tuning_handler(on_ai_auditor_parameter_tuning)
+
+
+# ====================== ANCLA ESTRUCTURAL: BOLLINGER BANDS & RSI (1h) ======================
+_regime_1h_cache: Dict[str, Tuple[float, dict]] = {}
+
+def get_symbol_1h_regime(symbol: str) -> dict:
+    """
+    Consulta Binance 1h klines (30 velas) para calcular Bollinger Bands y RSI 14 (1h).
+    Cacheado por 60 segundos por símbolo para evitar rate limits.
+    """
+    now = time.time()
+    if symbol in _regime_1h_cache:
+        ts, cached = _regime_1h_cache[symbol]
+        if now - ts < 60.0:
+            return cached
+
+    clean_sym = symbol.replace("/", "").replace("-", "").upper()
+    try:
+        url = f"https://api.binance.com/api/v3/klines?symbol={clean_sym}&interval=1h&limit=30"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            data = json.loads(resp.read().decode())
+
+        closes = [float(k[4]) for k in data]
+        if len(closes) >= 20:
+            sma20 = sum(closes[-20:]) / 20.0
+            std20 = (sum((c - sma20)**2 for c in closes[-20:]) / 20.0) ** 0.5
+            upper_bb = sma20 + 2.0 * std20
+            lower_bb = sma20 - 2.0 * std20
+
+            # RSI 14
+            gains, losses = [], []
+            for i in range(1, min(15, len(closes))):
+                diff = closes[-15+i] - closes[-15+i-1]
+                if diff >= 0:
+                    gains.append(diff)
+                    losses.append(0.0)
+                else:
+                    gains.append(0.0)
+                    losses.append(abs(diff))
+            avg_gain = sum(gains) / 14.0 if gains else 0.0001
+            avg_loss = sum(losses) / 14.0 if losses else 0.0001
+            rs = avg_gain / (avg_loss if avg_loss != 0 else 0.0001)
+            rsi = 100.0 - (100.0 / (1.0 + rs))
+
+            result = {
+                "rsi_1h": round(rsi, 2),
+                "lower_bb": round(lower_bb, 6),
+                "sma20": round(sma20, 6),
+                "upper_bb": round(upper_bb, 6),
+                "last_close": closes[-1]
+            }
+            _regime_1h_cache[symbol] = (now, result)
+            return result
+    except Exception:
+        pass
+
+    default_res = {"rsi_1h": 50.0, "lower_bb": 0.0, "sma20": 0.0, "upper_bb": 999999.0, "last_close": 0.0}
+    _regime_1h_cache[symbol] = (now, default_res)
+    return default_res
 
 
 # ====================== ESTRUCTURAS DE DATOS ======================
@@ -712,8 +773,16 @@ class PaperBot:
         self.cash = target_cash
         self.holdings.clear()
         self.longs.clear()
+        self.grids.clear()
+        self.pending_orders.clear()
+        self.peak_equity = target_cash
+        self.wins = 0
+        self.losses = 0
+        self.total_trades = 0
+        self.total_realized_pnl_acc = 0.0
+        self.max_drawdown = 0.0
         self.save_portfolio_state()
-        print(f"⚡ [REINICIO COMPLETADO] Efectivo Disponible: ${self.cash:.2f} USDT | Posiciones: 0\n", flush=True)
+        print(f"⚡ [REINICIO COMPLETADO] Efectivo Disponible: ${self.cash:.2f} USDT | Mallas: 0 | Posiciones: 0\n", flush=True)
 
 
 # ====================== ANÁLISIS CUANTITATIVO AGRESIVO ======================
@@ -2008,18 +2077,68 @@ def run_paper_trading(reset_all: bool = False):
                         for idx, l in enumerate(sorted([x for x in grid.lines if x['active'] and x['side'] == 'buy'], key=lambda x: -x['price'])):
                             l['price'] = curr_p * (1 - (grid.step_pct * (idx + 1)))
 
-                # 2. GESTIÓN DE RUPTURA: MODO PACIENTE EN CAÍDAS vs TRAILING EN SUBIDAS
-                # A. Ruptura de Piso hacia abajo (El precio cae por debajo del piso de la malla):
+                # 2. GESTIÓN JERÁRQUICA DE RUPTURA:
+                # Si el precio cae por debajo del piso de la malla:
                 if curr_p < grid.grid_lower:
-                    grid.freeze_buys = True  # Pausar compras para NO comprar la caída ni añadir riesgo
+                    grid.freeze_buys = True  # 1. Congelar compras de inmediato (Anti-Knife Shield)
                     grid.out_of_range_ticks = getattr(grid, "out_of_range_ticks", 0) + 1
                     dist_below_floor_pct = ((grid.grid_lower - curr_p) / grid.grid_lower) * 100
-                    grid.status_msg = f"Modo Paciente: Caída -{dist_below_floor_pct:.1f}% bajo piso. Compras congeladas, esperando rebote hacia ventas."
                     
-                    # Salida de emergencia ÚNICAMENTE ante colapso extremo sostenido (> 5% bajo el piso por más de 180 ticks / ~10-12 mins)
-                    if curr_p < (grid.grid_lower * 0.95) and grid.out_of_range_ticks >= 180:
-                        print(f"  🛑⚠️ [STOP DE EMERGENCIA {sym}] Colapso sostenido >5% por debajo del piso. Liquidando posición para proteger capital restante...", flush=True)
-                        total_buy_cost = 0.0
+                    # Consultar Indicador Estructural Único: Bollinger Bands (1h) + RSI 14 (1h)
+                    regime = get_symbol_1h_regime(sym)
+                    rsi_1h = regime.get("rsi_1h", 50.0)
+                    lower_bb = regime.get("lower_bb", grid.grid_lower)
+
+                    # Calcular VWAP exacto de todas las órdenes de venta activas (inventario retenido)
+                    active_sells = [l for l in grid.lines if l.get("active") and l.get("side") == "sell"]
+                    total_tokens = sum(l["amount"] for l in active_sells)
+                    total_buy_cost = sum(l["amount"] * (l["price"] / (1 + grid.step_pct)) for l in active_sells)
+                    vwap = (total_buy_cost / total_tokens) if total_tokens > 0 else grid.grid_lower
+
+                    # =========================================================================
+                    # REGLA 1: "ELÁSTICO ESTIRADO" (RSI 1h < 30.0 o Precio bajo Lower Bollinger)
+                    # =========================================================================
+                    if rsi_1h < 30.0 or curr_p <= lower_bb:
+                        grid.status_msg = f"Elástico Estirado (RSI 1h: {rsi_1h:.1f} < 30) | Modo Paciente: Compras congeladas. Esperando rebote al VWAP (${vwap:.4f}) para Relief Exit."
+                        
+                        # SALIDA DE ALIVIO (Relief Exit) en Rebote Técnico:
+                        # Si el precio rebota al VWAP o breakeven (+-0.2%):
+                        if curr_p >= (vwap * 0.998) and len(active_sells) > 0:
+                            half_count = max(1, len(active_sells) // 2)
+                            sells_to_liquidate = sorted(active_sells, key=lambda x: x["price"])[:half_count]
+                            
+                            rel_cost = sum(l["amount"] * (l["price"] / (1 + grid.step_pct)) for l in sells_to_liquidate)
+                            rel_tokens = sum(l["amount"] for l in sells_to_liquidate)
+                            rel_val = (rel_tokens * curr_p) * (1 - FEE_RATE)
+                            rel_pnl = rel_val - rel_cost
+                            
+                            for l in sells_to_liquidate:
+                                l["active"] = False
+                            
+                            grid.realized_pnl += rel_pnl
+                            bot.total_realized_pnl_acc += rel_pnl
+                            bot.cash += rel_val
+                            if rel_pnl >= 0:
+                                bot.wins += 1
+                            else:
+                                bot.losses += 1
+                            bot.total_trades += 1
+                            
+                            bot.log_trade(
+                                symbol=sym, strategy="grid_relief_exit", side="sell", price=curr_p, amount=rel_tokens,
+                                pnl=round(rel_pnl, 4), fee=round(rel_val * FEE_RATE, 4), slippage=0.0,
+                                extra=f"Relief Exit 50%: Liberados ${rel_val:.2f} USDT en breakeven/alivio (PnL: {rel_pnl:+.4f})",
+                                pos_id=grid.grid_id, status="CLOSED"
+                            )
+                            grid.status_msg = f"Relief Exit ejecutado: 50% vendido a ${curr_p:.4f}. ${rel_val:.2f} USDT liberados a caja."
+                            print(f"  ⚡🟢 [RELIEF EXIT {sym}] Rebote a VWAP (${vwap:.4f}). Vendido 50% ({rel_tokens:.4f} {sym}). Liberados ${rel_val:.2f} USDT a caja líquida.", flush=True)
+                            bot.save_portfolio_state()
+
+                    # =========================================================================
+                    # REGLA 2: "TENDENCIA DESTRUCTIVA" (RSI 1h >= 40.0 Y Caída > 3.5% bajo el piso)
+                    # =========================================================================
+                    elif rsi_1h >= 40.0 and dist_below_floor_pct >= 3.5:
+                        print(f"  🛑⚠️ [STOP ESTRUCTURAL {sym}] Ruptura de Régimen: RSI 1h={rsi_1h:.1f} >= 40 con caída de -{dist_below_floor_pct:.1f}% bajo piso. Liquidando...", flush=True)
                         total_sell_val = 0.0
                         recovered_cash = 0.0
                         sold_tokens = 0.0
@@ -2029,9 +2148,7 @@ def run_paper_trading(reset_all: bool = False):
                             if l["side"] == "buy":
                                 recovered_cash += (l["price"] * l["amount"])
                             elif l["side"] == "sell":
-                                buy_cost = l["amount"] * (l["price"] / (1 + grid.step_pct))
                                 sell_val = (l["amount"] * curr_p) * (1 - FEE_RATE)
-                                total_buy_cost += buy_cost
                                 total_sell_val += sell_val
                                 recovered_cash += sell_val
                                 sold_tokens += l["amount"]
@@ -2047,14 +2164,17 @@ def run_paper_trading(reset_all: bool = False):
                             bot.wins += 1
                         bot.total_trades += 1
                         bot.log_trade(
-                            symbol=sym, strategy="grid_emergency_stop", side="sell", price=curr_p, amount=sold_tokens,
+                            symbol=sym, strategy="grid_structural_stop", side="sell", price=curr_p, amount=sold_tokens,
                             pnl=round(liquidation_loss, 4), fee=round(total_sell_val * FEE_RATE, 4), slippage=0.0,
-                            extra=f"Cierre de Emergencia por Ruptura: Pérdida neta {liquidation_loss:+.4f} USDT | Liberados ${recovered_cash:.2f}",
+                            extra=f"Stop Estructural por Ruptura: RSI {rsi_1h:.1f} | Pérdida {liquidation_loss:+.4f} USDT | Liberados ${recovered_cash:.2f}",
                             pos_id=grid.grid_id, status="CLOSED"
                         )
                         grid.active = False
-                        grid.status_msg = f"Stop de emergencia ejecutado ({liquidation_loss:+.2f} USDT)"
+                        grid.status_msg = f"Stop estructural ejecutado ({liquidation_loss:+.2f} USDT)"
                         bot.save_portfolio_state()
+
+                    else:
+                        grid.status_msg = f"Modo Paciente: Caída -{dist_below_floor_pct:.1f}% bajo piso (RSI 1h: {rsi_1h:.1f}). Compras congeladas, esperando resolución."
 
                 # B. Ruptura de Techo hacia arriba (Tendencia alcista fuerte):
                 elif curr_p > grid.grid_upper * 1.012:
@@ -2119,12 +2239,12 @@ def run_paper_trading(reset_all: bool = False):
                         best_candidate = None
                         for opp in latest_opportunities:
                             sym = opp["symbol"]
-                            if sym in bot.longs or sym in bot.pending_orders:
+                            if sym in bot.longs or sym in bot.pending_orders or (sym in bot.grids and bot.grids[sym].active):
                                 continue
                             if (now_ts - deliberation_cooldown.get(sym, 0.0)) < 75.0:
                                 continue
                             best_candidate = opp
-                            break  # Solo tomamos la mejor opción única
+                            break  # Tomamos la mejor opción disponible
 
                         if best_candidate:
                             sym = best_candidate["symbol"]
@@ -2152,8 +2272,9 @@ def run_paper_trading(reset_all: bool = False):
                             else:
                                 global LAST_AGENT_PCT
                                 available_funds = bot.cash * 0.98
-                                target_by_agents = round(available_funds * comm_mult, 2)
-                                adjusted_capital = max(MIN_ORDER_USDT, min(available_funds, target_by_agents))
+                                # Sizing para cuentas con múltiples mallas concurrentes ($30 a $80 por malla)
+                                target_by_agents = round(available_funds * comm_mult * 0.35, 2)
+                                adjusted_capital = max(MIN_ORDER_USDT, min(80.0, min(available_funds, target_by_agents)))
                                 pct_display = round(comm_mult * 100, 0)
                                 LAST_AGENT_PCT = pct_display
                                 

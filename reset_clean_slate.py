@@ -11,12 +11,13 @@ if os.path.exists(log_dir):
 else:
     os.makedirs(log_dir, exist_ok=True)
 
-# 1. Reset Portfolio State ($80.00 USDT limpios, 0 posiciones residuales)
+# 1. Reset Portfolio State ($500.00 USDT limpios, 0 posiciones residuales)
 portfolio_clean = {
-    "cash": 80.0,
+    "cash": 500.0,
     "holdings": {},
     "longs": {},
     "pending_orders": {},
+    "grids": {},
     "total_fees_paid": 0.0,
     "total_slippage_cost": 0.0,
     "total_realized_pnl_acc": 0.0,
@@ -24,7 +25,7 @@ portfolio_clean = {
     "losses": 0,
     "total_trades": 0,
     "trades_since_eval": 0,
-    "peak_equity": 80.0,
+    "peak_equity": 500.0,
     "max_drawdown": 0.0
 }
 with open(os.path.join(log_dir, "portfolio_state.json"), "w", encoding="utf-8") as f:
@@ -69,7 +70,11 @@ equity_csv = os.path.join(log_dir, "equity_history.csv")
 with open(equity_csv, "w", encoding="utf-8") as f:
     f.write("timestamp,equity,cash,holdings_value,open_longs,realized_pnl_total,fees_paid,slippage_cost,max_drawdown\n")
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%S")
-    f.write(f"{now_iso},80.00,80.00,0.00,0,0.00,0.00,0.00,0.00\n")
+    f.write(f"{now_iso},500.00,500.00,0.00,0,0.00,0.00,0.00,0.00\n")
+
+# Clean PnL Audit and Live State
+with open(os.path.join(log_dir, "pnl_audit.json"), "w", encoding="utf-8") as f:
+    json.dump([], f, indent=2)
 
 # 7. Clean System Memory con Arquitectura y Principios Institucionales Limpios
 system_memory_clean = {
@@ -131,4 +136,4 @@ system_memory_clean = {
 with open(os.path.join(log_dir, "system_memory.json"), "w", encoding="utf-8") as f:
     json.dump(system_memory_clean, f, indent=2, ensure_ascii=False)
 
-print("Sistema reseteado a limpio con $80.00 USDT!")
+print("Sistema reseteado a limpio desde cero con $500.00 USDT!")
