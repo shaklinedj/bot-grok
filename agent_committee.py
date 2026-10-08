@@ -100,7 +100,7 @@ class QuantitativeAgentCommittee:
 
         return "\n".join(context_lines)
 
-    def deliberate_opportunity(self, opp: Dict, btc_macro: Dict, news_context: Dict) -> Dict:
+    def deliberate_opportunity(self, opp: Dict, btc_macro: Dict, news_context: Optional[Dict] = None) -> Dict:
         """
         Ejecuta el debate colegiado de los agentes antes de aprobar un trade:
         - Agente 1: Centinela Macro y Noticias
@@ -123,75 +123,54 @@ class QuantitativeAgentCommittee:
         adx = features.get("adx", analysis.get("adx_1h", 20.0))
         dist_ema20 = features.get("dist_ema20", analysis.get("dist_ema20_15m", 0.0))
 
-        memory_context = self._read_system_memory(symbol)
-
-        coin_news = news_context.get("coin_news", [])
-        coin_news_str = "\n".join(f"  • {n}" for n in coin_news) if coin_news else "  (Sin titulares críticos recientes en la web)"
-
-        prompt = f"""Eres el COMITÉ CUANTITATIVO MULTI-AGENTE de una firma de trading institucional con acceso a datos de mercado e Internet.
-Tu misión es debatir y tomar la decisión óptima para {symbol} evaluando la oportunidad y su perspectiva a futuro.
-No se trata de vetar por vetar: debes analizar la cara del activo y si tiene catalizadores o interés en internet para mantener volumen vivo.
-Estamos operando con una ESTRATEGIA DE MALLAS (Grid Trading Autónomo). El objetivo es atrapar micro-volatilidad en activos dinámicos.
-
-{memory_context}
-
-=== CONTEXTO DEL ACTIVO Y DEL MERCADO ===
-- Activo: {symbol}
-- Precio Actual: ${price} | Volumen 24h: ${volume:,.0f} USDT
-- Score Cuantitativo Multivariable: {score:.1f} / 100
-- Compresión de Volatilidad (TTM Squeeze): {stage}
-- Eficiencia Tendencial (KER): {ker:.3f} (>0.25 tendencia; <0.15 rango/ruido)
-- Desbalance Libro de Órdenes (OBI): {obi:+.3f} (+ compra pasiva institucional; - presión de venta)
-- Spread LOB: {spread_pct:.3f}%
-- RSI (15m): {rsi:.1f} | ADX (1h): {adx:.1f} | Distancia a EMA20: {dist_ema20:+.2f}% | Volatilidad ATR: {analysis.get('atr_pct', 2.0):.2f}%
-
-=== INVESTIGACIÓN EN INTERNET Y SENTIMIENTO EXTERNO EN VIVO ===
-- Titulares de Internet / Google News sobre {symbol}:
-{coin_news_str}
-- Sentimiento Macro Global: {news_context.get('sentiment', 'NEUTRAL')}
-- Resumen de Noticias del Mercado: {news_context.get('summary', 'Sin noticias')}
-
-=== ROLES Y AUTONOMÍA DEL DEBATE (PROSPECCIÓN DE FUTURO Y MALLAS ACTIVAS) ===
-1. [CENTINELA MACRO E INTERNET]: Analiza los titulares de internet y la salud de {symbol}. ¿Tiene buena cara? ¿Hay adopción, volumen o catalizadores que mantengan el interés, o es un activo muerto/abandonado?
-2. [ARQUITECTO DE MALLAS]: Diseña la AMPLITUD compacta (`amplitud_malla_atr` entre 1.0 y 1.4x ATR). Si el activo tiene buena perspectiva de oscilación con volumen, aprueba la malla para cosechar sin demoras.
-3. [JEFE DE RIESGO]: Asigna 70% a 85% de capital para darle volumen a cada escalón. Veta solo si hay riesgo de muerte/desplome inminente o si no hay liquidez suficiente.
-4. [COORDINADOR EJECUCIÓN]: Fija la densidad de líneas (`grid_lines`) entre 8 y 10 líneas con paso estrecho (0.45% a 0.75%) para generar ganancias recurrentes.
-
-Responde ÚNICAMENTE en formato JSON válido con la siguiente estructura exacta:
-{{
-  "debate": {{
-    "centinela_macro": "Diagnóstico de perspectiva del activo y noticias de internet en 1 oración.",
-    "arquitecto_mallas": "Evaluación de dinamismo y amplitud compacta en 1 oración.",
-    "jefe_riesgo": "Evaluación de capital y solvencia del activo en 1 oración.",
-    "coordinador_ejecucion": "Líneas asignadas para paso estrecho 0.45%-0.75% en 1 oración."
-  }},
-  "decision": "APROBADO" o "RECHAZADO",
-  "amplitud_malla_atr": float (entre 1.0 y 1.4),
-  "grid_lines": int (entre 8 y 10 líneas),
-  "porcentaje_cuenta_pct": 70 a 85,
-  "razon_clave": "Conclusión colegiada en menos de 15 palabras"
-}}"""
-
-        # Cálculo Institucional Algorítmico Inmediato (Zero Latencia / Cero Timeouts)
+        # 1. Geometría Adaptativa de la Malla (Piso, Techo y Líneas)
         atr_pct = float(analysis.get('atr_pct', 2.0))
-        amplitud_malla_atr = 1.25
         
-        # Rango óptimo basado en volatilidad real (entre 1.4% y 3.8%)
+        # Amplitud adaptativa: Si KER es mayor (cierta inercia), ensancha la malla para dar holgura; si es rango puro, es compacta
+        amplitud_malla_atr = max(1.10, min(1.65, 1.10 + (ker * 1.20)))
         raw_range_pct = (atr_pct / 100.0) * amplitud_malla_atr
-        range_pct = max(0.014, min(0.038, raw_range_pct))
+        range_pct = max(0.014, min(0.042, raw_range_pct))
         
-        # Densidad de líneas para escalón dorado (0.45% - 0.70%)
-        target_step = 0.0055
+        # Paso dinámico basado en spread y volatilidad: entre 0.45% y 0.70%
+        target_step = max(0.0045, min(0.0070, (spread_pct * 3.5) if spread_pct > 0.001 else 0.0055))
         calculated_lines = int(round((2 * range_pct) / target_step)) + 1
-        grid_lines = max(6, min(10, calculated_lines))
+        grid_lines = max(6, min(12, calculated_lines))
         
         grid_upper = round(price * (1 + range_pct), 6)
         grid_lower = round(price * (1 - range_pct), 6)
         step_size_pct = ((grid_upper - grid_lower) / grid_lower) / (grid_lines - 1) * 100
         
-        # Filtros Cuantitativos de Aprobación
+        # 2. Asignación Dinámica de Capital (Sizing Multifactorial Inteligente)
+        base_mult = 0.50
+
+        # Componente A: Score Cuantitativo Multivariable (0 a 100 pts)
+        score_adj = (score - 50.0) * 0.005
+        score_adj = max(-0.10, min(0.18, score_adj))
+
+        # Componente B: Presión Compradora de Microestructura (Order Book Imbalance OBI)
+        obi_adj = obi * 0.25
+        obi_adj = max(-0.10, min(0.15, obi_adj))
+
+        # Componente C: Eficiencia de Tendencia Kaufman (KER)
+        # KER bajo (<0.25) = Rango óptimo lateral (bono para malla); KER alto (>0.45) = Riesgo direccional (penalización)
+        if ker <= 0.25:
+            ker_adj = +0.08
+        elif ker >= 0.45:
+            ker_adj = -0.12
+        else:
+            ker_adj = 0.0
+
+        # Componente D: Régimen Macro de Bitcoin
+        is_risk_off = btc_macro.get("is_risk_off", False) if isinstance(btc_macro, dict) else False
+        macro_mult = 0.75 if is_risk_off else 1.0
+
+        # Multiplicador dinámico integrado (entre 35% y 90% según las condiciones en vivo)
+        raw_mult = (base_mult + score_adj + obi_adj + ker_adj) * macro_mult
+        mult_clean = round(max(0.35, min(0.90, raw_mult)), 2)
+
+        # 3. Filtros Cuantitativos Institucionales de Aprobación
         decision_clean = "APROBADO"
-        veto_reason = "Consenso colegiado alcanzado"
+        veto_reason = f"Aprobado dinámicamente al {round(mult_clean*100)}% de capital"
         
         if volume < 2_500_000:
             decision_clean = "RECHAZADO"
@@ -208,14 +187,12 @@ Responde ÚNICAMENTE en formato JSON válido con la siguiente estructura exacta:
         elif step_size_pct < 0.40 or step_size_pct > 0.95:
             decision_clean = "RECHAZADO"
             veto_reason = f"Paso fuera de rango óptimo ({step_size_pct:.2f}%)"
-            
-        mult_clean = 0.80  # 80% de fondos disponibles para escalones con buen peso
 
         debate = {
-            "centinela_macro": f"Volumen 24h verificado en ${volume:,.0f} USDT. Sin anomalías en libro.",
-            "arquitecto_mallas": f"Rango ±{range_pct*100:.1f}% ({grid_lines} líneas a paso {step_size_pct:.2f}%).",
-            "jefe_riesgo": f"Capital calibrado al {round(mult_clean*100)}% con modo paciente ante rupturas.",
-            "coordinador_ejecucion": f"Órdenes Maker preparadas en libro con spread de {spread_pct:.3f}%."
+            "centinela_macro": f"Régimen verificado ({'Cautela BTC' if is_risk_off else 'Estable'}). Volumen ${volume:,.0f} USDT.",
+            "arquitecto_mallas": f"Malla adaptativa: rango ±{range_pct*100:.2f}% a {amplitud_malla_atr:.2f}x ATR ({grid_lines} líneas a paso {step_size_pct:.2f}%).",
+            "jefe_riesgo": f"Capital calibrado dinámicamente al {round(mult_clean*100)}% (Score {score:.1f}, OBI {obi:+.2f}, KER {ker:.2f}).",
+            "coordinador_ejecucion": f"Líneas de libro preparadas con paso {step_size_pct:.2f}% y spread {spread_pct:.3f}%."
         }
 
         verdict = {

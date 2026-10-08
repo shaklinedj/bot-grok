@@ -586,9 +586,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       // Radar Macro 4h/1d
       renderMacroRadar(data.btc_macro || {});
 
-      // Centinela IA de Noticias (NVIDIA NIM)
-      renderNewsSentinel(data.news_sentinel || {});
-
       // Radar Escáner
       renderScanner(data.scanner_opportunities || []);
 
@@ -995,61 +992,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       if (sumEl && macroData.summary) sumEl.innerText = macroData.summary;
     }
 
-    function renderNewsSentinel(newsData) {
-      if (!newsData) return;
-      const sentBadge = document.getElementById('news-sentiment-badge');
-      const timeEl = document.getElementById('news-update-time');
-      const summaryEl = document.getElementById('news-summary-text');
-      const vetoCountEl = document.getElementById('news-veto-count');
-      const container = document.getElementById('news-alerts-container');
-
-      if (timeEl && newsData.last_update) timeEl.innerText = newsData.last_update;
-      if (summaryEl && newsData.summary) summaryEl.innerText = newsData.summary;
-
-      const bl = newsData.blacklisted || [];
-      if (vetoCountEl) {
-        if (bl.length > 0) {
-          vetoCountEl.innerText = `${bl.length} VETADOS (${bl.join(', ')})`;
-          vetoCountEl.className = 'text-rose-400 font-bold';
-        } else {
-          vetoCountEl.innerText = '0 Monedas Vetadas (Libre)';
-          vetoCountEl.className = 'text-emerald-400 font-medium';
-        }
-      }
-
-      if (sentBadge && newsData.sentiment) {
-        const s = newsData.sentiment.toUpperCase();
-        let color = 'bg-purple-500/20 text-purple-300 border-purple-500/30';
-        if (s.includes('ALCISTA')) color = 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30';
-        else if (s.includes('BAJISTA')) color = 'bg-rose-500/20 text-rose-300 border-rose-500/30';
-        else if (s.includes('CAUTELA')) color = 'bg-amber-500/20 text-amber-300 border-amber-500/30';
-        sentBadge.className = `font-bold px-2 py-0.5 rounded border ${color}`;
-        sentBadge.innerText = 'SENTIMIENTO: ' + s;
-      }
-
-      if (container && newsData.alerts && newsData.alerts.length > 0) {
-        let html = '';
-        for (const al of newsData.alerts.slice(0, 4)) {
-          const isVeto = (al.accion || '').includes('VETO') || (al.riesgo || '') === 'CRITICO_VETO' || (al.riesgo || '') === 'ALTO';
-          const cardBorder = isVeto ? 'border-rose-500/40 bg-rose-950/20' : 'border-gray-800 bg-gray-900/40';
-          const badgeClass = isVeto ? 'bg-rose-500/20 text-rose-300 border-rose-500/40' : 'bg-gray-800 text-gray-300 border-gray-700';
-
-          html += `
-            <div class="p-2.5 rounded border ${cardBorder} flex flex-col justify-between">
-              <div>
-                <div class="flex items-center justify-between gap-1 mb-1">
-                  <span class="font-bold text-white text-[11px]">${al.activo || 'GENERAL'}</span>
-                  <span class="text-[9px] px-1.5 py-0.5 rounded border font-bold ${badgeClass}">${al.accion || al.riesgo}</span>
-                </div>
-                <div class="text-[11px] text-gray-300 font-sans line-clamp-1 mb-1">${al.titular || ''}</div>
-              </div>
-              <div class="text-[10px] text-gray-400 font-sans italic border-t border-gray-800/60 pt-1">${al.razon || ''}</div>
-            </div>
-          `;
-        }
-        container.innerHTML = html;
-      }
-    }
+    function renderNewsSentinel(newsData) {}
 
     function renderScanner(opportunities) {
       const tbody = document.getElementById('scanner-tbody');

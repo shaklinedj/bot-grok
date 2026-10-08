@@ -54,7 +54,6 @@ import dashboard_spa
 from self_eval import TradeAuditor
 from meta_labeling import MetaLabelingGatekeeper, compute_kaufman_efficiency_ratio
 from macro_radar import MacroRegimeEngine, evaluate_multi_factor_arsenal, fetch_order_book_microstructure
-from news_sentinel import news_sentinel
 from ai_auditor import ai_auditor
 from agent_committee import agent_committee
 
@@ -983,12 +982,6 @@ def select_best_opportunities(bot: PaperBot, top_n: int = 6) -> List[Dict]:
         if symbol in bot.longs or symbol in bot.pending_orders:
             continue
 
-        # Veto de Seguridad por Noticias Críticas (NVIDIA NIM AI)
-        is_news_vetoed, news_reason = news_sentinel.is_symbol_blacklisted(symbol)
-        if is_news_vetoed:
-            print(f"  🚨 [VETO NOTICIAS NVIDIA] {symbol}: {news_reason}", flush=True)
-            continue
-
         try:
             macro_info = macro_engine.analyze_coin_macro(symbol)
             ohlcv_15m = exchange.fetch_ohlcv(symbol, "15m", limit=30)
@@ -1717,13 +1710,6 @@ def update_live_state(bot: PaperBot, prices: Dict[str, float],
         "meta_model": meta_gate.get_summary(),
         "scanner_opportunities": latest_opportunities,
         "btc_macro": macro_engine.btc_macro_state,
-        "news_sentinel": {
-            "sentiment": news_sentinel.market_sentiment,
-            "summary": news_sentinel.summary_text,
-            "alerts": news_sentinel.recent_alerts[:6],
-            "blacklisted": list(news_sentinel.blacklisted_symbols),
-            "last_update": time.strftime("%H:%M:%S", time.localtime(news_sentinel.last_update_ts)) if news_sentinel.last_update_ts else "Iniciando..."
-        },
         "ai_audits": ai_auditor.audits[-6:],
         "system_memory": ai_auditor.system_memory,
         "committee_deliberations": agent_committee.deliberations[-5:],
@@ -1853,9 +1839,6 @@ def run_paper_trading(reset_all: bool = False):
     
     # Inicializar estado macro antes de empezar para la UI
     macro_engine.run_macro_cycle(["BTC/USDT", "ETH/USDT"])
-
-    # Iniciar Centinela IA de Noticias (NVIDIA NIM) en segundo plano
-    news_sentinel.start_background_worker()
 
     while bot.is_alive:
         try:
@@ -2138,12 +2121,7 @@ def run_paper_trading(reset_all: bool = False):
                             analysis = best_candidate["analysis"]
 
                             print(f"\n  🏛️ [EVALUACIÓN CUANTITATIVA -> COMITÉ INSTITUCIONAL] Analizando parámetros óptimos para {sym}...", flush=True)
-                            news_ctx = {
-                                "sentiment": "NEUTRAL",
-                                "summary": "Supervisión cuantitativa de libro y microestructura en tiempo real",
-                                "coin_news": []
-                            }
-                            committee_verdict = agent_committee.deliberate_opportunity(best_candidate, macro_engine.btc_macro_state, news_ctx)
+                            committee_verdict = agent_committee.deliberate_opportunity(best_candidate, macro_engine.btc_macro_state)
                             deliberation_cooldown[sym] = now_ts
 
                             decision = committee_verdict.get("decision", "RECHAZADO")
