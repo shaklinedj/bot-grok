@@ -534,9 +534,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       const riskPositions = posList.filter(p => !p.tp1_hit);
       const freeRunners = posList.filter(p => p.tp1_hit);
       const pendingCount = (data.pending_limit_orders || []).length;
-      const totalOccupied = posList.length + pendingCount;
-      document.getElementById('kpi-slots').innerText = riskPositions.length + ' riesgo + ' + pendingCount + ' pendiente (' + freeRunners.length + ' runners)';
-      document.getElementById('positions-count-badge').innerText = posList.length + ' en juego (' + freeRunners.length + ' libres de riesgo)';
+      const gridCount = (data.grids || []).length;
+      document.getElementById('kpi-slots').innerText = gridCount > 0 ? (gridCount + ' Malla Activa Desplegada') : 'Sin mallas activas';
+      if (document.getElementById('positions-count-badge')) {
+        document.getElementById('positions-count-badge').innerText = gridCount + ' mallas activas';
+      }
 
       // Params - Capital IA Autónomo (dinámico)
       const cashAvail = Number(data.cash || 0);
@@ -751,9 +753,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           <!-- 2. RESUMEN EXCLUSIVO DE ESTA OPERACIÓN (Estilo Pionex Open Grid) -->
           <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-gray-950/70 p-3.5 rounded-xl border border-purple-500/30 shadow-inner">
             <div class="border-r border-gray-800/80 pr-2">
-              <div class="text-[10px] text-gray-400 uppercase font-mono font-bold">Capital en Esta Malla</div>
-              <div class="text-lg font-black font-mono text-white">$${capTotal.toFixed(2)} <span class="text-xs text-gray-400 font-normal">USDT</span></div>
-              <div class="text-[10px] text-gray-500 font-mono">~$${capPerLine.toFixed(2)} / escalón (${g.grid_lines || 9} líns)</div>
+              <div class="text-[10px] text-gray-400 uppercase font-mono font-bold">Valor en Mercado (Tokens)</div>
+              <div class="text-lg font-black font-mono text-white">$${(Number(g.market_value) || capTotal).toFixed(2)} <span class="text-xs text-gray-400 font-normal">USDT</span></div>
+              <div class="text-[10px] text-gray-500 font-mono">${g.tokens_held || ''} ${g.symbol.split('/')[0]} en órdenes vivas</div>
             </div>
             
             <div class="border-r border-gray-800/80 pr-2">

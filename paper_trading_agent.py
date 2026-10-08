@@ -1532,7 +1532,12 @@ def update_live_state(bot: PaperBot, prices: Dict[str, float],
                       latest_opportunities: List[Dict], cycle_num: int):
     global LATEST_LIVE_STATE
     equity = bot.get_equity(prices)
-    holdings_val = bot.get_holdings_value(prices)
+    grid_market_val = sum(
+        (l["amount"] * prices.get(g.symbol, g.grid_upper)) if l["side"] == "sell" else (l["price"] * l["amount"])
+        for g in bot.grids.values() if g.active
+        for l in g.lines if l.get("active")
+    )
+    holdings_val = bot.get_holdings_value(prices) + grid_market_val
     # Calcular PnL Flotante de Posiciones Sniper y de Mallas Activas
     total_cost_basis = 0.0
     unrealized_pnl = 0.0
@@ -1701,6 +1706,11 @@ def update_live_state(bot: PaperBot, prices: Dict[str, float],
                     for l in g.lines if l.get("active") and l.get("side") == "sell"
                 ), 4),
                 "fills_count": getattr(g, "fills_count", 0),
+                "market_value": round(sum(
+                    (l["amount"] * prices.get(g.symbol, g.grid_upper)) if l["side"] == "sell" else (l["price"] * l["amount"])
+                    for l in g.lines if l.get("active")
+                ), 2),
+                "tokens_held": round(sum(l["amount"] for l in g.lines if l.get("active") and l["side"] == "sell"), 4),
             }
             for g in bot.grids.values() if g.active
         ],
