@@ -2349,18 +2349,24 @@ def run_paper_trading(reset_all: bool = False):
                                         
                                         p = grid_lower
                                         while p <= grid_upper + (step_size * 0.1): # Tolerancia de flotantes
-                                            if p < current_price:
+                                            if p < current_price * 0.998:
                                                 # Orden Límite de Compra
                                                 lines.append({"price": p, "side": "buy", "amount": cap_per_line / p, "buy_price": p, "active": True})
                                                 total_cash_needed += cap_per_line
                                                 buys_count += 1
-                                            else:
-                                                # Orden Límite de Venta (Requiere compra a mercado inicial a current_price)
+                                            elif p > current_price * 1.002:
+                                                # Orden Límite de Venta (Requiere compra inicial a current_price)
                                                 amount = cap_per_line / p
                                                 cost = amount * current_price * (1 + FEE_RATE)
                                                 lines.append({"price": p, "side": "sell", "amount": amount, "buy_price": current_price, "active": True})
                                                 total_cash_needed += cost
                                                 sells_count += 1
+                                            else:
+                                                # Si el escalón cae virtualmente en el precio de mercado (+-0.2%), reubicarlo medio paso abajo para evitar fills inmediatos con pérdida de fee
+                                                p_buy = current_price * (1 - (step_pct * 0.5))
+                                                lines.append({"price": p_buy, "side": "buy", "amount": cap_per_line / p_buy, "buy_price": p_buy, "active": True})
+                                                total_cash_needed += cap_per_line
+                                                buys_count += 1
                                             p += step_size
                                             
                                         if bot.cash >= total_cash_needed:

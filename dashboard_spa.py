@@ -763,7 +763,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <span>Cosecha en Esta Malla</span>
                 <span class="text-[9px] bg-emerald-500/20 text-emerald-300 px-1 rounded font-bold">GRID PROFIT</span>
               </div>
-              <div class="text-lg font-black font-mono text-emerald-400">+$${gridProfit.toFixed(4)} <span class="text-xs bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded font-bold">+${gridRoiPct.toFixed(2)}%</span></div>
+              <div class="text-lg font-black font-mono ${gridProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${gridProfit >= 0 ? '+' : ''}$${gridProfit.toFixed(4)} <span class="text-xs ${gridRoiPct >= 0 ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'} px-1.5 py-0.5 rounded font-bold">${gridRoiPct >= 0 ? '+' : ''}${gridRoiPct.toFixed(2)}%</span></div>
               <div class="text-[10px] text-emerald-500/80 font-mono">${gridFills} fills en esta operación</div>
             </div>
 
