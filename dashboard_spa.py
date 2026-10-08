@@ -1611,13 +1611,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       }
       let html = '';
       for (const c of auditList) {
-        const timePart = c.exit_time ? c.exit_time.split('T')[1]?.split('.')[0] : '--:--';
+        const isLive = c.is_open || (c.exit_time && c.exit_time.includes('EN VIVO'));
+        const timePart = isLive ? '<span class="text-emerald-400 font-bold animate-pulse">⚡ EN VIVO</span>' : (c.exit_time ? (c.exit_time.includes('T') ? c.exit_time.split('T')[1]?.split('.')[0] : c.exit_time) : '--:--');
         const isWin = Number(c.net_pnl) > 0;
         const isBE = Number(c.net_pnl) === 0;
         const pnlColor = isWin ? 'text-emerald-400 font-bold' : (isBE ? 'text-gray-400' : 'text-rose-400 font-bold');
         const pnlSign = Number(c.net_pnl) > 0 ? '+' : '';
 
-        let badgeClass = isWin ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : (isBE ? 'bg-gray-800 text-gray-400' : 'bg-rose-500/20 text-rose-300 border-rose-500/40');
+        let badgeClass = isLive ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 animate-pulse' : (isWin ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : (isBE ? 'bg-gray-800 text-gray-400' : 'bg-rose-500/20 text-rose-300 border-rose-500/40'));
 
         html += `
           <tr class="hover:bg-gray-800/40 transition-colors font-mono">

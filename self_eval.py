@@ -97,6 +97,10 @@ class TradeAuditor:
             exit_row = final_exit.iloc[-1]
             has_tp1 = not exits[exits['strategy'].str.contains('tp1', case=False, na=False)].empty
             
+            is_grid = str(pos_id).startswith('grid_')
+            has_grid_closed = not group[group['strategy'].str.contains('stop|liquidation|close', case=False, na=False)].empty
+            is_still_open = is_grid and (not has_grid_closed)
+            
             net_pnl = exits['pnl'].sum()
             total_fees = group['fee'].sum()
             total_slippage = group['slippage'].sum()
@@ -105,22 +109,30 @@ class TradeAuditor:
             hold_duration = (exit_row['ts'] - entry_row['ts']).total_seconds() / 60.0
             
             exit_reason_raw = str(exit_row.get('extra_info', '') or '')
-            if 'Runner Trailing' in exit_reason_raw:
+            if is_still_open:
+                exit_reason = 'Malla Activa (Cosecha en Curso)'
+                exit_time_val = '⚡ EN VIVO'
+            elif 'Runner Trailing' in exit_reason_raw:
                 exit_reason = 'Runner Trailing'
+                exit_time_val = str(exit_row['timestamp'])
             elif 'Break-Even' in exit_reason_raw or 'Escudo' in exit_reason_raw:
                 exit_reason = 'Break-Even'
+                exit_time_val = str(exit_row['timestamp'])
             elif 'Stop Loss' in exit_reason_raw:
                 exit_reason = 'Stop Loss'
+                exit_time_val = str(exit_row['timestamp'])
             elif 'TP1' in exit_reason_raw:
                 exit_reason = 'TP1 Exit'
+                exit_time_val = str(exit_row['timestamp'])
             else:
                 exit_reason = exit_reason_raw[:30] if exit_reason_raw else 'Take Profit / Cierre'
+                exit_time_val = str(exit_row['timestamp'])
             
             cycles.append({
                 'position_id': pos_id,
                 'symbol': entry_row['symbol'],
-                'entry_time': entry_row['timestamp'],
-                'exit_time': exit_row['timestamp'],
+                'entry_time': str(entry_row['timestamp']),
+                'exit_time': exit_time_val,
                 'entry_price': float(entry_row['price']),
                 'exit_price': float(exit_row['price']),
                 'direction': 'LONG',
@@ -131,7 +143,8 @@ class TradeAuditor:
                 'hold_duration_min': round(hold_duration, 2),
                 'exit_reason': exit_reason,
                 'had_tp1': has_tp1,
-                'is_win': net_pnl > 0
+                'is_win': net_pnl > 0,
+                'is_open': is_still_open
             })
             
         if not cycles:
@@ -261,7 +274,9 @@ class TradeAuditor:
         audit_logs = []
         for _, row in cycles_df.iterrows():
             pnl = row['net_pnl']
-            if pnl > 0:
+            if row.get('is_open'):
+                verdict = '⚡ Cosechando (En Vivo)'
+            elif pnl > 0:
                 verdict = '🟢 Ganancia'
             elif pnl < 0:
                 verdict = '🔴 Pérdida'
@@ -272,6 +287,7 @@ class TradeAuditor:
                 'symbol': row['symbol'],
                 'entry_time': str(row['entry_time']),
                 'exit_time': str(row['exit_time']),
+                'is_open': bool(row.get('is_open', False)),
                 'entry_price': round(safe_float(row['entry_price']), 5),
                 'exit_price': round(safe_float(row['exit_price']), 5),
                 'direction': str(row['direction']),
