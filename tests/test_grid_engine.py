@@ -1,9 +1,18 @@
 import os
 import json
-import shutil
+import glob
 import tempfile
 import unittest
-from paper_trading_agent import GridPosition, PaperBot, ReinforcementBrain, INITIAL_CAPITAL
+from unittest.mock import patch
+from paper_trading_agent import (
+    GridPosition,
+    LongPosition,
+    PaperBot,
+    ReinforcementBrain,
+    INITIAL_CAPITAL,
+    get_position_volume_24h,
+    get_tick_price_range,
+)
 
 class TestGridEngine(unittest.TestCase):
     def test_grid_step_size_initialization(self):
@@ -37,16 +46,46 @@ class TestGridEngine(unittest.TestCase):
     def test_portfolio_corrupt_state_recovery(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             corrupt_file = os.path.join(tmp_dir, "portfolio_state.json")
-            with open(corrupt_file, "w") as f:
-                f.write("{corrupted_json_content: true,")
-            
-            # Verify file exists
-            self.assertTrue(os.path.exists(corrupt_file))
-            
-            # Backup verification simulation
-            bak_file = f"{corrupt_file}.corrupt.bak"
-            shutil.copy2(corrupt_file, bak_file)
-            self.assertTrue(os.path.exists(bak_file))
+            with open(corrupt_file, "w", encoding="utf-8") as f:
+                json.dump({"cash": 12.0, "longs": {"BTC/USDT": {}}}, f)
+
+            bot = PaperBot.__new__(PaperBot)
+            bot.cash = INITIAL_CAPITAL
+            bot.holdings = {}
+            bot.longs = {}
+            bot.grids = {}
+            bot.total_fees_paid = 0.0
+            bot.total_slippage_cost = 0.0
+            bot.total_realized_pnl_acc = 0.0
+            bot.wins = bot.losses = bot.total_trades = 0
+
+            with patch("paper_trading_agent.PORTFOLIO_STATE_FILE", corrupt_file):
+                bot.load_portfolio_state()
+
+            backups = glob.glob(f"{corrupt_file}.corrupt.*.bak")
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(bot.cash, INITIAL_CAPITAL)
+            self.assertEqual(bot.longs, {})
+
+    def test_trade_range_includes_intermediate_wicks(self):
+        trades = [{"price": 101.0}, {"price": 95.0}, {"price": 104.0}]
+        self.assertEqual(get_tick_price_range(trades, 100.0, 99.0), (95.0, 104.0))
+
+    def test_slippage_uses_saved_volume_features(self):
+        position = LongPosition(
+            position_id="test",
+            symbol="BTC/USDT",
+            initial_amount=1.0,
+            amount=1.0,
+            entry_price=100.0,
+            stop_loss=90.0,
+            initial_sl=90.0,
+            trailing_stop=90.0,
+            features_at_entry={"volume_m": 7.5},
+        )
+        self.assertEqual(get_position_volume_24h(position), 7_500_000.0)
+        position.features_at_entry["volume_24h"] = 12_000_000
+        self.assertEqual(get_position_volume_24h(position), 12_000_000.0)
 
 if __name__ == "__main__":
     unittest.main()

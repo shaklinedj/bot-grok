@@ -130,6 +130,35 @@ def _atomic_json_dump(path: str, data, **kwargs):
     os.replace(tmp_path, path)
 
 
+def get_tick_price_range(trades: list, previous_price: float, current_price: float) -> Tuple[float, float]:
+    trade_prices = []
+    for trade in trades:
+        try:
+            trade_price = float(trade.get("price", 0.0))
+            if trade_price > 0:
+                trade_prices.append(trade_price)
+        except (AttributeError, TypeError, ValueError):
+            continue
+    observed_prices = trade_prices + [previous_price, current_price]
+    return min(observed_prices), max(observed_prices)
+
+
+def get_position_volume_24h(position) -> float:
+    features = getattr(position, "features_at_entry", None)
+    if not isinstance(features, dict):
+        return 20_000_000.0
+    volume_24h = features.get("volume_24h")
+    if volume_24h is None and features.get("volume_m") is not None:
+        try:
+            volume_24h = float(features["volume_m"]) * 1_000_000
+        except (TypeError, ValueError):
+            volume_24h = None
+    try:
+        return max(0.0, float(volume_24h)) if volume_24h is not None else 20_000_000.0
+    except (TypeError, ValueError):
+        return 20_000_000.0
+
+
 # ====================== CEREBRO DE APRENDIZAJE POR REFUERZO ======================
 class ReinforcementBrain:
     def __init__(self):
@@ -630,31 +659,44 @@ class PaperBot:
             try:
                 with open(PORTFOLIO_STATE_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    self.cash = float(data.get("cash", INITIAL_CAPITAL))
-                    self.holdings = data.get("holdings", {})
-                    self.total_fees_paid = float(data.get("total_fees_paid", 0.0))
-                    self.total_slippage_cost = float(data.get("total_slippage_cost", 0.0))
-                    self.total_realized_pnl_acc = float(data.get("total_realized_pnl_acc", 0.0))
-                    self.wins = int(data.get("wins", 0))
-                    self.losses = int(data.get("losses", 0))
-                    self.total_trades = int(data.get("total_trades", 0))
-
+                    if not isinstance(data, dict):
+                        raise ValueError("El estado del portafolio debe ser un objeto JSON")
+                    loaded_cash = float(data.get("cash", INITIAL_CAPITAL))
+                    loaded_holdings = data.get("holdings", {})
+                    if not isinstance(loaded_holdings, dict):
+                        raise ValueError("Las tenencias del portafolio no son válidas")
                     longs_data = data.get("longs", {})
-                    for sym, pos_dict in longs_data.items():
-                        try:
-                            self.longs[sym] = LongPosition.from_dict(pos_dict)
-                        except Exception as l_err:
-                            print(f"  ⚠️ [Error al deserializar posición long {sym}]: {l_err}", flush=True)
-
                     grids_data = data.get("grids", {})
-                    for sym, g_dict in grids_data.items():
-                        try:
-                            self.grids[sym] = GridPosition.from_dict(g_dict)
-                        except Exception as g_err:
-                            print(f"  ⚠️ [Error al deserializar malla {sym}]: {g_err}", flush=True)
+                    if not isinstance(longs_data, dict) or not isinstance(grids_data, dict):
+                        raise ValueError("Las posiciones del portafolio no son válidas")
+                    loaded_longs = {
+                        sym: LongPosition.from_dict(pos_dict)
+                        for sym, pos_dict in longs_data.items()
+                    }
+                    loaded_grids = {
+                        sym: GridPosition.from_dict(grid_dict)
+                        for sym, grid_dict in grids_data.items()
+                    }
+                    loaded_fees = float(data.get("total_fees_paid", 0.0))
+                    loaded_slippage = float(data.get("total_slippage_cost", 0.0))
+                    loaded_realized_pnl = float(data.get("total_realized_pnl_acc", 0.0))
+                    loaded_wins = int(data.get("wins", 0))
+                    loaded_losses = int(data.get("losses", 0))
+                    loaded_trades = int(data.get("total_trades", 0))
+
+                    self.cash = loaded_cash
+                    self.holdings = loaded_holdings
+                    self.longs = loaded_longs
+                    self.grids = loaded_grids
+                    self.total_fees_paid = loaded_fees
+                    self.total_slippage_cost = loaded_slippage
+                    self.total_realized_pnl_acc = loaded_realized_pnl
+                    self.wins = loaded_wins
+                    self.losses = loaded_losses
+                    self.total_trades = loaded_trades
                 print(f"  📂 [PORTAFOLIO CARGADO] Efectivo: ${self.cash:.2f} USDT | Mallas Activas: {len(self.grids)} | Posiciones: {len(self.longs)}", flush=True)
-            except (json.JSONDecodeError, Exception) as e:
-                bak_file = f"{PORTFOLIO_STATE_FILE}.corrupt.{int(time.time())}.bak"
+            except Exception as e:
+                bak_file = f"{PORTFOLIO_STATE_FILE}.corrupt.{time.time_ns()}.bak"
                 try:
                     shutil.copy2(PORTFOLIO_STATE_FILE, bak_file)
                     print(f"  🚨 [ALERTA ESTADO CORRUPTO] Archivo de portafolio dañado respaldado en {bak_file}. Error: {e}", flush=True)
@@ -1014,6 +1056,7 @@ def get_sniper_analysis_aggressive(symbol: str, df_15m: pd.DataFrame, df_1h: pd.
         "rsi": round(rsi_15m, 1),
         "atr_pct": round(atr_pct_1h, 2),
         "volume_m": round(volume_m, 1),
+        "volume_24h": max(0.0, float(volume_m)) * 1_000_000,
         "pid_p": pid_sq["P"],
         "pid_d": pid_sq["D"],
         "pid_acc": pid_sq["Acc"],
@@ -1523,7 +1566,7 @@ def manage_longs(bot: PaperBot, prices: Dict[str, float], atrs: Dict[str, float]
                     bot.save_portfolio_state()
 
         # 2. TOMA DE BENEFICIOS TP1 (15% para cubrir todas las comisiones y dejar 85% RUNNER)
-        pos_vol = float(pos.features_at_entry.get("volume_24h", 20_000_000)) if getattr(pos, "features_at_entry", None) else 20_000_000
+        pos_vol = get_position_volume_24h(pos)
         if not pos.tp1_hit and gain_pct >= brain.tp1_gain_pct:
             # Solo cerramos el 15% de la posición: cubre comisiones de entrada, salida y asegura ganancia neta en caja
             close_amount = pos.amount * 0.15
@@ -2023,6 +2066,7 @@ def run_paper_trading(reset_all: bool = False):
             pass
 
     last_known_prices: Dict[str, float] = {}
+    last_trade_timestamps: Dict[str, int] = {}
     cached_atrs: Dict[str, tuple] = {}  # symbol -> (atr_value, cached_timestamp)
     deliberation_cooldown: Dict[str, float] = {}
 
@@ -2043,7 +2087,7 @@ def run_paper_trading(reset_all: bool = False):
                 brain.time_decay()
 
             prev_tick_prices = dict(last_known_prices)
-            prices, volumes, atrs = {}, {}, {}
+            prices, volumes, atrs, tick_ranges = {}, {}, {}, {}
             monitored_symbols = set(list(bot.holdings.keys()) + list(bot.longs.keys()) + list(bot.pending_orders.keys()) + [g.symbol for g in bot.grids.values() if g.active])
 
             for sym in monitored_symbols:
@@ -2053,6 +2097,23 @@ def run_paper_trading(reset_all: bool = False):
                     prices[sym] = last_p
                     last_known_prices[sym] = last_p
                     volumes[sym] = float(t.get("quoteVolume") or (float(t.get("baseVolume", 0) or 0) * last_p) or 15_000_000)
+                    previous_trade_ts = last_trade_timestamps.get(
+                        sym, int((now_ts - CHECK_INTERVAL_SECONDS) * 1000)
+                    )
+                    try:
+                        trades = exchange.fetch_trades(sym, since=previous_trade_ts, limit=1000)
+                    except Exception:
+                        trades = []
+                    trade_timestamps = [
+                        int(trade["timestamp"])
+                        for trade in trades
+                        if isinstance(trade, dict) and trade.get("timestamp") is not None
+                    ]
+                    if trade_timestamps:
+                        last_trade_timestamps[sym] = max(trade_timestamps)
+                    tick_ranges[sym] = get_tick_price_range(
+                        trades, prev_tick_prices.get(sym, last_p), last_p
+                    )
                     
                     # Cache de ATR 1h (TTL: 60s) para ticks ultra-rápidos de 1.5s sin latencia de red
                     if sym in cached_atrs and (now_ts - cached_atrs[sym][1]) < 60.0:
@@ -2086,13 +2147,14 @@ def run_paper_trading(reset_all: bool = False):
                 if not curr_p:
                     continue
 
-                prev_p = prev_tick_prices.get(sym, curr_p)
-                tick_low = min(prev_p, curr_p)
-                tick_high = max(prev_p, curr_p)
+                tick_low, tick_high = tick_ranges.get(
+                    sym, (min(prev_tick_prices.get(sym, curr_p), curr_p), max(prev_tick_prices.get(sym, curr_p), curr_p))
+                )
                 step_sz = getattr(grid, "step_size", 0.0)
-                
+                 
                 # Check lines: Procesar compras ordenadas de mayor a menor precio
                 active_buys = [l for l in grid.lines if l.get("active") and l.get("side") == "buy"]
+                active_sells = [l for l in grid.lines if l.get("active") and l.get("side") == "sell"]
                 for line in sorted(active_buys, key=lambda x: -x["price"]):
                     if line["price"] >= tick_low:
                         # Ejecutar Compra Limit
@@ -2120,7 +2182,6 @@ def run_paper_trading(reset_all: bool = False):
                         bot.save_portfolio_state()
                         
                 # Check lines: Procesar ventas ordenadas de menor a mayor precio
-                active_sells = [l for l in grid.lines if l.get("active") and l.get("side") == "sell"]
                 for line in sorted(active_sells, key=lambda x: x["price"]):
                     if line["price"] <= tick_high:
                         # Ejecutar Venta Limit
@@ -2191,6 +2252,8 @@ def run_paper_trading(reset_all: bool = False):
                     if grid.step_pct > 0.0042:
                         old_step = grid.step_pct
                         grid.step_pct = max(0.0040, grid.step_pct * 0.88)
+                        step_sz = curr_p * grid.step_pct
+                        grid.step_size = step_sz
                         grid.dynamic_adjustments_count = getattr(grid, "dynamic_adjustments_count", 0) + 1
                         grid.status_msg = f"Intervalos comprimidos ({old_step*100:.2f}% -> {grid.step_pct*100:.2f}%)"
                         print(f"  ⚡ [SUPERVISOR DINÁMICO {sym}] Sin fills. Paso comprimido de {old_step*100:.2f}% a {grid.step_pct*100:.2f}%.", flush=True)
