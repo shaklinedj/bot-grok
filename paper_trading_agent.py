@@ -1683,7 +1683,8 @@ def update_live_state(bot: PaperBot, prices: Dict[str, float],
                 for row in reader:
                     if len(row) > 1:
                         try:
-                            all_vals.append(round(float(row[1]), 2))
+                            t_str = row[0].split('.')[0].replace('T', ' ')
+                            all_vals.append({"t": t_str, "v": round(float(row[1]), 2)})
                         except Exception:
                             pass
                 if len(all_vals) <= 300:
@@ -1699,7 +1700,8 @@ def update_live_state(bot: PaperBot, prices: Dict[str, float],
         except Exception:
             pass
     if not equity_hist:
-        equity_hist = [equity]
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        equity_hist = [{"t": now_str, "v": round(equity, 2)}]
 
     positions_list = []
     for pos in bot.longs.values():

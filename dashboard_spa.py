@@ -204,8 +204,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           <span>Actual: <strong id="chart-curr" class="text-white">$0.00</strong></span>
         </div>
       </div>
-      <div class="w-full h-36 bg-gray-950/70 rounded-lg p-2 border border-gray-800/80 relative flex items-center">
-        <svg id="equity-svg" class="w-full h-full overflow-visible" preserveAspectRatio="none" viewBox="0 0 600 100">
+      <div id="chart-wrapper" class="w-full h-36 bg-gray-950/70 rounded-lg p-2 border border-gray-800/80 relative flex items-center cursor-crosshair select-none">
+        <svg id="equity-svg" class="w-full h-full overflow-visible pointer-events-none" preserveAspectRatio="none" viewBox="0 0 600 100">
           <defs>
             <linearGradient id="equity-grad" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stop-color="#10b981" stop-opacity="0.35" />
@@ -214,7 +214,27 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           </defs>
           <path id="svg-area" d="" fill="url(#equity-grad)" />
           <path id="svg-line" d="" fill="none" stroke="#10b981" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+          <!-- Crosshair Vertical Guide -->
+          <line id="svg-crosshair" x1="0" y1="0" x2="0" y2="100" stroke="#38bdf8" stroke-width="1.5" stroke-dasharray="3 3" opacity="0" />
+          <!-- Crosshair Interactive Dot -->
+          <circle id="svg-dot" cx="0" cy="0" r="4.5" fill="#38bdf8" stroke="#ffffff" stroke-width="1.5" opacity="0" />
         </svg>
+
+        <!-- Tooltip Interactivo Flotante -->
+        <div id="chart-tooltip" class="absolute pointer-events-none hidden z-30 bg-gray-900/95 border border-sky-500/50 rounded-lg p-2.5 shadow-2xl backdrop-blur-md text-xs font-mono transition-opacity duration-75 min-w-[150px]">
+          <div class="flex items-center gap-1.5 text-gray-400 text-[10px] pb-1 border-b border-gray-800">
+            <span>⏱️</span>
+            <span id="tooltip-time">--:--:--</span>
+          </div>
+          <div class="flex items-center justify-between gap-3 mt-1.5">
+            <span class="text-gray-400 text-[11px]">Equity:</span>
+            <span id="tooltip-equity" class="text-white font-black text-sm">$0.00</span>
+          </div>
+          <div class="flex items-center justify-between gap-3 mt-0.5">
+            <span class="text-gray-400 text-[10px]">vs Génesis:</span>
+            <span id="tooltip-diff" class="font-bold text-[11px] text-emerald-400">+$0.00 (+0.0%)</span>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -935,12 +955,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       container.innerHTML = html;
     }
 
+    let chartHoverSetupDone = false;
+
     function renderChart(history) {
       if (!history || history.length < 2) return;
-      const startVal = history[0];
-      const minVal = Math.min(...history);
-      const maxVal = Math.max(...history);
-      const currVal = history[history.length - 1];
+      const rawVals = history.map(h => (typeof h === 'object' && h !== null && h.v !== undefined) ? Number(h.v) : Number(h));
+      const startVal = rawVals[0];
+      const minVal = Math.min(...rawVals);
+      const maxVal = Math.max(...rawVals);
+      const currVal = rawVals[rawVals.length - 1];
 
       const startEl = document.getElementById('chart-start');
       if (startEl) startEl.innerText = '$' + startVal.toFixed(2);
@@ -954,9 +977,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       const pad = 10;
 
       let points = [];
-      for (let i = 0; i < history.length; i++) {
-        const x = (i / (history.length - 1)) * w;
-        const normY = (history[i] - minVal) / range;
+      for (let i = 0; i < rawVals.length; i++) {
+        const x = (i / (rawVals.length - 1)) * w;
+        const normY = (rawVals[i] - minVal) / range;
         const y = (h - pad) - (normY * (h - 2 * pad));
         points.push(`${x.toFixed(1)},${y.toFixed(1)}`);
       }
@@ -966,6 +989,95 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
       const areaD = `${polylineD} L ${w},${h} L 0,${h} Z`;
       document.getElementById('svg-area').setAttribute('d', areaD);
+
+      // Guardar datos para tooltip interactivo
+      window.__equityChartData = {
+        history: history,
+        rawVals: rawVals,
+        startVal: startVal,
+        minVal: minVal,
+        maxVal: maxVal,
+        range: range,
+        w: w,
+        h: h,
+        pad: pad
+      };
+
+      if (!chartHoverSetupDone) {
+        setupChartHover();
+        chartHoverSetupDone = true;
+      }
+    }
+
+    function setupChartHover() {
+      const wrapper = document.getElementById('chart-wrapper');
+      const crosshair = document.getElementById('svg-crosshair');
+      const dot = document.getElementById('svg-dot');
+      const tooltip = document.getElementById('chart-tooltip');
+      const tooltipTime = document.getElementById('tooltip-time');
+      const tooltipEquity = document.getElementById('tooltip-equity');
+      const tooltipDiff = document.getElementById('tooltip-diff');
+
+      if (!wrapper || !crosshair || !dot || !tooltip) return;
+
+      wrapper.addEventListener('mousemove', (e) => {
+        const d = window.__equityChartData;
+        if (!d || !d.rawVals || d.rawVals.length < 2) return;
+
+        const rect = wrapper.getBoundingClientRect();
+        const mouseX = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+        const pct = mouseX / rect.width;
+        const idx = Math.min(Math.max(0, Math.round(pct * (d.history.length - 1))), d.history.length - 1);
+
+        const item = d.history[idx];
+        const val = d.rawVals[idx];
+        const timeStr = (typeof item === 'object' && item && item.t) ? item.t : `Punto ${idx + 1}/${d.history.length}`;
+
+        // Coordenadas viewBox (600 x 100)
+        const svgX = (idx / (d.rawVals.length - 1)) * d.w;
+        const normY = (val - d.minVal) / d.range;
+        const svgY = (d.h - d.pad) - (normY * (d.h - 2 * d.pad));
+
+        crosshair.setAttribute('x1', svgX);
+        crosshair.setAttribute('x2', svgX);
+        crosshair.setAttribute('opacity', '0.85');
+
+        dot.setAttribute('cx', svgX);
+        dot.setAttribute('cy', svgY);
+        dot.setAttribute('opacity', '1');
+
+        // Rendimiento vs Génesis
+        const diff = val - d.startVal;
+        const diffPct = d.startVal > 0 ? ((diff / d.startVal) * 100) : 0;
+        const diffSign = diff >= 0 ? '+' : '';
+        const diffColor = diff >= 0 ? 'text-emerald-400' : 'text-rose-400';
+
+        if (tooltipTime) tooltipTime.innerText = timeStr;
+        if (tooltipEquity) tooltipEquity.innerText = '$' + val.toFixed(2);
+        if (tooltipDiff) {
+          tooltipDiff.className = `font-bold text-[11px] ${diffColor}`;
+          tooltipDiff.innerText = `${diffSign}$${diff.toFixed(2)} (${diffSign}${diffPct.toFixed(2)}%)`;
+        }
+
+        // Posicionamiento inteligente del tooltip (sin desbordes)
+        let tipX = e.clientX - rect.left + 14;
+        let tipY = e.clientY - rect.top - 60;
+
+        if (tipX + 175 > rect.width) {
+          tipX = e.clientX - rect.left - 180;
+        }
+        if (tipY < 6) tipY = 6;
+
+        tooltip.style.left = tipX + 'px';
+        tooltip.style.top = tipY + 'px';
+        tooltip.classList.remove('hidden');
+      });
+
+      wrapper.addEventListener('mouseleave', () => {
+        crosshair.setAttribute('opacity', '0');
+        dot.setAttribute('opacity', '0');
+        tooltip.classList.add('hidden');
+      });
     }
 
     function renderMacroRadar(macroData) {
