@@ -112,6 +112,16 @@ exchange = ccxt.binance({
 LATEST_LIVE_STATE: Dict = {}
 
 
+def _atomic_json_dump(path: str, data, **kwargs):
+    """Escritura atómica (tmp + os.replace) para no corromper el estado si el proceso muere a mitad de escritura."""
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, **kwargs)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, path)
+
+
 # ====================== CEREBRO DE APRENDIZAJE POR REFUERZO ======================
 class ReinforcementBrain:
     def __init__(self):
@@ -149,8 +159,7 @@ class ReinforcementBrain:
                 "evolution_history": self.evolution_history[-10:],
                 "mfe_samples": self.mfe_samples[-30:]
             }
-            with open(BRAIN_STATE_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
+            _atomic_json_dump(BRAIN_STATE_FILE, data, indent=2)
         except Exception:
             pass
 
@@ -575,8 +584,7 @@ class PaperBot:
                 "total_trades": self.total_trades,
                 "updated_at": datetime.now().isoformat()
             }
-            with open(PORTFOLIO_STATE_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
+            _atomic_json_dump(PORTFOLIO_STATE_FILE, data, indent=2)
         except Exception as e:
             print(f"  [Error Guardar Estado Portafolio] {e}", flush=True)
 
@@ -1872,7 +1880,6 @@ class DynamicDashboardHandler(http.server.SimpleHTTPRequestHandler):
             if self.path in ("/api/state", "/live_state.json"):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
-                self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
                 self.end_headers()
                 with LIVE_STATE_LOCK:
@@ -1881,7 +1888,6 @@ class DynamicDashboardHandler(http.server.SimpleHTTPRequestHandler):
             elif self.path in ("/", "/dashboard", "/dashboard.html"):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 with LIVE_STATE_LOCK:
                     current_snap = dict(LATEST_LIVE_STATE)
@@ -1892,7 +1898,6 @@ class DynamicDashboardHandler(http.server.SimpleHTTPRequestHandler):
                 if os.path.exists(office_file):
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
-                    self.send_header("Access-Control-Allow-Origin", "*")
                     self.end_headers()
                     with open(office_file, "r", encoding="utf-8") as f:
                         self.wfile.write(f.read().encode("utf-8"))
@@ -2145,7 +2150,10 @@ def run_paper_trading(reset_all: bool = False):
                         l['price'] = max(min_sell_p, new_target)
                     if not is_buys_frozen:
                         for idx, l in enumerate(sorted([x for x in grid.lines if x['active'] and x['side'] == 'buy'], key=lambda x: -x['price'])):
+                            reserved = l['price'] * l['amount']
                             l['price'] = curr_p * (1 - (grid.step_pct * (idx + 1)))
+                            l['amount'] = reserved / l['price']
+                            l['buy_price'] = l['price']
 
                 # 2. GESTIÓN JERÁRQUICA DE COSECHA TOTAL Y RUPTURA:
                 active_sells = [l for l in grid.lines if l.get("active") and l.get("side") == "sell"]
@@ -2153,7 +2161,7 @@ def run_paper_trading(reset_all: bool = False):
                 # A. Victoria Total (100% de Ventas Cosechadas con Ganancia):
                 # Si ya no quedan órdenes de venta vivas, toda la mercadería comprada fue vendida con beneficio.
                 # No dejamos capital atrapado en compras bajas inactivas: reciclamos el 100% del efectivo a caja líquida.
-                if len(active_sells) == 0:
+                if len(active_sells) == 0 and getattr(grid, "fills_count", 0) > 0:
                     recovered_cash = sum((l["price"] * l["amount"]) for l in grid.lines if l.get("active") and l.get("side") == "buy")
                     for l in grid.lines:
                         l["active"] = False
@@ -2177,7 +2185,7 @@ def run_paper_trading(reset_all: bool = False):
 
                     # Calcular VWAP exacto de todas las órdenes de venta activas (inventario retenido)
                     total_tokens = sum(l["amount"] for l in active_sells)
-                    total_buy_cost = sum(l["amount"] * (l["price"] / (1 + grid.step_pct)) for l in active_sells)
+                    total_buy_cost = sum(l["amount"] * l.get("buy_price", l["price"] / (1 + grid.step_pct)) for l in active_sells)
                     vwap = (total_buy_cost / total_tokens) if total_tokens > 0 else grid.grid_lower
 
                     # =========================================================================
@@ -2192,7 +2200,7 @@ def run_paper_trading(reset_all: bool = False):
                             half_count = max(1, len(active_sells) // 2)
                             sells_to_liquidate = sorted(active_sells, key=lambda x: x["price"])[:half_count]
                             
-                            rel_cost = sum(l["amount"] * (l["price"] / (1 + grid.step_pct)) for l in sells_to_liquidate)
+                            rel_cost = sum(l["amount"] * l.get("buy_price", l["price"] / (1 + grid.step_pct)) for l in sells_to_liquidate)
                             rel_tokens = sum(l["amount"] for l in sells_to_liquidate)
                             rel_val = (rel_tokens * curr_p) * (1 - FEE_RATE)
                             rel_pnl = rel_val - rel_cost
@@ -2460,7 +2468,7 @@ def run_paper_trading(reset_all: bool = False):
                                         else:
                                             print(f"  ⚠️ [MALLA CANCELADA] Saldo insuficiente para armar la malla centrada.", flush=True)
                                     else:
-                                        print(f"  ⚠️ [MALLA CANCELADA] Capital por línea (${cap_per_line:.2f}) es menor al mínimo de $5.", flush=True)
+                                        print(f"  ⚠️ [MALLA CANCELADA] Capital por línea (${cap_per_line:.2f}) es menor al mínimo de $10.", flush=True)
                                 # Actualizar estado en vivo en memoria y JSON para el frontend dinámico
             update_live_state(bot, prices, latest_opportunities, cycle)
 
@@ -2478,7 +2486,7 @@ def run_paper_trading(reset_all: bool = False):
             total_open = bot.open_positions_count()
             free_runners = len([l for l in bot.longs.values() if l.tp1_hit])
             if risk_slots >= MAX_RISK_SLOTS or total_open >= MAX_TOTAL_POSITIONS:
-                slot_info = f"SLOTS RIESGO OCUPADOS ({risk_slots}/2) | {free_runners} Runners Libres | En Juego: ${equity-bot.cash:.2f}"
+                slot_info = f"SLOTS RIESGO OCUPADOS ({risk_slots}/{MAX_RISK_SLOTS}) | {free_runners} Runners Libres | En Juego: ${equity-bot.cash:.2f}"
             else:
                 next_sz = calculate_compound_order_size(bot, equity)
                 slot_info = f"Caja Libre: ${bot.cash:.2f} | Mallas: {active_grids_count}/{max_allowed_grids} (Slots Dinámicos) | Próximo Trade: ${next_sz:.2f}"
