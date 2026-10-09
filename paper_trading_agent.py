@@ -2399,16 +2399,14 @@ def run_paper_trading(reset_all: bool = False):
                                 
                                 # Instanciar la Malla
                                 if grid_lines >= 2 and grid_upper > grid_lower:
-                                    # Ajuste institucional híbrido: líneas con amortiguación óptima
-                                    # Para cuentas desde $80 USDT, permite 3 a 5 líneas de $11 a $15 USDT (estándar Binance Spot)
-                                    if adjusted_capital >= 60.0:
-                                        target_lines = max(4, min(6, int(adjusted_capital // 15.0)))
-                                        grid_lines = target_lines
-                                    elif adjusted_capital >= 30.0:
-                                        target_lines = max(3, min(5, int(adjusted_capital // 11.0)))
-                                        grid_lines = target_lines
+                                    # Ajuste institucional híbrido: Al tener 1 solo bot concentrado en $80 USDT,
+                                    # expandimos las líneas a 6 o 7 para acelerar la cadencia de rebotes y micro-ganancias:
+                                    if (adjusted_capital / 6.0) >= 10.0:
+                                        grid_lines = max(6, min(7, int(adjusted_capital // 10.4)))
+                                    elif (adjusted_capital / 5.0) >= 10.0:
+                                        grid_lines = 5
                                     else:
-                                        grid_lines = max(2, min(3, int(adjusted_capital // 10.0)))
+                                        grid_lines = max(3, min(4, int(adjusted_capital // 10.0)))
                                     step_size = (grid_upper - grid_lower) / (grid_lines - 1)
                                     step_pct = step_size / grid_lower
                                     
