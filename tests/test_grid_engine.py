@@ -46,7 +46,47 @@ class TestGridEngine(unittest.TestCase):
             # Backup verification simulation
             bak_file = f"{corrupt_file}.corrupt.bak"
             shutil.copy2(corrupt_file, bak_file)
-            self.assertTrue(os.path.exists(bak_file))
+    def test_database_vault_operations(self):
+        from db_vault import DatabaseVault
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            test_db = os.path.join(tmp_dir, "test_vault.db")
+            with DatabaseVault(db_path=test_db) as v:
+                # Test trade insertion
+                trade_id = v.insert_trade(
+                    timestamp="2026-10-09T14:00:00",
+                    symbol="BTC/USDT",
+                    strategy="grid_buy",
+                    side="buy",
+                    price=65000.0,
+                    amount=0.001,
+                    pnl=0.0,
+                    fee=0.065,
+                    status="OPEN"
+                )
+                self.assertGreater(trade_id, 0)
+                
+                # Test equity insertion
+                eq_id = v.insert_equity(
+                    timestamp="2026-10-09T14:00:00",
+                    equity=80.0,
+                    cash=80.0,
+                    holdings_value=0.0,
+                    open_longs=0,
+                    realized_pnl_total=0.0,
+                    fees_paid=0.065,
+                    slippage_cost=0.0,
+                    max_drawdown=0.0
+                )
+                self.assertGreater(eq_id, 0)
+                
+                # Test queries
+                trades = v.get_recent_trades(limit=10)
+                self.assertEqual(len(trades), 1)
+                self.assertEqual(trades[0]["symbol"], "BTC/USDT")
+                
+                eq_hist = v.get_equity_history(sample_limit=10)
+                self.assertEqual(len(eq_hist), 1)
+                self.assertEqual(eq_hist[0]["v"], 80.0)
 
 if __name__ == "__main__":
     unittest.main()

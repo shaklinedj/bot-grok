@@ -63,6 +63,7 @@ from meta_labeling import MetaLabelingGatekeeper, compute_kaufman_efficiency_rat
 from macro_radar import MacroRegimeEngine, evaluate_multi_factor_arsenal, fetch_order_book_microstructure
 from ai_auditor import ai_auditor
 from agent_committee import agent_committee
+from db_vault import vault
 
 
 # ====================== CONFIGURACIÓN GENERAL ======================
@@ -589,6 +590,7 @@ class PaperBot:
         self.load_portfolio_state()
 
     def _init_logs(self):
+        vault.migrate_from_csv(TRADES_LOG, EQUITY_LOG)
         with CSV_LOGS_LOCK:
             if not os.path.exists(EQUITY_LOG):
                 with open(EQUITY_LOG, "w", newline="", encoding="utf-8") as f:
@@ -767,16 +769,25 @@ class PaperBot:
 
 
     def log_equity(self, equity: float, prices: Dict[str, float]):
+        now_iso = datetime.now().isoformat()
+        holdings_val = self.get_holdings_value(prices)
+        open_pos_count = len([l for l in self.longs.values() if l.active])
+        rpnl_total = self.total_realized_pnl()
+        vault.insert_equity(
+            now_iso, equity, self.cash, holdings_val, open_pos_count,
+            rpnl_total, self.total_fees_paid, self.total_slippage_cost,
+            self.max_drawdown * 100
+        )
         with CSV_LOGS_LOCK:
             with open(EQUITY_LOG, "a", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 writer.writerow([
-                    datetime.now().isoformat(),
+                    now_iso,
                     round(equity, 4),
                     round(self.cash, 4),
-                    round(self.get_holdings_value(prices), 4),
-                    len([l for l in self.longs.values() if l.active]),
-                    round(self.total_realized_pnl(), 4),
+                    round(holdings_val, 4),
+                    open_pos_count,
+                    round(rpnl_total, 4),
                     round(self.total_fees_paid, 4),
                     round(self.total_slippage_cost, 4),
                     round(self.max_drawdown * 100, 2)
@@ -785,11 +796,15 @@ class PaperBot:
     def log_trade(self, symbol: str, strategy: str, side: str, price: float,
                   amount: float, pnl: float, fee: float, slippage: float,
                   extra: str = "", pos_id: str = "", status: str = "OPEN"):
+        now_iso = datetime.now().isoformat()
+        vault.insert_trade(
+            now_iso, symbol, strategy, side, price, amount, pnl, fee, slippage, extra, pos_id, status
+        )
         with CSV_LOGS_LOCK:
             with open(TRADES_LOG, "a", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 writer.writerow([
-                    datetime.now().isoformat(), symbol, strategy, side,
+                    now_iso, symbol, strategy, side,
                     round(price, 6), round(amount, 6), round(pnl, 4),
                     round(fee, 4), round(slippage, 4), extra, pos_id, status
                 ])
@@ -838,6 +853,7 @@ class PaperBot:
         self.max_drawdown = 0.0
         self.latest_pnl_audit = []
         self.save_portfolio_state()
+        vault.reset_vault(target_cash)
         try:
             with CSV_LOGS_LOCK:
                 with open(EQUITY_LOG, "w", newline="", encoding="utf-8") as f:
@@ -1724,62 +1740,8 @@ def update_live_state(bot: PaperBot, prices: Dict[str, float],
     unrealized_pnl = equity - INITIAL_CAPITAL - realized_pnl
     unrealized_pct = (unrealized_pnl / holdings_val * 100) if holdings_val > 0 else 0.0
 
-    recent_trades = []
-    with CSV_LOGS_LOCK:
-        if os.path.exists(TRADES_LOG):
-            try:
-                import collections
-                with open(TRADES_LOG, "r", encoding="utf-8") as f:
-                    f.readline()  # skip header
-                    last_lines = collections.deque(f, maxlen=250)
-                    reader = csv.reader(last_lines)
-                    all_t = list(reader)
-                    for t in all_t[::-1]:
-                        if len(t) >= 6:
-                            recent_trades.append({
-                                "timestamp": t[0],
-                                "symbol": t[1],
-                                "strategy": t[2],
-                                "side": t[3],
-                                "price": t[4],
-                                "amount": t[5],
-                                "pnl": t[6] if len(t) > 6 else 0,
-                                "fee": t[7] if len(t) > 7 else 0,
-                                "slippage": t[8] if len(t) > 8 else 0,
-                                "extra_info": t[9] if len(t) > 9 else "",
-                                "position_id": t[10] if len(t) > 10 else "",
-                                "status": t[11] if len(t) > 11 else ("OPEN" if t[3].lower() == "buy" else "CLOSED")
-                            })
-            except Exception:
-                pass
-
-    equity_hist = []
-    with CSV_LOGS_LOCK:
-        if os.path.exists(EQUITY_LOG):
-            try:
-                with open(EQUITY_LOG, "r", encoding="utf-8") as f:
-                    reader = csv.reader(f)
-                    next(reader, None)  # skip header
-                    all_vals = []
-                    for row in reader:
-                        if len(row) > 1:
-                            try:
-                                t_str = row[0].split('.')[0].replace('T', ' ')
-                                all_vals.append({"t": t_str, "v": round(float(row[1]), 2)})
-                            except Exception:
-                                pass
-                    if len(all_vals) <= 300:
-                        equity_hist = all_vals
-                    else:
-                        # Muestreo uniforme de 300 puntos desde el génesis hasta el último tick
-                        step = (len(all_vals) - 1) / 299.0
-                        indices = [int(round(i * step)) for i in range(300)]
-                        equity_hist = [all_vals[idx] for idx in indices]
-                        if all_vals:
-                            equity_hist[0] = all_vals[0]
-                            equity_hist[-1] = all_vals[-1]
-            except Exception:
-                pass
+    recent_trades = vault.get_recent_trades(limit=250)
+    equity_hist = vault.get_equity_history(sample_limit=300)
     if not equity_hist:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         equity_hist = [{"t": now_str, "v": round(equity, 2)}]
