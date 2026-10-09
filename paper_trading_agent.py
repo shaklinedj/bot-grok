@@ -1676,14 +1676,26 @@ def update_live_state(bot: PaperBot, prices: Dict[str, float],
     equity_hist = []
     if os.path.exists(EQUITY_LOG):
         try:
-            import collections
             with open(EQUITY_LOG, "r", encoding="utf-8") as f:
-                f.readline()  # skip header
-                last_lines = collections.deque(f, maxlen=50)
-                reader = csv.reader(last_lines)
+                reader = csv.reader(f)
+                next(reader, None)  # skip header
+                all_vals = []
                 for row in reader:
                     if len(row) > 1:
-                        equity_hist.append(float(row[1]))
+                        try:
+                            all_vals.append(round(float(row[1]), 2))
+                        except Exception:
+                            pass
+                if len(all_vals) <= 300:
+                    equity_hist = all_vals
+                else:
+                    # Muestreo uniforme de 300 puntos desde el génesis hasta el último tick
+                    step = (len(all_vals) - 1) / 299.0
+                    indices = [int(round(i * step)) for i in range(300)]
+                    equity_hist = [all_vals[idx] for idx in indices]
+                    if all_vals:
+                        equity_hist[0] = all_vals[0]
+                        equity_hist[-1] = all_vals[-1]
         except Exception:
             pass
     if not equity_hist:

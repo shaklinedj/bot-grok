@@ -195,9 +195,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <div class="flex items-center justify-between mb-3">
         <div class="flex items-center gap-2">
           <span class="text-emerald-400">📈</span>
-          <h3 class="text-xs uppercase font-black tracking-wider text-gray-300">Evolución de Equity en Vivo</h3>
+          <h3 class="text-xs uppercase font-black tracking-wider text-gray-300">Evolución de Equity (Historial Completo)</h3>
         </div>
         <div class="text-xs font-mono text-gray-400 flex items-center gap-3">
+          <span>Inicio: <strong id="chart-start" class="text-sky-400">$0.00</strong></span>
           <span>Mín: <strong id="chart-min" class="text-red-400">$0.00</strong></span>
           <span>Máx: <strong id="chart-max" class="text-emerald-400">$0.00</strong></span>
           <span>Actual: <strong id="chart-curr" class="text-white">$0.00</strong></span>
@@ -936,10 +937,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
     function renderChart(history) {
       if (!history || history.length < 2) return;
+      const startVal = history[0];
       const minVal = Math.min(...history);
       const maxVal = Math.max(...history);
       const currVal = history[history.length - 1];
 
+      const startEl = document.getElementById('chart-start');
+      if (startEl) startEl.innerText = '$' + startVal.toFixed(2);
       document.getElementById('chart-min').innerText = '$' + minVal.toFixed(2);
       document.getElementById('chart-max').innerText = '$' + maxVal.toFixed(2);
       document.getElementById('chart-curr').innerText = '$' + currVal.toFixed(2);
