@@ -10,6 +10,8 @@ from paper_trading_agent import (
     PaperBot,
     ReinforcementBrain,
     INITIAL_CAPITAL,
+    active_grid_orders,
+    compress_grid_spacing,
     get_position_volume_24h,
     get_tick_price_range,
 )
@@ -29,6 +31,29 @@ class TestGridEngine(unittest.TestCase):
         )
         # 5 lines between 0.20 and 0.25 -> step = (0.25 - 0.20) / (5 - 1) = 0.05 / 4 = 0.0125
         self.assertAlmostEqual(grid.step_size, 0.0125, places=5)
+
+    def test_compressed_grid_spacing_updates_arithmetic_step(self):
+        grid = GridPosition(
+            grid_id="test_grid_compress",
+            symbol="BTC/USDT",
+            grid_upper=101.0,
+            grid_lower=99.0,
+            grid_lines=3,
+            step_pct=0.01,
+            capital_total=30.0,
+            capital_per_line=10.0,
+            lines=[],
+        )
+        old_step = compress_grid_spacing(grid, 100.0)
+        self.assertEqual(old_step, 0.01)
+        self.assertAlmostEqual(grid.step_pct, 0.0088)
+        self.assertAlmostEqual(grid.step_size, 0.88)
+
+    def test_new_sell_order_is_not_in_same_tick_sell_snapshot(self):
+        lines = [{"price": 100.0, "side": "buy", "amount": 1.0, "active": True}]
+        sells_to_process = active_grid_orders(lines, "sell")
+        lines.append({"price": 101.0, "side": "sell", "amount": 1.0, "active": True})
+        self.assertEqual(sells_to_process, [])
 
     def test_reinforcement_brain_persistence_and_decay(self):
         brain = ReinforcementBrain()

@@ -159,6 +159,19 @@ def get_position_volume_24h(position) -> float:
         return 20_000_000.0
 
 
+def active_grid_orders(lines: list, side: str) -> list:
+    return [line for line in lines if line.get("active") and line.get("side") == side]
+
+
+def compress_grid_spacing(grid: "GridPosition", current_price: float) -> Optional[float]:
+    if grid.step_pct <= 0.0042:
+        return None
+    old_step = grid.step_pct
+    grid.step_pct = max(0.0040, grid.step_pct * 0.88)
+    grid.step_size = current_price * grid.step_pct
+    return old_step
+
+
 # ====================== CEREBRO DE APRENDIZAJE POR REFUERZO ======================
 class ReinforcementBrain:
     def __init__(self):
@@ -2153,8 +2166,8 @@ def run_paper_trading(reset_all: bool = False):
                 step_sz = getattr(grid, "step_size", 0.0)
                  
                 # Check lines: Procesar compras ordenadas de mayor a menor precio
-                active_buys = [l for l in grid.lines if l.get("active") and l.get("side") == "buy"]
-                active_sells = [l for l in grid.lines if l.get("active") and l.get("side") == "sell"]
+                active_buys = active_grid_orders(grid.lines, "buy")
+                active_sells = active_grid_orders(grid.lines, "sell")
                 for line in sorted(active_buys, key=lambda x: -x["price"]):
                     if line["price"] >= tick_low:
                         # Ejecutar Compra Limit
@@ -2249,17 +2262,15 @@ def run_paper_trading(reset_all: bool = False):
                     grid.ticks_without_fill = 0 # Resetear contador
                     
                     # Si el paso aún permite compresión (> 0.40% libre de comisiones):
-                    if grid.step_pct > 0.0042:
-                        old_step = grid.step_pct
-                        grid.step_pct = max(0.0040, grid.step_pct * 0.88)
-                        step_sz = curr_p * grid.step_pct
-                        grid.step_size = step_sz
+                    old_step = compress_grid_spacing(grid, curr_p)
+                    if old_step is not None:
+                        step_sz = grid.step_size
                         grid.dynamic_adjustments_count = getattr(grid, "dynamic_adjustments_count", 0) + 1
                         grid.status_msg = f"Intervalos comprimidos ({old_step*100:.2f}% -> {grid.step_pct*100:.2f}%)"
                         print(f"  ⚡ [SUPERVISOR DINÁMICO {sym}] Sin fills. Paso comprimido de {old_step*100:.2f}% a {grid.step_pct*100:.2f}%.", flush=True)
                     else:
                         grid.status_msg = "Rebalanceando escalones cerca del precio vivo"
-                    
+
                     # Reajustar la distribución de escalones para que SIEMPRE haya compras abajo y ventas arriba
                     active_buys = [l for l in grid.lines if l["active"] and l["side"] == "buy"]
                     active_sells = [l for l in grid.lines if l["active"] and l["side"] == "sell"]
