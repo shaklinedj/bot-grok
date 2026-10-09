@@ -556,7 +556,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       const freeRunners = posList.filter(p => p.tp1_hit);
       const pendingCount = (data.pending_limit_orders || []).length;
       const gridCount = (data.grids || []).length;
-      document.getElementById('kpi-slots').innerText = gridCount > 0 ? (gridCount + ' Malla Activa Desplegada') : 'Sin mallas activas';
+      document.getElementById('kpi-slots').innerText = gridCount > 0 ? (gridCount + (gridCount === 1 ? ' Malla Activa Desplegada' : ' Mallas Activas Desplegadas')) : 'Sin mallas activas';
       if (document.getElementById('positions-count-badge')) {
         document.getElementById('positions-count-badge').innerText = gridCount + ' mallas activas';
       }
@@ -569,7 +569,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         document.getElementById('param-pct-badge').innerText = 'IA usó ' + lastPct.toFixed(0) + '% última vez';
       }
       const slotsEl = document.getElementById('param-slots');
-      if (slotsEl) slotsEl.innerText = gridCount + ' Malla(s) / 3 máx';
+      const maxG = data.max_grids || 4;
+      if (slotsEl) slotsEl.innerText = gridCount + ' Malla(s) / ' + maxG + ' máx (Escalado Dinámico)';
 
       const unrealVal = Number(data.unrealized_pnl || 0);
       const unrealPct = Number(data.unrealized_pct || 0);

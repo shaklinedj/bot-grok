@@ -1600,10 +1600,18 @@ def manage_longs(bot: PaperBot, prices: Dict[str, float], atrs: Dict[str, float]
 # ====================== STREAMING DE ESTADO EN VIVO ======================
 LIVE_STATE_LOCK = threading.Lock()
 LAST_HTML_SYNC_TS = 0.0
+LAST_PNL_AUDIT_TS = 0.0
 
 def update_live_state(bot: PaperBot, prices: Dict[str, float],
                       latest_opportunities: List[Dict], cycle_num: int):
-    global LATEST_LIVE_STATE, LAST_HTML_SYNC_TS
+    global LATEST_LIVE_STATE, LAST_HTML_SYNC_TS, LAST_PNL_AUDIT_TS
+    now_audit = time.time()
+    if (now_audit - LAST_PNL_AUDIT_TS) >= 15.0 or not bot.latest_pnl_audit:
+        LAST_PNL_AUDIT_TS = now_audit
+        try:
+            bot.latest_pnl_audit = auditor.get_pnl_audit()[:30]
+        except Exception:
+            pass
     equity = bot.get_equity(prices)
     grid_market_val = sum(
         (l["amount"] * (prices.get(g.symbol) or ((g.grid_upper + g.grid_lower) / 2.0))) if l["side"] == "sell" else (l["price"] * l["amount"])
@@ -1769,6 +1777,7 @@ def update_live_state(bot: PaperBot, prices: Dict[str, float],
         "generation": brain.generation,
         "equity": round(equity, 2),
         "initial_capital": INITIAL_CAPITAL,
+        "max_grids": max(1, min(6, int(equity // 125.0))) if equity >= 80.0 else 1,
         "cash": round(bot.cash, 2),
         "holdings_val": round(holdings_val, 2),
         "unrealized_pnl": round(unrealized_pnl, 4),

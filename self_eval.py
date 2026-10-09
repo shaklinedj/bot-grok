@@ -103,41 +103,52 @@ class TradeAuditor:
             if final_exit.empty and not exits.empty:
                 final_exit = exits.iloc[[-1]]
             
-            if entry.empty or exits.empty:
-                continue
-                
-            entry_row = entry.iloc[0]
-            exit_row = final_exit.iloc[-1]
-            has_tp1 = not exits[exits['strategy'].str.contains('tp1', case=False, na=False)].empty
-            
             is_still_open = (pos_id in active_grid_ids)
-            
-            net_pnl = exits['pnl'].sum()
-            total_fees = group['fee'].sum()
-            total_slippage = group['slippage'].sum()
-            gross_pnl = net_pnl + total_fees + total_slippage
-            
-            hold_duration = (exit_row['ts'] - entry_row['ts']).total_seconds() / 60.0
-            
-            exit_reason_raw = str(exit_row.get('extra_info', '') or '')
-            if is_still_open:
+
+            if entry.empty:
+                continue
+
+            if exits.empty:
+                if not is_still_open:
+                    continue
+                entry_row = entry.iloc[0]
+                exit_row = entry_row
+                has_tp1 = False
+                net_pnl = 0.0
+                total_fees = group['fee'].sum()
+                total_slippage = group['slippage'].sum()
+                gross_pnl = 0.0
+                hold_duration = (pd.Timestamp.now() - entry_row['ts']).total_seconds() / 60.0
                 exit_reason = 'Malla Activa (Cosecha en Curso)'
                 exit_time_val = '⚡ EN VIVO'
-            elif 'Runner Trailing' in exit_reason_raw:
-                exit_reason = 'Runner Trailing'
-                exit_time_val = str(exit_row['timestamp'])
-            elif 'Break-Even' in exit_reason_raw or 'Escudo' in exit_reason_raw:
-                exit_reason = 'Break-Even'
-                exit_time_val = str(exit_row['timestamp'])
-            elif 'Stop Loss' in exit_reason_raw:
-                exit_reason = 'Stop Loss'
-                exit_time_val = str(exit_row['timestamp'])
-            elif 'TP1' in exit_reason_raw:
-                exit_reason = 'TP1 Exit'
-                exit_time_val = str(exit_row['timestamp'])
             else:
-                exit_reason = exit_reason_raw[:30] if exit_reason_raw else 'Take Profit / Cierre'
-                exit_time_val = str(exit_row['timestamp'])
+                entry_row = entry.iloc[0]
+                exit_row = final_exit.iloc[-1]
+                has_tp1 = not exits[exits['strategy'].str.contains('tp1', case=False, na=False)].empty
+                net_pnl = exits['pnl'].sum()
+                total_fees = group['fee'].sum()
+                total_slippage = group['slippage'].sum()
+                gross_pnl = net_pnl + total_fees + total_slippage
+                hold_duration = (exit_row['ts'] - entry_row['ts']).total_seconds() / 60.0
+                exit_reason_raw = str(exit_row.get('extra_info', '') or '')
+                if is_still_open:
+                    exit_reason = 'Malla Activa (Cosecha en Curso)'
+                    exit_time_val = '⚡ EN VIVO'
+                elif 'Runner Trailing' in exit_reason_raw:
+                    exit_reason = 'Runner Trailing'
+                    exit_time_val = str(exit_row['timestamp'])
+                elif 'Break-Even' in exit_reason_raw or 'Escudo' in exit_reason_raw:
+                    exit_reason = 'Break-Even'
+                    exit_time_val = str(exit_row['timestamp'])
+                elif 'Stop Loss' in exit_reason_raw:
+                    exit_reason = 'Stop Loss'
+                    exit_time_val = str(exit_row['timestamp'])
+                elif 'TP1' in exit_reason_raw:
+                    exit_reason = 'TP1 Exit'
+                    exit_time_val = str(exit_row['timestamp'])
+                else:
+                    exit_reason = exit_reason_raw[:30] if exit_reason_raw else 'Take Profit / Cierre'
+                    exit_time_val = str(exit_row['timestamp'])
             
             cycles.append({
                 'position_id': pos_id,
@@ -157,6 +168,38 @@ class TradeAuditor:
                 'is_win': net_pnl > 0,
                 'is_open': is_still_open
             })
+
+        # Garantizar que cualquier malla activa en portfolio_state aparezca en cycles
+        existing_pos_ids = {c['position_id'] for c in cycles}
+        if os.path.exists(portfolio_file):
+            try:
+                import json
+                with open(portfolio_file, "r", encoding="utf-8") as pf:
+                    p_data = json.load(pf)
+                    for g in p_data.get("grids", {}).values():
+                        if g.get("active") and g.get("grid_id") and g.get("grid_id") not in existing_pos_ids:
+                            created_ts = g.get("created_at") or datetime.now().isoformat()
+                            base_p = (float(g.get("grid_upper", 0)) + float(g.get("grid_lower", 0))) / 2.0
+                            cycles.append({
+                                'position_id': g.get("grid_id"),
+                                'symbol': g.get("symbol"),
+                                'entry_time': str(created_ts),
+                                'exit_time': '⚡ EN VIVO',
+                                'entry_price': float(base_p),
+                                'exit_price': float(base_p),
+                                'direction': 'LONG',
+                                'net_pnl': round(float(g.get("realized_pnl", 0.0)), 4),
+                                'total_fees': 0.0,
+                                'total_slippage': 0.0,
+                                'gross_pnl': round(float(g.get("realized_pnl", 0.0)), 4),
+                                'hold_duration_min': 0.1,
+                                'exit_reason': 'Malla Activa (Cosecha en Curso)',
+                                'had_tp1': False,
+                                'is_win': float(g.get("realized_pnl", 0.0)) > 0,
+                                'is_open': True
+                            })
+            except Exception:
+                pass
             
         if not cycles:
             return pd.DataFrame()
