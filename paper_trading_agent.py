@@ -2231,15 +2231,40 @@ def run_paper_trading(reset_all: bool = False):
                     grid.out_of_range_ticks = getattr(grid, "out_of_range_ticks", 0) + 1
                     grid.status_msg = f"Trailing alcista activo: Subida fuerte (+{((curr_p/grid.grid_upper)-1)*100:.1f}%)"
                     if grid.out_of_range_ticks >= 15:  # ~35s confirmado
-                        # Todas las órdenes de venta ya se cobraron con beneficio. Reciclar para re-armar arriba.
-                        recovered_cash = sum((l["price"] * l["amount"]) for l in grid.lines if l["active"] and l["side"] == "buy")
+                        # Liquidar cualquier token que haya quedado en órdenes de venta vivas al precio vivo de ruptura
+                        active_sells = [l for l in grid.lines if l.get("active") and l.get("side") == "sell"]
+                        sold_tokens = sum(l["amount"] for l in active_sells)
+                        sell_proceeds = (sold_tokens * curr_p) * (1 - FEE_RATE) if sold_tokens > 0 else 0.0
+                        total_buy_cost = sum(l["amount"] * l.get("buy_price", l["price"] / (1 + grid.step_pct)) for l in active_sells)
+                        trailing_profit = (sell_proceeds - total_buy_cost) if sold_tokens > 0 else 0.0
+
+                        recovered_buy_cash = sum((l["price"] * l["amount"]) for l in grid.lines if l.get("active") and l.get("side") == "buy")
+                        total_recovered = recovered_buy_cash + sell_proceeds
+
                         for l in grid.lines:
                             l["active"] = False
-                        bot.cash += recovered_cash
+
+                        bot.cash += total_recovered
+                        grid.realized_pnl += trailing_profit
+                        bot.total_realized_pnl_acc += trailing_profit
+                        if trailing_profit >= 0:
+                            bot.wins += 1
+                        else:
+                            bot.losses += 1
+                        bot.total_trades += 1
+
+                        if sold_tokens > 0:
+                            bot.log_trade(
+                                symbol=sym, strategy="grid_trailing_exit", side="sell", price=curr_p, amount=sold_tokens,
+                                pnl=round(trailing_profit, 4), fee=round(sell_proceeds * FEE_RATE, 4), slippage=0.0,
+                                extra=f"Trailing Alcista Techo: Vendidos {sold_tokens:.4f} {sym} a ${curr_p:.4f} (+${trailing_profit:.4f} USDT) | Liberados ${total_recovered:.2f} a caja",
+                                pos_id=grid.grid_id, status="CLOSED"
+                            )
+
                         grid.active = False
-                        grid.status_msg = "Trailing alcista: Capital liberado para acompañar la subida"
+                        grid.status_msg = f"Trailing alcista: Capital liberado (${total_recovered:.2f} USDT)"
                         bot.save_portfolio_state()
-                        print(f"  🚀🟢 [TRAILING ALCISTA {sym}] Rompimiento alcista exitoso. Malla reciclada liberando ${recovered_cash:.2f} para re-armar en el nuevo flujo.", flush=True)
+                        print(f"  🚀🟢 [TRAILING ALCISTA {sym}] Rompimiento alcista exitoso. Malla reciclada liberando ${total_recovered:.2f} (${recovered_buy_cash:.2f} compras canceladas + ${sell_proceeds:.2f} tokens vendidos a ${curr_p:.4f}).", flush=True)
 
                 # D. En Rango Normal:
                 else:
