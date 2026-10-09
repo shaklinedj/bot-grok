@@ -28,49 +28,69 @@ class TradeAuditor:
         self.trades_path = os.path.join(logs_dir, "trades.csv")
     
     def _get_cycles(self):
-        """Reconstruct complete trade cycles from trades.csv with multi-schema robustness."""
-        if not os.path.exists(self.trades_path):
-            return pd.DataFrame()
-            
-        import csv
+        """Reconstruct complete trade cycles from SQLite vault or trades.csv with multi-schema robustness."""
         raw_trades = []
-        with open(self.trades_path, "r", encoding="utf-8", errors="replace") as f:
-            reader = csv.reader(f)
-            for row in reader:
-                if not row or row[0].startswith("timestamp"):
-                    continue
-                # 12-column modern format:
-                # [timestamp, symbol, strategy, side, price, amount, pnl, fee, slippage, extra_info, position_id, status]
-                if len(row) >= 12:
+        try:
+            from db_vault import vault
+            df_sql = vault.get_all_trades_df()
+            if not df_sql.empty:
+                for _, r in df_sql.iterrows():
                     raw_trades.append({
-                        "timestamp": row[0],
-                        "symbol": row[1],
-                        "strategy": row[2],
-                        "side": str(row[3]).lower(),
-                        "price": safe_float(row[4]),
-                        "amount": safe_float(row[5]),
-                        "pnl": safe_float(row[6]),
-                        "fee": safe_float(row[7]),
-                        "slippage": safe_float(row[8]),
-                        "extra_info": str(row[9]) if row[9] and row[9] != "nan" else "",
-                        "position_id": row[10],
-                        "status": row[11]
+                        "timestamp": str(r["timestamp"]),
+                        "symbol": str(r["symbol"]),
+                        "strategy": str(r["strategy"]),
+                        "side": str(r["side"]).lower(),
+                        "price": safe_float(r["price"]),
+                        "amount": safe_float(r["amount"]),
+                        "pnl": safe_float(r["pnl"]),
+                        "fee": safe_float(r["fee"]),
+                        "slippage": safe_float(r["slippage"]),
+                        "extra_info": str(r["extra_info"]) if r["extra_info"] and str(r["extra_info"]) != "nan" else "",
+                        "position_id": str(r["position_id"]),
+                        "status": str(r["status"])
                     })
-                elif len(row) == 11:
-                    raw_trades.append({
-                        "timestamp": row[0],
-                        "symbol": row[1],
-                        "strategy": row[2],
-                        "side": str(row[3]).lower(),
-                        "price": safe_float(row[4]),
-                        "amount": safe_float(row[5]),
-                        "pnl": safe_float(row[6]),
-                        "fee": safe_float(row[7]),
-                        "slippage": safe_float(row[8]),
-                        "extra_info": str(row[9]) if row[9] and row[9] != "nan" else "",
-                        "position_id": row[10],
-                        "status": "CLOSED" if str(row[3]).lower() == "sell" else "OPEN"
-                    })
+        except Exception:
+            raw_trades = []
+
+        if not raw_trades and os.path.exists(self.trades_path):
+            import csv
+            with open(self.trades_path, "r", encoding="utf-8", errors="replace") as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    if not row or row[0].startswith("timestamp"):
+                        continue
+                    # 12-column modern format:
+                    # [timestamp, symbol, strategy, side, price, amount, pnl, fee, slippage, extra_info, position_id, status]
+                    if len(row) >= 12:
+                        raw_trades.append({
+                            "timestamp": row[0],
+                            "symbol": row[1],
+                            "strategy": row[2],
+                            "side": str(row[3]).lower(),
+                            "price": safe_float(row[4]),
+                            "amount": safe_float(row[5]),
+                            "pnl": safe_float(row[6]),
+                            "fee": safe_float(row[7]),
+                            "slippage": safe_float(row[8]),
+                            "extra_info": str(row[9]) if row[9] and row[9] != "nan" else "",
+                            "position_id": row[10],
+                            "status": row[11]
+                        })
+                    elif len(row) == 11:
+                        raw_trades.append({
+                            "timestamp": row[0],
+                            "symbol": row[1],
+                            "strategy": row[2],
+                            "side": str(row[3]).lower(),
+                            "price": safe_float(row[4]),
+                            "amount": safe_float(row[5]),
+                            "pnl": safe_float(row[6]),
+                            "fee": safe_float(row[7]),
+                            "slippage": safe_float(row[8]),
+                            "extra_info": str(row[9]) if row[9] and row[9] != "nan" else "",
+                            "position_id": row[10],
+                            "status": "CLOSED" if str(row[3]).lower() == "sell" else "OPEN"
+                        })
 
         if not raw_trades:
             return pd.DataFrame()
