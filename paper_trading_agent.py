@@ -1,24 +1,22 @@
 """
-Paper Trading Agent - Versión Cuantitativa Auto-Evolutiva v11
+Paper Trading Agent - Quantitative Spot Neutral Grid v12
 ============================================================================================
-Novedades Arquitecturales v11:
-1. Flujo de Capital Ultra-Concentrado (Cero Trades Pequeños de $3):
-   - Monto mínimo estricto por trade: $25.00 USDT (MIN_ORDER_USDT = 25.0).
-   - Máximo 2 posiciones concurrentes (48% del Equity cada una, desplegando el 96% del capital).
-   - Si los 2 slots están ocupados, el bot no programa ni busca trades con el cambio residual.
-   - Estado claro en consola y UI: "Slots 100% Ocupados (2/2) | Flujo Concentrado en Mercado".
-2. Dashboard Dinámico Reactivo en Tiempo Real (Cero Parpadeos / No HTML Estático):
-   - Servidor HTTP integrado en subproceso daemon (puerto 8888).
-   - Endpoint REST: /api/state con datos en vivo cada segundo.
-   - Frontend SPA reactivo: actualiza el DOM en tiempo real vía JavaScript/Fetch sin recargar la página.
-   - Gráfico de Equity interactivo SVG punto por punto.
-   - Barras de progreso visuales en vivo hacia el TP1 y Stop Loss.
-   - Filtros instantáneos por estado (Todas, Abiertas, Ganadas, Cerradas) y buscador de tokens.
-3. Modo Sniper Agresivo:
-   - Escaneo cada 45s de los 20 pares más volátiles de Binance.
-   - Micro-Candado Break-Even a los +0.65% de ganancia (+0.20% asegurado neto).
-   - TP1 ágil al +1.40% (50% asegurado en caja para rotación del interés compuesto).
-   - Runner supersónico al +1.90% con Trailing Stop ceñido (0.65x ATR).
+Novedades Arquitecturales v12:
+1. Mallas Neutrales Cuantitativas Adaptativas (Estilo Pionex):
+   - Mallas centradas con 6 a 7 líneas dinámicas calculadas por ATR 1h.
+   - Monto mínimo por orden: $10.00 USDT (MIN_ORDER_USDT = 10.0).
+   - Simetría aritmética rigurosa: paso fijo `step_size` por nivel con reinversión de utilidades.
+   - Cruce realista de rango de precios por tick [tick_low, tick_high] y ejecución secuencial.
+2. Interés Compuesto Real y Reciclaje de Liquidez:
+   - Toda ganancia generada por compras/ventas se reintegra a la caja disponible.
+   - Cierre por Victoria Total libera el 100% del capital para rotación inmediata.
+3. Dashboard Reactivo en Tiempo Real:
+   - Servidor HTTP integrado (puerto 8888) con streaming continuo.
+   - Historial de equity completo muestreado y visualización interactiva.
+4. Resiliencia y Concurrencia Robusta:
+   - Bloqueo CSV_LOGS_LOCK para escrituras y lecturas seguras de métricas.
+   - Respaldo automático de archivos de estado corruptos (.corrupt.bak).
+   - Memoria cerebral persistente (pnl y blacklists) con decaimiento temporal.
 """
 
 import sys
@@ -29,6 +27,7 @@ import csv
 import json
 import random
 import math
+import shutil
 import threading
 import http.server
 from datetime import datetime
@@ -38,6 +37,13 @@ import urllib.request
 from dotenv import load_dotenv
 
 load_dotenv()
+
+_random_seed_env = os.environ.get("RANDOM_SEED")
+if _random_seed_env is not None and _random_seed_env.strip() != "":
+    try:
+        random.seed(int(_random_seed_env))
+    except ValueError:
+        pass
 
 if sys.platform == "win32":
     try:
@@ -91,9 +97,11 @@ PORTFOLIO_STATE_FILE = os.path.join(LOG_DIR, "portfolio_state.json")
 DASHBOARD_HTML_LOCAL = os.path.join(LOG_DIR, "dashboard.html")
 LIVE_STATE_FILE_LOCAL = os.path.join(LOG_DIR, "live_state.json")
 
-ARTIFACT_DIR = r"C:\Users\Dell\.gemini\antigravity\brain\b5df651c-3f00-4891-beb9-ba32792ed811"
-DASHBOARD_HTML_ARTIFACT = os.path.join(ARTIFACT_DIR, "dashboard.html")
-LIVE_STATE_FILE_ARTIFACT = os.path.join(ARTIFACT_DIR, "live_state.json")
+CSV_LOGS_LOCK = threading.Lock()
+
+ARTIFACT_DIR = os.environ.get("ARTIFACT_DIR", r"C:\Users\Dell\.gemini\antigravity\brain\b5df651c-3f00-4891-beb9-ba32792ed811")
+DASHBOARD_HTML_ARTIFACT = os.path.join(ARTIFACT_DIR, "dashboard.html") if (ARTIFACT_DIR and os.path.exists(ARTIFACT_DIR)) else ""
+LIVE_STATE_FILE_ARTIFACT = os.path.join(ARTIFACT_DIR, "live_state.json") if (ARTIFACT_DIR and os.path.exists(ARTIFACT_DIR)) else ""
 
 STABLE_BASES = {
     "USDC", "FDUSD", "TUSD", "USDP", "DAI", "BUSD", "EUR", "GBP", "USD1",
@@ -150,6 +158,9 @@ class ReinforcementBrain:
     def save_state(self):
         try:
             os.makedirs(LOG_DIR, exist_ok=True)
+            now_ts = time.time()
+            pruned_pnl_mem = {k: v[-30:] for k, v in self.coin_pnl_memory.items()}
+            active_blacklist = {k: v for k, v in self.coin_blacklist_until.items() if v > now_ts}
             data = {
                 "generation": self.generation,
                 "weights": self.weights,
@@ -157,11 +168,13 @@ class ReinforcementBrain:
                 "sl_atr_mult": round(self.sl_atr_mult, 3),
                 "min_score_required": round(self.min_score_required, 2),
                 "evolution_history": self.evolution_history[-10:],
-                "mfe_samples": self.mfe_samples[-30:]
+                "mfe_samples": self.mfe_samples[-30:],
+                "coin_pnl_memory": pruned_pnl_mem,
+                "coin_blacklist_until": active_blacklist
             }
             _atomic_json_dump(BRAIN_STATE_FILE, data, indent=2)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  ⚠️ [Error al guardar cerebro]: {e}", flush=True)
 
     def load_state(self):
         if os.path.exists(BRAIN_STATE_FILE):
@@ -170,13 +183,31 @@ class ReinforcementBrain:
                     data = json.load(f)
                     self.generation = data.get("generation", 1)
                     self.weights = data.get("weights", self.weights)
-                    self.tp1_gain_pct = max(1.80, float(data.get("tp1_gain_pct", DEFAULT_TP1_GAIN_PCT)))
-                    self.sl_atr_mult = max(2.50, float(data.get("sl_atr_mult", 2.80)))
-                    self.min_score_required = max(60.0, float(data.get("min_score_required", 65.0)))
+                    self.tp1_gain_pct = float(data.get("tp1_gain_pct", DEFAULT_TP1_GAIN_PCT))
+                    self.sl_atr_mult = float(data.get("sl_atr_mult", 2.80))
+                    self.min_score_required = float(data.get("min_score_required", 65.0))
                     self.evolution_history = data.get("evolution_history", [])
                     self.mfe_samples = data.get("mfe_samples", [])
-            except Exception:
-                pass
+                    self.coin_pnl_memory = {k: list(v)[-30:] for k, v in data.get("coin_pnl_memory", {}).items()}
+                    now_ts = time.time()
+                    self.coin_blacklist_until = {k: float(v) for k, v in data.get("coin_blacklist_until", {}).items() if float(v) > now_ts}
+            except (json.JSONDecodeError, Exception) as e:
+                bak_file = f"{BRAIN_STATE_FILE}.corrupt.{int(time.time())}.bak"
+                try:
+                    shutil.copy2(BRAIN_STATE_FILE, bak_file)
+                    print(f"  🚨 [ALERTA CEREBRO CORRUPTO] Archivo dañado respaldado en {bak_file}. Error: {e}", flush=True)
+                except Exception as bak_err:
+                    print(f"  🚨 [ALERTA CEREBRO CORRUPTO] Error respaldando cerebro: {bak_err}", flush=True)
+
+    def time_decay(self):
+        """Decaimiento temporal suave hacia 65.0 para evitar bloqueo indefinido de entradas"""
+        if self.min_score_required > 65.0:
+            self.min_score_required = max(65.0, round(self.min_score_required - 0.05, 3))
+        # Limpieza periódica de monedas expiradas de blacklist
+        now_ts = time.time()
+        expired = [k for k, v in self.coin_blacklist_until.items() if v <= now_ts]
+        for k in expired:
+            del self.coin_blacklist_until[k]
 
     def evaluate_signature_score(self, adx: float, dist_ema20: float, rsi: float, atr_pct: float, volume_m: float) -> float:
         adx_norm = min(10.0, max(0.0, (adx - 18.0) / 2.5))
@@ -425,6 +456,11 @@ class GridPosition:
     dynamic_adjustments_count: int = 0
     fills_count: int = 0
     freeze_buys: bool = False
+    step_size: float = 0.0
+
+    def __post_init__(self):
+        if self.step_size <= 0.0 and self.grid_lines > 1 and self.grid_upper > self.grid_lower:
+            self.step_size = (self.grid_upper - self.grid_lower) / (self.grid_lines - 1)
 
     def to_dict(self):
         d = asdict(self)
@@ -553,21 +589,22 @@ class PaperBot:
         self.load_portfolio_state()
 
     def _init_logs(self):
-        if not os.path.exists(EQUITY_LOG):
-            with open(EQUITY_LOG, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow([
-                    "timestamp", "equity", "cash", "holdings_value",
-                    "open_longs", "realized_pnl_total", "fees_paid",
-                    "slippage_cost", "max_drawdown"
-                ])
-        if not os.path.exists(TRADES_LOG):
-            with open(TRADES_LOG, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow([
-                    "timestamp", "symbol", "strategy", "side", "price", "amount",
-                    "pnl", "fee", "slippage", "extra_info", "position_id", "status"
-                ])
+        with CSV_LOGS_LOCK:
+            if not os.path.exists(EQUITY_LOG):
+                with open(EQUITY_LOG, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        "timestamp", "equity", "cash", "holdings_value",
+                        "open_longs", "realized_pnl_total", "fees_paid",
+                        "slippage_cost", "max_drawdown"
+                    ])
+            if not os.path.exists(TRADES_LOG):
+                with open(TRADES_LOG, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        "timestamp", "symbol", "strategy", "side", "price", "amount",
+                        "pnl", "fee", "slippage", "extra_info", "position_id", "status"
+                    ])
 
     def save_portfolio_state(self):
         try:
@@ -606,18 +643,23 @@ class PaperBot:
                     for sym, pos_dict in longs_data.items():
                         try:
                             self.longs[sym] = LongPosition.from_dict(pos_dict)
-                        except Exception:
-                            pass
+                        except Exception as l_err:
+                            print(f"  ⚠️ [Error al deserializar posición long {sym}]: {l_err}", flush=True)
 
                     grids_data = data.get("grids", {})
                     for sym, g_dict in grids_data.items():
                         try:
                             self.grids[sym] = GridPosition.from_dict(g_dict)
-                        except Exception:
-                            pass
+                        except Exception as g_err:
+                            print(f"  ⚠️ [Error al deserializar malla {sym}]: {g_err}", flush=True)
                 print(f"  📂 [PORTAFOLIO CARGADO] Efectivo: ${self.cash:.2f} USDT | Mallas Activas: {len(self.grids)} | Posiciones: {len(self.longs)}", flush=True)
-            except Exception as e:
-                print(f"  [Error Cargar Estado Portafolio] {e}", flush=True)
+            except (json.JSONDecodeError, Exception) as e:
+                bak_file = f"{PORTFOLIO_STATE_FILE}.corrupt.{int(time.time())}.bak"
+                try:
+                    shutil.copy2(PORTFOLIO_STATE_FILE, bak_file)
+                    print(f"  🚨 [ALERTA ESTADO CORRUPTO] Archivo de portafolio dañado respaldado en {bak_file}. Error: {e}", flush=True)
+                except Exception as bak_err:
+                    print(f"  🚨 [ALERTA ESTADO CORRUPTO] Error respaldando portafolio dañado: {bak_err}", flush=True)
 
     def get_holdings_value(self, prices: Dict[str, float]) -> float:
         val = 0.0
@@ -725,30 +767,32 @@ class PaperBot:
 
 
     def log_equity(self, equity: float, prices: Dict[str, float]):
-        with open(EQUITY_LOG, "a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                datetime.now().isoformat(),
-                round(equity, 4),
-                round(self.cash, 4),
-                round(self.get_holdings_value(prices), 4),
-                len([l for l in self.longs.values() if l.active]),
-                round(self.total_realized_pnl(), 4),
-                round(self.total_fees_paid, 4),
-                round(self.total_slippage_cost, 4),
-                round(self.max_drawdown * 100, 2)
-            ])
+        with CSV_LOGS_LOCK:
+            with open(EQUITY_LOG, "a", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    datetime.now().isoformat(),
+                    round(equity, 4),
+                    round(self.cash, 4),
+                    round(self.get_holdings_value(prices), 4),
+                    len([l for l in self.longs.values() if l.active]),
+                    round(self.total_realized_pnl(), 4),
+                    round(self.total_fees_paid, 4),
+                    round(self.total_slippage_cost, 4),
+                    round(self.max_drawdown * 100, 2)
+                ])
 
     def log_trade(self, symbol: str, strategy: str, side: str, price: float,
                   amount: float, pnl: float, fee: float, slippage: float,
                   extra: str = "", pos_id: str = "", status: str = "OPEN"):
-        with open(TRADES_LOG, "a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                datetime.now().isoformat(), symbol, strategy, side,
-                round(price, 6), round(amount, 6), round(pnl, 4),
-                round(fee, 4), round(slippage, 4), extra, pos_id, status
-            ])
+        with CSV_LOGS_LOCK:
+            with open(TRADES_LOG, "a", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    datetime.now().isoformat(), symbol, strategy, side,
+                    round(price, 6), round(amount, 6), round(pnl, 4),
+                    round(fee, 4), round(slippage, 4), extra, pos_id, status
+                ])
 
         if status in ("CLOSED", "PARTIAL_CLOSED") and pnl != 0:
             self.total_trades += 1
@@ -795,13 +839,14 @@ class PaperBot:
         self.latest_pnl_audit = []
         self.save_portfolio_state()
         try:
-            with open(EQUITY_LOG, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow(["timestamp", "equity", "cash", "holdings_value", "open_longs", "realized_pnl_total", "fees_paid", "slippage_cost", "max_drawdown"])
-                writer.writerow([datetime.now().isoformat(), round(target_cash, 2), round(target_cash, 2), 0.0, 0, 0.0, 0.0, 0.0, 0.0])
-            with open(TRADES_LOG, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow(["timestamp", "symbol", "strategy", "side", "price", "amount", "pnl", "fee", "slippage", "extra_info", "position_id", "status"])
+            with CSV_LOGS_LOCK:
+                with open(EQUITY_LOG, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["timestamp", "equity", "cash", "holdings_value", "open_longs", "realized_pnl_total", "fees_paid", "slippage_cost", "max_drawdown"])
+                    writer.writerow([datetime.now().isoformat(), round(target_cash, 2), round(target_cash, 2), 0.0, 0, 0.0, 0.0, 0.0, 0.0])
+                with open(TRADES_LOG, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["timestamp", "symbol", "strategy", "side", "price", "amount", "pnl", "fee", "slippage", "extra_info", "position_id", "status"])
         except Exception as e:
             print(f"Error reiniciando logs: {e}", flush=True)
         print(f"⚡ [REINICIO COMPLETADO] Efectivo Disponible: ${self.cash:.2f} USDT | Mallas: 0 | Posiciones: 0\n", flush=True)
@@ -1256,10 +1301,10 @@ def place_limit_buy(bot: PaperBot, symbol: str, capital: float, current_price: f
     return True
 
 
-def manage_pending_limit_orders(bot: PaperBot, prices: Dict[str, float]):
+def manage_pending_limit_orders(bot: PaperBot, prices: Dict[str, float], prev_prices: Optional[Dict[str, float]] = None):
     """
     Verifica las órdenes límite pendientes:
-    - Si el precio de mercado toca o cruza el precio límite -> EJECUTADA (Cero Slippage).
+    - Si el precio de mercado toca o cruza el rango [tick_low, tick_high] -> EJECUTADA (Cero Slippage).
     - Si expira el tiempo sin retroceder -> CANCELADA (Previene persecución en FOMO/Crestas).
     """
     now_ts = time.time()
@@ -1268,11 +1313,15 @@ def manage_pending_limit_orders(bot: PaperBot, prices: Dict[str, float]):
         if curr_price is None or curr_price <= 0:
             continue
 
+        prev_price = (prev_prices or {}).get(symbol, curr_price)
+        tick_low = min(prev_price, curr_price)
+        tick_high = max(prev_price, curr_price)
+
         is_filled = False
         is_short = (getattr(order, "side", "long") == "short")
-        if not is_short and curr_price <= order.limit_price:
+        if not is_short and order.limit_price >= tick_low:
             is_filled = True
-        elif is_short and curr_price >= order.limit_price:
+        elif is_short and order.limit_price <= tick_high:
             is_filled = True
 
         if is_filled:
@@ -1474,11 +1523,12 @@ def manage_longs(bot: PaperBot, prices: Dict[str, float], atrs: Dict[str, float]
                     bot.save_portfolio_state()
 
         # 2. TOMA DE BENEFICIOS TP1 (15% para cubrir todas las comisiones y dejar 85% RUNNER)
+        pos_vol = float(pos.features_at_entry.get("volume_24h", 20_000_000)) if getattr(pos, "features_at_entry", None) else 20_000_000
         if not pos.tp1_hit and gain_pct >= brain.tp1_gain_pct:
             # Solo cerramos el 15% de la posición: cubre comisiones de entrada, salida y asegura ganancia neta en caja
             close_amount = pos.amount * 0.15
             slip_side = "buy" if is_short else "sell"
-            exec_p, _ = apply_slippage(price, slip_side, (atr / price) * 100, 20_000_000)
+            exec_p, _ = apply_slippage(price, slip_side, (atr / price) * 100, pos_vol)
 
             if not is_short:
                 revenue = close_amount * exec_p
@@ -1560,7 +1610,7 @@ def manage_longs(bot: PaperBot, prices: Dict[str, float], atrs: Dict[str, float]
 
         if exit_reason:
             slip_side = "buy" if is_short else "sell"
-            executed_price, slip_pct = apply_slippage(price, slip_side, (atr / price) * 100, 20_000_000)
+            executed_price, slip_pct = apply_slippage(price, slip_side, (atr / price) * 100, pos_vol)
 
             if not is_short:
                 revenue = pos.amount * executed_price
@@ -1675,61 +1725,63 @@ def update_live_state(bot: PaperBot, prices: Dict[str, float],
     unrealized_pct = (unrealized_pnl / holdings_val * 100) if holdings_val > 0 else 0.0
 
     recent_trades = []
-    if os.path.exists(TRADES_LOG):
-        try:
-            import collections
-            with open(TRADES_LOG, "r", encoding="utf-8") as f:
-                f.readline()  # skip header
-                last_lines = collections.deque(f, maxlen=250)
-                reader = csv.reader(last_lines)
-                all_t = list(reader)
-                for t in all_t[::-1]:
-                    if len(t) >= 6:
-                        recent_trades.append({
-                            "timestamp": t[0],
-                            "symbol": t[1],
-                            "strategy": t[2],
-                            "side": t[3],
-                            "price": t[4],
-                            "amount": t[5],
-                            "pnl": t[6] if len(t) > 6 else 0,
-                            "fee": t[7] if len(t) > 7 else 0,
-                            "slippage": t[8] if len(t) > 8 else 0,
-                            "extra_info": t[9] if len(t) > 9 else "",
-                            "position_id": t[10] if len(t) > 10 else "",
-                            "status": t[11] if len(t) > 11 else ("OPEN" if t[3].lower() == "buy" else "CLOSED")
-                        })
-        except Exception:
-            pass
+    with CSV_LOGS_LOCK:
+        if os.path.exists(TRADES_LOG):
+            try:
+                import collections
+                with open(TRADES_LOG, "r", encoding="utf-8") as f:
+                    f.readline()  # skip header
+                    last_lines = collections.deque(f, maxlen=250)
+                    reader = csv.reader(last_lines)
+                    all_t = list(reader)
+                    for t in all_t[::-1]:
+                        if len(t) >= 6:
+                            recent_trades.append({
+                                "timestamp": t[0],
+                                "symbol": t[1],
+                                "strategy": t[2],
+                                "side": t[3],
+                                "price": t[4],
+                                "amount": t[5],
+                                "pnl": t[6] if len(t) > 6 else 0,
+                                "fee": t[7] if len(t) > 7 else 0,
+                                "slippage": t[8] if len(t) > 8 else 0,
+                                "extra_info": t[9] if len(t) > 9 else "",
+                                "position_id": t[10] if len(t) > 10 else "",
+                                "status": t[11] if len(t) > 11 else ("OPEN" if t[3].lower() == "buy" else "CLOSED")
+                            })
+            except Exception:
+                pass
 
     equity_hist = []
-    if os.path.exists(EQUITY_LOG):
-        try:
-            with open(EQUITY_LOG, "r", encoding="utf-8") as f:
-                reader = csv.reader(f)
-                next(reader, None)  # skip header
-                all_vals = []
-                for row in reader:
-                    if len(row) > 1:
-                        try:
-                            t_str = row[0].split('.')[0].replace('T', ' ')
-                            all_vals.append({"t": t_str, "v": round(float(row[1]), 2)})
-                        except Exception:
-                            pass
-                if len(all_vals) <= 300:
-                    equity_hist = all_vals
-                else:
-                    # Muestreo uniforme de 300 puntos desde el génesis hasta el último tick
-                    step = (len(all_vals) - 1) / 299.0
-                    indices = [int(round(i * step)) for i in range(300)]
-                    equity_hist = [all_vals[idx] for idx in indices]
-                    if all_vals:
-                        equity_hist[0] = all_vals[0]
-                        equity_hist[-1] = all_vals[-1]
-        except Exception:
-            pass
+    with CSV_LOGS_LOCK:
+        if os.path.exists(EQUITY_LOG):
+            try:
+                with open(EQUITY_LOG, "r", encoding="utf-8") as f:
+                    reader = csv.reader(f)
+                    next(reader, None)  # skip header
+                    all_vals = []
+                    for row in reader:
+                        if len(row) > 1:
+                            try:
+                                t_str = row[0].split('.')[0].replace('T', ' ')
+                                all_vals.append({"t": t_str, "v": round(float(row[1]), 2)})
+                            except Exception:
+                                pass
+                    if len(all_vals) <= 300:
+                        equity_hist = all_vals
+                    else:
+                        # Muestreo uniforme de 300 puntos desde el génesis hasta el último tick
+                        step = (len(all_vals) - 1) / 299.0
+                        indices = [int(round(i * step)) for i in range(300)]
+                        equity_hist = [all_vals[idx] for idx in indices]
+                        if all_vals:
+                            equity_hist[0] = all_vals[0]
+                            equity_hist[-1] = all_vals[-1]
+            except Exception:
+                pass
     if not equity_hist:
-        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         equity_hist = [{"t": now_str, "v": round(equity, 2)}]
 
     positions_list = []
@@ -1855,7 +1907,7 @@ def update_live_state(bot: PaperBot, prices: Dict[str, float],
     try:
         with open(LIVE_STATE_FILE_LOCAL, "w", encoding="utf-8") as f:
             json.dump(new_state, f)
-        if os.path.exists(ARTIFACT_DIR):
+        if LIVE_STATE_FILE_ARTIFACT and os.path.exists(ARTIFACT_DIR):
             with open(LIVE_STATE_FILE_ARTIFACT, "w", encoding="utf-8") as f:
                 json.dump(new_state, f)
 
@@ -1866,7 +1918,7 @@ def update_live_state(bot: PaperBot, prices: Dict[str, float],
             html_spa = dashboard_spa.get_dashboard_spa_html(initial_state=new_state)
             with open(DASHBOARD_HTML_LOCAL, "w", encoding="utf-8") as f:
                 f.write(html_spa)
-            if os.path.exists(ARTIFACT_DIR):
+            if DASHBOARD_HTML_ARTIFACT and os.path.exists(ARTIFACT_DIR):
                 with open(DASHBOARD_HTML_ARTIFACT, "w", encoding="utf-8") as f:
                     f.write(html_spa)
     except Exception:
@@ -1909,8 +1961,8 @@ class DynamicDashboardHandler(http.server.SimpleHTTPRequestHandler):
                 self.end_headers()
         except (ConnectionResetError, BrokenPipeError):
             pass
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [Dashboard HTTP Server Error] {e}", flush=True)
 
     def log_message(self, format, *args):
         pass
@@ -1986,6 +2038,11 @@ def run_paper_trading(reset_all: bool = False):
             now_ts = time.time()
             now_str = datetime.now().strftime("%H:%M:%S")
 
+            # Decaimiento temporal suave del cerebro para evitar estancamiento
+            if cycle % 10 == 0:
+                brain.time_decay()
+
+            prev_tick_prices = dict(last_known_prices)
             prices, volumes, atrs = {}, {}, {}
             monitored_symbols = set(list(bot.holdings.keys()) + list(bot.longs.keys()) + list(bot.pending_orders.keys()) + [g.symbol for g in bot.grids.values() if g.active])
 
@@ -1995,7 +2052,7 @@ def run_paper_trading(reset_all: bool = False):
                     last_p = float(t["last"])
                     prices[sym] = last_p
                     last_known_prices[sym] = last_p
-                    volumes[sym] = float(t.get("quoteVolume", 15_000_000) or 15_000_000)
+                    volumes[sym] = float(t.get("quoteVolume") or (float(t.get("baseVolume", 0) or 0) * last_p) or 15_000_000)
                     
                     # Cache de ATR 1h (TTL: 60s) para ticks ultra-rápidos de 1.5s sin latencia de red
                     if sym in cached_atrs and (now_ts - cached_atrs[sym][1]) < 60.0:
@@ -2021,94 +2078,104 @@ def run_paper_trading(reset_all: bool = False):
                     if sym in cached_atrs:
                         atrs[sym] = cached_atrs[sym][0]
 
-            # 1. Gestionar Órdenes Límite Pendientes (Maker / Cero Slippage)
-            # Procesar Mallas (Grid Engine)
+            # 1. Gestionar Órdenes Límite Pendientes y Mallas (Grid Engine)
             for sym, grid in list(bot.grids.items()):
                 if not grid.active:
                     continue
                 curr_p = prices.get(sym)
                 if not curr_p:
                     continue
+
+                prev_p = prev_tick_prices.get(sym, curr_p)
+                tick_low = min(prev_p, curr_p)
+                tick_high = max(prev_p, curr_p)
+                step_sz = getattr(grid, "step_size", 0.0)
                 
-                # Check lines (iterando sobre copia estática para evitar mutación concurrente)
-                for line in list(grid.lines):
-                    if not line["active"]:
-                        continue
+                # Check lines: Procesar compras ordenadas de mayor a menor precio
+                active_buys = [l for l in grid.lines if l.get("active") and l.get("side") == "buy"]
+                for line in sorted(active_buys, key=lambda x: -x["price"]):
+                    if line["price"] >= tick_low:
+                        # Ejecutar Compra Limit
+                        fees = (line["amount"] * line["price"]) * FEE_RATE
+                        line["active"] = False
+                        grid.ticks_without_fill = 0
+                        grid.last_fill_ts = time.time()
+                        grid.fills_count = getattr(grid, "fills_count", 0) + 1
                         
-                    if line["side"] == "buy":
-                        if curr_p <= line["price"]:
-                            # Ejecutar Compra Limit
-                            fees = (line["amount"] * line["price"]) * FEE_RATE
-                            line["active"] = False
-                            grid.ticks_without_fill = 0
-                            grid.last_fill_ts = time.time()
-                            grid.fills_count = getattr(grid, "fills_count", 0) + 1
-                            
-                            # Crear orden de venta en el siguiente escalón con buy_price real guardado
+                        # Crear orden de venta en el siguiente escalón simétrico
+                        if step_sz > 0:
+                            sell_price = line["price"] + step_sz
+                        else:
                             sell_price = line["price"] * (1 + grid.step_pct)
-                            amt_after_fee = line["amount"] * (1 - FEE_RATE)
-                            
-                            grid.lines.append({"price": sell_price, "side": "sell", "amount": amt_after_fee, "buy_price": line["price"], "active": True})
-                            bot.log_trade(
-                                symbol=sym, strategy="grid_buy", side="buy", price=line["price"], amount=line["amount"],
-                                pnl=0.0, fee=fees, slippage=0.0,
-                                extra=f"Malla Escalón Comprado: Venta colocada en ${sell_price:.4f} (+{grid.step_pct*100:.2f}%)",
-                                pos_id=grid.grid_id, status="OPEN"
-                            )
-                            print(f"  🕸️🟢 [MALLA BUY {sym}] Comprado a ${line['price']:.4f}. Venta colocada a ${sell_price:.4f}", flush=True)
-                            bot.save_portfolio_state()
-                            
-                    elif line["side"] == "sell":
-                        if curr_p >= line["price"]:
-                            # Ejecutar Venta Limit
-                            gross = line["amount"] * line["price"]
-                            fees = gross * FEE_RATE
-                            net_usdt = gross - fees
-                            
-                            line["active"] = False
-                            grid.ticks_without_fill = 0
-                            grid.last_fill_ts = time.time()
-                            grid.fills_count = getattr(grid, "fills_count", 0) + 1
-                            
-                            # Ganancia real rigurosa basada en el precio de compra real guardado
-                            real_buy_price = line.get("buy_price", line["price"] / (1 + grid.step_pct))
-                            buy_cost = line["amount"] * real_buy_price
-                            profit = net_usdt - buy_cost
-                            grid.realized_pnl += profit
-                            bot.total_realized_pnl_acc += profit
-                            bot.cash += net_usdt
-                            bot.wins += 1
-                            bot.total_trades += 1
-                            
-                            # RE-EVALUACIÓN CUANTITATIVA: ESCUDO ANTI-MECHAZOS (Anti-Wick Shield)
-                            regime_sell = get_symbol_1h_regime(sym)
-                            rsi_sell = regime_sell.get("rsi_1h", 50.0)
-                            upper_bb_sell = regime_sell.get("upper_bb", 999999.0)
-                            is_overextended = (rsi_sell >= 70.0) or (curr_p >= upper_bb_sell)
+                        amt_after_fee = line["amount"] * (1 - FEE_RATE)
+                        
+                        grid.lines.append({"price": sell_price, "side": "sell", "amount": amt_after_fee, "buy_price": line["price"], "active": True})
+                        bot.log_trade(
+                            symbol=sym, strategy="grid_buy", side="buy", price=line["price"], amount=line["amount"],
+                            pnl=0.0, fee=fees, slippage=0.0,
+                            extra=f"Malla Escalón Comprado: Venta colocada en ${sell_price:.4f} (+{(sell_price/line['price'] - 1)*100:.2f}%)",
+                            pos_id=grid.grid_id, status="OPEN"
+                        )
+                        print(f"  🕸️🟢 [MALLA BUY {sym}] Comprado a ${line['price']:.4f}. Venta colocada a ${sell_price:.4f}", flush=True)
+                        bot.save_portfolio_state()
+                        
+                # Check lines: Procesar ventas ordenadas de menor a mayor precio
+                active_sells = [l for l in grid.lines if l.get("active") and l.get("side") == "sell"]
+                for line in sorted(active_sells, key=lambda x: x["price"]):
+                    if line["price"] <= tick_high:
+                        # Ejecutar Venta Limit
+                        gross = line["amount"] * line["price"]
+                        fees = gross * FEE_RATE
+                        net_usdt = gross - fees
+                        
+                        line["active"] = False
+                        grid.ticks_without_fill = 0
+                        grid.last_fill_ts = time.time()
+                        grid.fills_count = getattr(grid, "fills_count", 0) + 1
+                        
+                        # Ganancia real rigurosa basada en el precio de compra real guardado
+                        fallback_buy_p = (line["price"] - step_sz) if step_sz > 0 else (line["price"] / (1 + grid.step_pct))
+                        real_buy_price = line.get("buy_price", fallback_buy_p)
+                        buy_cost = line["amount"] * real_buy_price
+                        profit = net_usdt - buy_cost
+                        grid.realized_pnl += profit
+                        bot.total_realized_pnl_acc += profit
+                        bot.cash += net_usdt
+                        bot.wins += 1
+                        bot.total_trades += 1
+                        
+                        # RE-EVALUACIÓN CUANTITATIVA: ESCUDO ANTI-MECHAZOS (Anti-Wick Shield)
+                        regime_sell = get_symbol_1h_regime(sym)
+                        rsi_sell = regime_sell.get("rsi_1h", 50.0)
+                        upper_bb_sell = regime_sell.get("upper_bb", 999999.0)
+                        is_overextended = (rsi_sell >= 70.0) or (curr_p >= upper_bb_sell)
 
-                            if is_overextended:
-                                # Sobrecompra extrema / Clímax alcista: NO recomprar la punta de la mecha
-                                print(f"  🛡️⚠️ [ESCUDO ANTI-MECHAZOS {sym}] Venta cobrada en ${line['price']:.4f}. RSI 1h={rsi_sell:.1f} >= 70 o sobre Bollinger. Efectivo (+${net_usdt:.2f} USDT) protegido en caja líquida sin recomprar la punta de la mecha.", flush=True)
-                                grid.status_msg = f"Escudo Anti-Mechazos: RSI {rsi_sell:.1f} >= 70. Ganancia en caja, recompras congeladas en máximos."
+                        if is_overextended:
+                            # Sobrecompra extrema / Clímax alcista: NO recomprar la punta de la mecha
+                            print(f"  🛡️⚠️ [ESCUDO ANTI-MECHAZOS {sym}] Venta cobrada en ${line['price']:.4f}. RSI 1h={rsi_sell:.1f} >= 70 o sobre Bollinger. Efectivo (+${net_usdt:.2f} USDT) protegido en caja líquida sin recomprar la punta de la mecha.", flush=True)
+                            grid.status_msg = f"Escudo Anti-Mechazos: RSI {rsi_sell:.1f} >= 70. Ganancia en caja, recompras congeladas en máximos."
+                        else:
+                            # Régimen sano dentro del rango: recolocar compra normal escalonada abajo simétrica
+                            if step_sz > 0:
+                                buy_price = line["price"] - step_sz
                             else:
-                                # Régimen sano dentro del rango: recolocar compra normal escalonada abajo
                                 buy_price = line["price"] / (1 + grid.step_pct)
-                                cost = line["amount"] * buy_price
-                                if bot.cash >= cost:
-                                    bot.cash -= cost
-                                    grid.lines.append({"price": buy_price, "side": "buy", "amount": line["amount"], "buy_price": buy_price, "active": True})
-                                    print(f"  🕸️🔴 [MALLA SELL {sym}] Vendido a ${line['price']:.4f}. Ganancia: +${profit:.4f}. Recomprando a ${buy_price:.4f}", flush=True)
-                                else:
-                                    print(f"  ⚠️ [MALLA {sym}] Saldo insuficiente para recolocar compra a ${buy_price:.4f}", flush=True)
+                            cost = line["amount"] * buy_price
+                            if bot.cash >= cost:
+                                bot.cash -= cost
+                                grid.lines.append({"price": buy_price, "side": "buy", "amount": line["amount"], "buy_price": buy_price, "active": True})
+                                print(f"  🕸️🔴 [MALLA SELL {sym}] Vendido a ${line['price']:.4f}. Ganancia: +${profit:.4f}. Recomprando a ${buy_price:.4f}", flush=True)
+                            else:
+                                print(f"  ⚠️ [MALLA {sym}] Saldo insuficiente para recolocar compra a ${buy_price:.4f}", flush=True)
 
-                            recompra_txt = "Anti-Mechazo (Caja Segura)" if is_overextended else f"Recompra lista en ${buy_price:.4f}"
-                            bot.log_trade(
-                                symbol=sym, strategy="grid_sell", side="sell", price=line["price"], amount=line["amount"],
-                                pnl=profit, fee=fees, slippage=0.0,
-                                extra=f"Malla Escalón Cosechado: Ganancia neta +${profit:.4f} USDT | {recompra_txt}",
-                                pos_id=grid.grid_id, status="CLOSED"
-                            )
-                            bot.save_portfolio_state()
+                        recompra_txt = "Anti-Mechazo (Caja Segura)" if is_overextended else f"Recompra lista en ${buy_price:.4f}"
+                        bot.log_trade(
+                            symbol=sym, strategy="grid_sell", side="sell", price=line["price"], amount=line["amount"],
+                            pnl=profit, fee=fees, slippage=0.0,
+                            extra=f"Malla Escalón Cosechado: Ganancia neta +${profit:.4f} USDT | {recompra_txt}",
+                            pos_id=grid.grid_id, status="CLOSED"
+                        )
+                        bot.save_portfolio_state()
 
                 # =========================================================================
                 # 🤖 SUPERVISOR DINÁMICO DE MALLA (Vigilancia Inteligente y No Estática)
@@ -2140,21 +2207,23 @@ def run_paper_trading(reset_all: bool = False):
                         rebalance_cap = min(bot.cash * 0.7, 25.0)
                         lines_to_add = 3
                         sub_cap = rebalance_cap / lines_to_add
+                        step_val = step_sz if step_sz > 0 else (curr_p * grid.step_pct)
                         for step_i in range(1, lines_to_add + 1):
-                            p_buy = curr_p * (1 - (grid.step_pct * step_i))
+                            p_buy = curr_p - (step_val * step_i)
                             bot.cash -= sub_cap
-                            grid.lines.append({"price": p_buy, "side": "buy", "amount": sub_cap / p_buy, "active": True})
+                            grid.lines.append({"price": p_buy, "side": "buy", "amount": sub_cap / p_buy, "buy_price": p_buy, "active": True})
                             print(f"  🕸️🟢 [REBALANCEO DINÁMICO {sym}] Compra simétrica recolocada a ${p_buy:.4f}", flush=True)
                     
-                    # Ajustar precios de órdenes existentes asegurando SIEMPRE ganancia neta (mínimo sobre buy_price)
+                    # Ajustar precios de órdenes existentes asegurando SIEMPRE ganancia neta (preservar target profit)
+                    step_val = step_sz if step_sz > 0 else (curr_p * grid.step_pct)
                     for idx, l in enumerate(sorted([x for x in grid.lines if x['active'] and x['side'] == 'sell'], key=lambda x: x['price'])):
-                        min_sell_p = l.get('buy_price', curr_p) * (1 + FEE_RATE * 2)
-                        new_target = curr_p * (1 + (grid.step_pct * (idx + 1)))
-                        l['price'] = max(min_sell_p, new_target)
+                        min_profit_price = l.get('buy_price', curr_p) + step_val
+                        if l.get('price', 0.0) < min_profit_price:
+                            l['price'] = min_profit_price
                     if not is_buys_frozen:
                         for idx, l in enumerate(sorted([x for x in grid.lines if x['active'] and x['side'] == 'buy'], key=lambda x: -x['price'])):
                             reserved = l['price'] * l['amount']
-                            l['price'] = curr_p * (1 - (grid.step_pct * (idx + 1)))
+                            l['price'] = curr_p - (step_val * (idx + 1))
                             l['amount'] = reserved / l['price']
                             l['buy_price'] = l['price']
 
@@ -2318,7 +2387,7 @@ def run_paper_trading(reset_all: bool = False):
                     grid.freeze_buys = False
                     grid.out_of_range_ticks = 0
 
-            manage_pending_limit_orders(bot, prices)
+            manage_pending_limit_orders(bot, prices, prev_tick_prices)
 
             # 2. Gestionar Posiciones Long Vivas (TP1, Break-Even, Trailing, SL)
             if bot.longs:
@@ -2462,7 +2531,8 @@ def run_paper_trading(reset_all: bool = False):
                                                 step_pct=step_pct,
                                                 capital_total=total_cash_needed,
                                                 capital_per_line=cap_per_line,
-                                                lines=lines
+                                                lines=lines,
+                                                step_size=step_size
                                             )
                                             bot.grids[sym] = new_grid
                                             bot.cash -= total_cash_needed
