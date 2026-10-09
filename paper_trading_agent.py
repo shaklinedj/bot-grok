@@ -2293,8 +2293,15 @@ def run_paper_trading(reset_all: bool = False):
                 macro_engine.run_macro_cycle(list(monitored_symbols) + ["BTC/USDT", "ETH/USDT"])
 
             # Escaneo de Oportunidades del Mercado (Radar):
-            # Mantiene el radar del Dashboard SIEMPRE fresco (cada 20s si hay slots libres, cada 60s si estamos en trade)
-            slots_available = (bot.open_positions_count() < MAX_TOTAL_POSITIONS and len(bot.pending_orders) < MAX_TOTAL_POSITIONS)
+            # Concurrencia Dinámica Escalonada por Capital (Modelo Híbrido Autónomo):
+            # $80 - $125 USDT -> 1 malla activa
+            # $125 - $250 USDT -> 2 mallas activas
+            # $250 - $375 USDT -> 3 mallas activas
+            # $375 - $550 USDT -> 4 mallas activas máximo
+            # > $550 USDT -> escala orgánicamente
+            max_allowed_grids = max(1, min(6, int(equity // 125.0))) if equity >= 80.0 else 1
+            active_grids_count = len([g for g in bot.grids.values() if g.active])
+            slots_available = (active_grids_count < max_allowed_grids and bot.open_positions_count() < MAX_TOTAL_POSITIONS and len(bot.pending_orders) < MAX_TOTAL_POSITIONS)
             scan_interval = FAST_SCAN_INTERVAL_SECONDS if slots_available else 60.0
             scan_due = (now_ts - last_scan_time >= scan_interval) or (not latest_opportunities)
 
@@ -2356,10 +2363,13 @@ def run_paper_trading(reset_all: bool = False):
                                 
                                 # Instanciar la Malla
                                 if grid_lines >= 2 and grid_upper > grid_lower:
-                                    # Ajuste institucional: garantizar que cada línea tenga tamaño contundente ($18 - $30 USDT)
-                                    if adjusted_capital >= 35.0:
-                                        target_lines = max(3, min(grid_lines, int(adjusted_capital // 20.0)))
-                                        grid_lines = min(grid_lines, target_lines)
+                                    # Ajuste institucional híbrido: líneas con amortiguación amplia (5 a 7 líneas)
+                                    # garantizando órdenes contundentes ($18 a $25 USDT)
+                                    if adjusted_capital >= 60.0:
+                                        target_lines = max(5, min(7, int(adjusted_capital // 20.0)))
+                                        grid_lines = target_lines
+                                    elif adjusted_capital >= 35.0:
+                                        grid_lines = max(3, min(5, int(adjusted_capital // 18.0)))
                                     step_size = (grid_upper - grid_lower) / (grid_lines - 1)
                                     step_pct = step_size / grid_lower
                                     
@@ -2434,7 +2444,7 @@ def run_paper_trading(reset_all: bool = False):
                 slot_info = f"SLOTS RIESGO OCUPADOS ({risk_slots}/2) | {free_runners} Runners Libres | En Juego: ${equity-bot.cash:.2f}"
             else:
                 next_sz = calculate_compound_order_size(bot, equity)
-                slot_info = f"Caja Libre: ${bot.cash:.2f} (Slot Reciclado 🚀) | Próximo Trade: ${next_sz:.2f} | {free_runners} Runners Libres"
+                slot_info = f"Caja Libre: ${bot.cash:.2f} | Mallas: {active_grids_count}/{max_allowed_grids} (Slots Dinámicos) | Próximo Trade: ${next_sz:.2f}"
 
             combined_str = " | ".join(active_summary + pending_summary) if (active_summary or pending_summary) else "0 Posiciones (Escaneando cada 45s)"
 

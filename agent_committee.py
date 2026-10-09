@@ -129,12 +129,13 @@ class QuantitativeAgentCommittee:
         # Amplitud adaptativa: Si KER es mayor (cierta inercia), ensancha la malla para dar holgura; si es rango puro, es compacta
         amplitud_malla_atr = max(1.10, min(1.65, 1.10 + (ker * 1.20)))
         raw_range_pct = (atr_pct / 100.0) * amplitud_malla_atr
-        # Paso dinámico basado en spread y volatilidad: entre 0.55% y 0.80% (alta reactividad)
-        target_step = max(0.0055, min(0.0080, (spread_pct * 3.5) if spread_pct > 0.001 else 0.0065))
+        # Paso dinámico adaptativo institucional: entre 0.95% y 1.35% (según ATR y volatilidad para amortiguar caídas)
+        atr_scaled_step = (atr_pct / 100.0) * 0.40
+        target_step = max(0.0095, min(0.0135, atr_scaled_step if atr_pct >= 1.2 else 0.0105))
         calculated_lines = int(round((2 * raw_range_pct) / target_step)) + 1
-        # Líneas concentradas (3 a 5 líneas) para órdenes institucionales contundentes (cero migajas de $5-$6)
-        grid_lines = max(3, min(5, calculated_lines))
-        # Ajustar amplitud exacta para que el paso se mantenga estricto en el rango deseado (~0.55% a 0.80%)
+        # Líneas concentradas con amortiguación amplia (5 a 7 líneas)
+        grid_lines = max(5, min(7, calculated_lines))
+        # Ajustar amplitud exacta para que el paso se mantenga estricto en el rango deseado (~0.95% a 1.35%)
         range_pct = (target_step * (grid_lines - 1)) / 2.0
         
         grid_upper = round(price * (1 + range_pct), 6)
@@ -185,7 +186,7 @@ class QuantitativeAgentCommittee:
         elif atr_pct < 0.80:
             decision_clean = "RECHAZADO"
             veto_reason = f"Activo estancado (ATR {atr_pct:.2f}% < 0.80%)"
-        elif step_size_pct < 0.35 or step_size_pct > 1.25:
+        elif step_size_pct < 0.65 or step_size_pct > 1.65:
             decision_clean = "RECHAZADO"
             veto_reason = f"Paso fuera de rango óptimo ({step_size_pct:.2f}%)"
 
