@@ -60,13 +60,13 @@ from agent_committee import agent_committee
 
 
 # ====================== CONFIGURACIÓN GENERAL ======================
-INITIAL_CAPITAL = 500.0
-MIN_EQUITY_RATIO = 0.60                 # Umbral de supervivencia: 60% ($300.00 USDT)
+INITIAL_CAPITAL = 80.0
+MIN_EQUITY_RATIO = 0.60                 # Umbral de supervivencia: 60% ($48.00 USDT)
 MAX_RISK_SLOTS = 15                     # Múltiples mallas concurrentes simultáneas
 MAX_TOTAL_POSITIONS = 15                # Mallas ilimitadas según capital disponible en caja
 TOP_N_SCAN = 12                         # Considerar y mostrar las 12 mejores oportunidades del mercado
-COMPOUND_ALLOCATION_PCT = 0.20          # Asignación prudente por oportunidad (~$40-$80 por malla)
-MIN_ORDER_USDT = 25.0                   # Mínimo $25.00 USDT (cero micro-órdenes)
+COMPOUND_ALLOCATION_PCT = 0.20          # Asignación prudente por oportunidad
+MIN_ORDER_USDT = 10.0                   # Mínimo $10.00 USDT (estricto estándar Binance Spot)
 
 CHECK_INTERVAL_SECONDS = 1.5            # Ticks reactivos de alta velocidad cada 1.5 segundos
 FAST_SCAN_INTERVAL_SECONDS = 20         # Escaneo micro 15m / PID cada 20 segundos
@@ -781,8 +781,21 @@ class PaperBot:
         self.losses = 0
         self.total_trades = 0
         self.total_realized_pnl_acc = 0.0
+        self.total_fees_paid = 0.0
+        self.total_slippage_cost = 0.0
         self.max_drawdown = 0.0
+        self.latest_pnl_audit = []
         self.save_portfolio_state()
+        try:
+            with open(EQUITY_LOG, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["timestamp", "equity", "cash", "holdings_value", "open_longs", "realized_pnl_total", "fees_paid", "slippage_cost", "max_drawdown"])
+                writer.writerow([datetime.now().isoformat(), round(target_cash, 2), round(target_cash, 2), 0.0, 0, 0.0, 0.0, 0.0, 0.0])
+            with open(TRADES_LOG, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["timestamp", "symbol", "strategy", "side", "price", "amount", "pnl", "fee", "slippage", "extra_info", "position_id", "status"])
+        except Exception as e:
+            print(f"Error reiniciando logs: {e}", flush=True)
         print(f"⚡ [REINICIO COMPLETADO] Efectivo Disponible: ${self.cash:.2f} USDT | Mallas: 0 | Posiciones: 0\n", flush=True)
 
 
@@ -2386,19 +2399,22 @@ def run_paper_trading(reset_all: bool = False):
                                 
                                 # Instanciar la Malla
                                 if grid_lines >= 2 and grid_upper > grid_lower:
-                                    # Ajuste institucional híbrido: líneas con amortiguación amplia (5 a 7 líneas)
-                                    # garantizando órdenes contundentes ($18 a $25 USDT)
+                                    # Ajuste institucional híbrido: líneas con amortiguación óptima
+                                    # Para cuentas desde $80 USDT, permite 3 a 5 líneas de $11 a $15 USDT (estándar Binance Spot)
                                     if adjusted_capital >= 60.0:
-                                        target_lines = max(5, min(7, int(adjusted_capital // 20.0)))
+                                        target_lines = max(4, min(6, int(adjusted_capital // 15.0)))
                                         grid_lines = target_lines
-                                    elif adjusted_capital >= 35.0:
-                                        grid_lines = max(3, min(5, int(adjusted_capital // 18.0)))
+                                    elif adjusted_capital >= 30.0:
+                                        target_lines = max(3, min(5, int(adjusted_capital // 11.0)))
+                                        grid_lines = target_lines
+                                    else:
+                                        grid_lines = max(2, min(3, int(adjusted_capital // 10.0)))
                                     step_size = (grid_upper - grid_lower) / (grid_lines - 1)
                                     step_pct = step_size / grid_lower
                                     
                                     # Malla Centrada (Neutral Grid Pionex-style)
                                     cap_per_line = adjusted_capital / grid_lines
-                                    if cap_per_line >= 12.0:
+                                    if cap_per_line >= 10.0:
                                         lines = []
                                         total_cash_needed = 0.0
                                         buys_count = 0
@@ -2487,4 +2503,5 @@ def run_paper_trading(reset_all: bool = False):
 
 
 if __name__ == "__main__":
-    run_paper_trading(reset_all=False)
+    reset = ("--reset" in sys.argv)
+    run_paper_trading(reset_all=reset)
