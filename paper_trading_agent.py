@@ -1942,13 +1942,16 @@ def run_paper_trading(reset_all: bool = False):
     # Iniciar servidor HTTP en vivo
     start_live_http_server(HTTP_PORT)
 
+    trading_mode = os.environ.get("TRADING_MODE", "paper").upper()
+    exchange_target = os.environ.get("EXCHANGE", "pionex").upper()
     print("=" * 80, flush=True)
-    print("  BINANCE SPOT PAPER TRADING BOT v11 - CONTROL PREDICTIVO PID & FLUJO CONCENTRADO", flush=True)
-    print(f"  • Anticipación Predictiva        -> Inflexión PID (d²P/dt² > 0) + Squeeze Volatilidad", flush=True)
-    print(f"  • Veto Estricto Anti-Cresta      -> Prohibido comprar en techos de ola", flush=True)
-    print(f"  • Capital Autónomo IA            -> IA decide % (Hasta {MAX_TOTAL_POSITIONS} posiciones concurrentes)", flush=True)
-    print(f"  • Mínimo por Trade              -> ${MIN_ORDER_USDT:.2f} USDT Estricto (cero migajas)", flush=True)
-    print(f"  • Dashboard Reactivo en Vivo    -> Streaming continuo en http://localhost:{HTTP_PORT}", flush=True)
+    print("  QUANTITATIVE SPOT GRID BOT v12 - INTERÉS COMPUESTO & MOTOR DE ALTA FRECUENCIA", flush=True)
+    print(f"  • Modo Operativo                 -> [{trading_mode}] Exchange Objetivo: {exchange_target}", flush=True)
+    print(f"  • Pionex Bridge Adapter          -> Listo para Ejecución Real (HMAC-SHA256)", flush=True)
+    print(f"  • Interés Compuesto              -> 100% Activo (Re-inversión automática de cada micro-ganancia)", flush=True)
+    print(f"  • Malla Adaptativa               -> 6 a 7 Líneas dinámicas (Paso: 0.95% - 1.35% ATR)", flush=True)
+    print(f"  • Mínimo por Orden               -> ${MIN_ORDER_USDT:.2f} USDT Estricto (Líneas de ~$10.50-$13.00 USDT)", flush=True)
+    print(f"  • Dashboard Reactivo en Vivo     -> Streaming continuo en http://localhost:{HTTP_PORT}", flush=True)
     print(f"  • Saldo Disponible: ${bot.cash:.2f} USDT | Saldo Base: ${INITIAL_CAPITAL:.2f} USDT", flush=True)
     print("=" * 80, flush=True)
 
