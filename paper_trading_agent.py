@@ -66,6 +66,7 @@ from ai_auditor import ai_auditor
 from agent_committee import agent_committee
 from db_vault import vault
 from ou_estimator import estimate_ornstein_uhlenbeck
+from monte_carlo_simulator import simulate_monte_carlo_forward
 
 
 # ====================== CONFIGURACIÓN GENERAL ======================
@@ -1497,11 +1498,29 @@ def select_best_opportunities(bot: PaperBot, top_n: int = 6) -> List[Dict]:
             ou_metrics = estimate_ornstein_uhlenbeck(df_15m["close"].values, dt_minutes=15.0)
             analysis["ou"] = ou_metrics
 
+            # Simulación Prospectiva de Monte Carlo (1,000 futuros estocásticos hacia adelante)
+            step_target_pct = max(0.0095, (coin_atr_pct / 100.0) * 0.65)
+            mc_target_p = last_price * (1.0 + step_target_pct)
+            mc_floor_p = last_price * (1.0 - max(0.025, (coin_atr_pct / 100.0) * 1.5))
+            mc_metrics = simulate_monte_carlo_forward(
+                current_price=last_price,
+                target_price=mc_target_p,
+                floor_price=mc_floor_p,
+                theta=ou_metrics.get("theta", 0.02),
+                mu=ou_metrics.get("mu", last_price),
+                sigma=ou_metrics.get("sigma", 0.0),
+                atr_pct=coin_atr_pct,
+                n_paths=1000,
+                horizon_minutes=90
+            )
+            analysis["mc"] = mc_metrics
+
             # Telemetría de Radar Cuantitativo (Datos objetivos para el Comité Multi-Agente)
             stage_txt = analysis.get("squeeze_state", "COILING")
             ker_val = analysis.get("ker", 0.35)
             ou_lbl = f"OU={ou_metrics['status_label']} (τ={ou_metrics['half_life_min']:.0f}m)" if ou_metrics.get("is_mean_reverting") else f"OU={ou_metrics['status_label']}"
-            print(f"  📊 [RADAR CANDIDATO] {symbol} | Score: {analysis['score']:.1f} | OBI={lob['obi']:+.2f} | KER={ker_val:.2f} | {ou_lbl} | Sq={stage_txt}", flush=True)
+            mc_lbl = f"MC=P(Win):{mc_metrics['p_win']*100:.0f}% (EV:{mc_metrics['expected_value_pct']:+.2f}%)"
+            print(f"  📊 [RADAR CANDIDATO] {symbol} | Score: {analysis['score']:.1f} | OBI={lob['obi']:+.2f} | KER={ker_val:.2f} | {ou_lbl} | {mc_lbl} | Sq={stage_txt}", flush=True)
 
             # Mantener en la lista de resultados para que el usuario y la oficina vean TODAS las monedas auditadas
             results.append({
@@ -1520,7 +1539,8 @@ def select_best_opportunities(bot: PaperBot, top_n: int = 6) -> List[Dict]:
                 "spread_pct": lob.get("spread_pct", 0.0),
                 "p_win": p_win,
                 "bet_multiplier": bet_mult,
-                "ou": ou_metrics
+                "ou": ou_metrics,
+                "mc": mc_metrics
             })
         except Exception:
             continue

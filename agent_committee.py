@@ -172,8 +172,13 @@ class QuantitativeAgentCommittee:
         ou_info = analysis.get("ou", opp.get("ou", {}))
         ou_adj = +0.05 if ou_info.get("is_mean_reverting") else 0.0
 
+        # Componente F: Simulación Monte Carlo Prospectiva (1,000 futuros estocásticos)
+        mc_info = analysis.get("mc", opp.get("mc", {}))
+        mc_p_win = float(mc_info.get("p_win", 0.50)) if mc_info else 0.50
+        mc_adj = +0.05 if mc_p_win >= 0.70 else (-0.08 if mc_p_win < 0.50 else 0.0)
+
         # Multiplicador dinámico integrado (entre 60% y 100% según las condiciones en vivo)
-        raw_mult = (base_mult + score_adj + obi_adj + ker_adj + ou_adj) * macro_mult
+        raw_mult = (base_mult + score_adj + obi_adj + ker_adj + ou_adj + mc_adj) * macro_mult
         mult_clean = round(max(0.60, min(1.00, raw_mult)), 2)
 
         # 3. Filtros Cuantitativos Institucionales de Aprobación
@@ -195,12 +200,16 @@ class QuantitativeAgentCommittee:
         elif step_size_pct < 0.65 or step_size_pct > 1.65:
             decision_clean = "RECHAZADO"
             veto_reason = f"Paso fuera de rango óptimo ({step_size_pct:.2f}%)"
+        elif mc_info and mc_info.get("verdict") == "VETO_RIESGO_DE_PISO":
+            decision_clean = "RECHAZADO"
+            veto_reason = f"Monte Carlo: Veto por riesgo de piso (P(Win) {mc_p_win*100:.0f}% < 45% o P(Floor) > 35%)"
 
         ou_desc = f"OU: {ou_info.get('status_label', 'N/A')} (τ={ou_info.get('half_life_min', '--')}m)" if ou_info else "OU: N/A"
+        mc_desc = f"MC: {mc_p_win*100:.0f}% P(Win) [EV {mc_info.get('expected_value_pct', 0.0):+.2f}%]" if mc_info else "MC: N/A"
         debate = {
             "centinela_macro": f"Régimen verificado ({'Cautela BTC' if is_risk_off else 'Estable'}). Volumen ${volume:,.0f} USDT. {ou_desc}.",
             "arquitecto_mallas": f"Malla adaptativa: rango ±{range_pct*100:.2f}% a {amplitud_malla_atr:.2f}x ATR ({grid_lines} líneas a paso {step_size_pct:.2f}%).",
-            "jefe_riesgo": f"Capital calibrado dinámicamente al {round(mult_clean*100)}% (Score {score:.1f}, OBI {obi:+.2f}, KER {ker:.2f}{', OU Bono +5%' if ou_adj > 0 else ''}).",
+            "jefe_riesgo": f"Capital al {round(mult_clean*100)}% ({mc_desc}, Score {score:.1f}, OBI {obi:+.2f}).",
             "coordinador_ejecucion": f"Líneas de libro preparadas con paso {step_size_pct:.2f}% y spread {spread_pct:.3f}%."
         }
 

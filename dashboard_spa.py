@@ -1388,11 +1388,20 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           dirBadge = '<span class="text-[10px] bg-purple-500/20 text-purple-300 font-bold px-1.5 py-0.5 rounded border border-purple-500/30">MALLA 🔸</span>';
         }
 
+        const mc = op.mc || an.mc || {};
+        let mcBadge = '';
+        if (mc.p_win !== undefined) {
+          const pWinVal = Number(mc.p_win);
+          const mcWinPct = (pWinVal * 100).toFixed(0);
+          const badgeColor = pWinVal >= 0.70 ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : (pWinVal < 0.50 ? 'bg-rose-500/20 text-rose-300 border-rose-500/30' : 'bg-amber-500/20 text-amber-300 border-amber-500/30');
+          mcBadge = `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold border ${badgeColor}" title="Monte Carlo 1,000 caminos: ${mcWinPct}% probabilidad de tocar venta antes del piso (EV: ${Number(mc.expected_value_pct||0).toFixed(2)}%)">🎲 MC: ${mcWinPct}%</span>`;
+        }
+
         html += `
           <tr class="hover:bg-gray-800/40 transition-colors">
             <td class="py-2.5 font-bold"><a href="${binanceUrl}" target="_blank" class="underline text-indigo-300 hover:text-white">${op.symbol} ↗</a></td>
             <td class="py-2.5 text-gray-300">$${currP}</td>
-            <td class="py-2.5"><div class="flex items-center gap-1.5">${dirBadge} <span class="text-cyan-300 font-bold">$${limitP}</span></div></td>
+            <td class="py-2.5"><div class="flex items-center gap-1.5 flex-wrap">${dirBadge} ${mcBadge} <span class="text-cyan-300 font-bold">$${limitP}</span></div></td>
             <td class="py-2.5 text-emerald-400 font-bold">${score}</td>
             <td class="py-2.5"><span class="px-2 py-0.5 rounded text-[10px] font-bold ${macroBadge}">${macroBias}</span></td>
             <td class="py-2.5 text-purple-300">${sqState} (${sqRatio})</td>
