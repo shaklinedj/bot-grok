@@ -2659,15 +2659,17 @@ def run_paper_trading(reset_all: bool = False):
                 if len(active_sells) == 0 and getattr(grid, "fills_count", 0) > 0:
                     opp = next((o for o in (latest_opportunities or []) if o.get("symbol") == sym), None)
                     current_score = float(opp.get("score", 0.0)) if opp else 0.0
-                    shifts_done = getattr(grid, "trailing_up_shifts", 0)
+                    features = opp.get("analysis", {}).get("features", {}) if opp else {}
+                    rsi_val = float(features.get("rsi", 50.0))
+                    is_healthy_trend = (current_score >= 55.0) and (rsi_val < 75.0)
 
-                    # Si el activo mantiene salud (Score >= 55) y no ha superado el límite de 3 subidas de escalón:
-                    if shifts_done < 3 and current_score >= 55.0 and bot.cash >= 10.0:
+                    # Trailing Up libre e ilimitado mientras el activo mantenga salud cuantitativa:
+                    if is_healthy_trend and bot.cash >= 10.0:
                         new_low, new_high, recov = apply_trailing_up_shift(grid, bot, curr_p)
                         grid_pnl_val = getattr(grid, "realized_pnl", 0.0)
-                        print(f"\n  🚀🧗 [TRAILING UP / SUBIDA DE ESCALÓN {sym}]", flush=True)
-                        print(f"       100% de ventas cobradas. Activo saludable (Score {current_score:.1f} >= 55).", flush=True)
-                        print(f"       Desplazando rango hacia arriba a ${new_low:.4f} - ${new_high:.4f} (Escalón {grid.trailing_up_shifts}/3).", flush=True)
+                        print(f"\n  🚀🧗 [TRAILING UP ILIMITADO {sym}]", flush=True)
+                        print(f"       100% de ventas cobradas. Tendencia activa (Score {current_score:.1f} >= 55 | RSI {rsi_val:.1f} < 75).", flush=True)
+                        print(f"       Desplazando rango hacia arriba a ${new_low:.4f} - ${new_high:.4f} (Escalón #{grid.trailing_up_shifts}).", flush=True)
                         print(f"       Ganancia acumulada en la malla: +${grid_pnl_val:.4f} USDT. ¡Cosecha continúa!\n", flush=True)
                         bot.save_portfolio_state()
                         continue
@@ -2680,7 +2682,7 @@ def run_paper_trading(reset_all: bool = False):
                         grid_pnl_val = getattr(grid, "realized_pnl", 0.0)
                         grid.status_msg = f"Victoria Total Cosechada (+{grid_pnl_val:+.2f} USDT). Capital liberado a caja."
                         bot.save_portfolio_state()
-                        print(f"  🚀🟢 [VICTORIA TOTAL / COSECHA {sym}] 100% de órdenes de venta cobradas con ganancia (+{grid_pnl_val:+.4f} USDT). Malla cerrada con éxito. ${recovered_cash:.2f} USDT devueltos a caja líquida para reciclaje.", flush=True)
+                        print(f"  🚀🟢 [VICTORIA TOTAL / COSECHA {sym}] 100% de órdenes cobradas. Cierre y toma de beneficios (+{grid_pnl_val:+.4f} USDT). ${recovered_cash:.2f} USDT devueltos a caja líquida.", flush=True)
 
                 # B. Si el precio cae por debajo del piso de la malla (con inventario vivo):
                 elif curr_p < grid.grid_lower:
@@ -2787,20 +2789,22 @@ def run_paper_trading(reset_all: bool = False):
                     if grid.out_of_range_ticks >= 15:  # ~35s confirmado
                         opp = next((o for o in (latest_opportunities or []) if o.get("symbol") == sym), None)
                         current_score = float(opp.get("score", 0.0)) if opp else 0.0
-                        shifts_done = getattr(grid, "trailing_up_shifts", 0)
+                        features = opp.get("analysis", {}).get("features", {}) if opp else {}
+                        rsi_val = float(features.get("rsi", 50.0))
+                        is_healthy_trend = (current_score >= 55.0) and (rsi_val < 75.0)
 
-                        # Si mantiene salud y tiene margen de subida de escalón:
-                        if shifts_done < 3 and current_score >= 55.0 and bot.cash >= 10.0:
+                        # Trailing Up libre e ilimitado mientras el activo mantenga salud cuantitativa:
+                        if is_healthy_trend and bot.cash >= 10.0:
                             new_low, new_high, recov = apply_trailing_up_shift(grid, bot, curr_p)
                             grid_pnl_val = getattr(grid, "realized_pnl", 0.0)
                             print(f"\n  🚀🧗 [TRAILING UP POR RUPTURA {sym}]", flush=True)
-                            print(f"       Ruptura alcista confirmada. Activo saludable (Score {current_score:.1f} >= 55).", flush=True)
-                            print(f"       Desplazando rango hacia arriba a ${new_low:.4f} - ${new_high:.4f} (Escalón {grid.trailing_up_shifts}/3).", flush=True)
+                            print(f"       Ruptura alcista confirmada (Score {current_score:.1f} >= 55 | RSI {rsi_val:.1f} < 75).", flush=True)
+                            print(f"       Desplazando rango hacia arriba a ${new_low:.4f} - ${new_high:.4f} (Escalón #{grid.trailing_up_shifts}).", flush=True)
                             print(f"       Ganancia acumulada en la malla: +${grid_pnl_val:.4f} USDT. ¡Cosecha continúa!\n", flush=True)
                             bot.save_portfolio_state()
                             continue
 
-                        # Si ya superó 3 escalones o el score decayó: Tomar ganancias finales completas
+                        # Si el score decayó o entró en sobrecompra extrema (RSI >= 75): Tomar ganancias finales completas
                         active_sells = [l for l in grid.lines if l.get("active") and l.get("side") == "sell"]
                         sold_tokens = sum(l["amount"] for l in active_sells)
                         sell_proceeds = (sold_tokens * curr_p) * (1 - FEE_RATE) if sold_tokens > 0 else 0.0
