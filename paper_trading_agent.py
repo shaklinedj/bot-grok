@@ -221,6 +221,37 @@ def apply_trailing_down_shift(grid: "GridPosition", current_price: float) -> tup
     return grid.grid_lower, grid.grid_upper
 
 
+def apply_trailing_up_shift(grid: "GridPosition", bot: "PaperBot", current_price: float) -> tuple[float, float, float]:
+    """
+    Desplaza el rango de la malla hacia arriba (Trailing Up):
+    - Cancela compras bajas ociosas recuperando su USDT líquido.
+    - Desplaza el piso y techo hacia arriba siguiendo la inercia alcista.
+    - Coloca compras en el nuevo soporte y ventas en los nuevos techos.
+    """
+    shift_amount = (grid.grid_upper - grid.grid_lower) * 0.35
+    grid.grid_lower += shift_amount
+    grid.grid_upper = max(current_price * 1.015, grid.grid_upper + shift_amount)
+    grid.trailing_up_shifts = getattr(grid, "trailing_up_shifts", 0) + 1
+
+    if grid.grid_lines > 1:
+        grid.step_size = (grid.grid_upper - grid.grid_lower) / (grid.grid_lines - 1)
+        grid.step_pct = max(0.0042, grid.step_size / grid.grid_lower)
+
+    # Cancelar compras que quedaron demasiado abajo (lejos del precio vivo)
+    recovered_cash = 0.0
+    for l in grid.lines:
+        if l.get("active") and l.get("side") == "buy" and l["price"] < (grid.grid_lower * 0.995):
+            recovered_cash += (l["price"] * l["amount"])
+            l["active"] = False
+
+    bot.cash += recovered_cash
+    grid.freeze_buys = False
+    grid.out_of_range_ticks = 0
+    grid.status_msg = f"Trailing Up #{grid.trailing_up_shifts}: Rango subido a ${grid.grid_lower:.4f}-${grid.grid_upper:.4f}"
+
+    return grid.grid_lower, grid.grid_upper, recovered_cash
+
+
 # ====================== CEREBRO DE APRENDIZAJE POR REFUERZO ======================
 class ReinforcementBrain:
     def __init__(self):
@@ -550,6 +581,7 @@ class GridPosition:
     step_size: float = 0.0
     anomaly_start_ts: float = 0.0
     trailing_down_shifts: int = 0
+    trailing_up_shifts: int = 0
     reval_diagnosis: dict = field(default_factory=dict)
 
     def __post_init__(self):
@@ -1007,6 +1039,16 @@ class PaperBot:
 
         grid.active = False
         grid.status_msg = f"{reason} ({liquidation_pnl:+.4f} USDT | +${total_recovered:.2f} a caja)"
+
+        # Cooldown de protección: pausar el activo durante 45 minutos si fue liquidado por Circuit Breaker
+        if "CATASTRÓFICO" in reason.upper() or "TIME-STOP" in reason.upper():
+            try:
+                brain.coin_blacklist_until[grid.symbol] = time.time() + (45 * 60)
+                brain.save_state()
+                print(f"  ⏳ [COOLDOWN POST-LIQUIDACIÓN] {grid.symbol} en pausa por 45 minutos tras cierre por Circuit Breaker ({reason}).", flush=True)
+            except Exception as e:
+                pass
+
         self.save_portfolio_state()
         print(f"\n  🛑⚡ [{reason.upper()}: {grid.symbol}] Malla liquidada. Tokens vendidos: {sold_tokens:.4f} @ ${effective_market_price:.6f} (slip: -0.08%) | PnL: {liquidation_pnl:+.4f} USDT | Liberados ${total_recovered:.2f} a caja libre.\n", flush=True)
 
@@ -2613,19 +2655,32 @@ def run_paper_trading(reset_all: bool = False):
                 # 2. GESTIÓN JERÁRQUICA DE COSECHA TOTAL Y RUPTURA:
                 active_sells = [l for l in grid.lines if l.get("active") and l.get("side") == "sell"]
 
-                # A. Victoria Total (100% de Ventas Cosechadas con Ganancia):
-                # Si ya no quedan órdenes de venta vivas, toda la mercadería comprada fue vendida con beneficio.
-                # No dejamos capital atrapado en compras bajas inactivas: reciclamos el 100% del efectivo a caja líquida.
+                # A. Victoria Total o Trailing Up (Todas las Ventas Cosechadas con Ganancia):
                 if len(active_sells) == 0 and getattr(grid, "fills_count", 0) > 0:
-                    recovered_cash = sum((l["price"] * l["amount"]) for l in grid.lines if l.get("active") and l.get("side") == "buy")
-                    for l in grid.lines:
-                        l["active"] = False
-                    bot.cash += recovered_cash
-                    grid.active = False
-                    grid_pnl_val = getattr(grid, "realized_pnl", 0.0)
-                    grid.status_msg = f"Victoria Total Cosechada (+{grid_pnl_val:+.2f} USDT). Capital liberado a caja."
-                    bot.save_portfolio_state()
-                    print(f"  🚀🟢 [VICTORIA TOTAL / COSECHA {sym}] 100% de órdenes de venta cobradas con ganancia (+{grid_pnl_val:+.4f} USDT). Malla cerrada con éxito. ${recovered_cash:.2f} USDT devueltos a caja líquida para reciclaje.", flush=True)
+                    opp = next((o for o in (latest_opportunities or []) if o.get("symbol") == sym), None)
+                    current_score = float(opp.get("score", 0.0)) if opp else 0.0
+                    shifts_done = getattr(grid, "trailing_up_shifts", 0)
+
+                    # Si el activo mantiene salud (Score >= 55) y no ha superado el límite de 3 subidas de escalón:
+                    if shifts_done < 3 and current_score >= 55.0 and bot.cash >= 10.0:
+                        new_low, new_high, recov = apply_trailing_up_shift(grid, bot, curr_p)
+                        grid_pnl_val = getattr(grid, "realized_pnl", 0.0)
+                        print(f"\n  🚀🧗 [TRAILING UP / SUBIDA DE ESCALÓN {sym}]", flush=True)
+                        print(f"       100% de ventas cobradas. Activo saludable (Score {current_score:.1f} >= 55).", flush=True)
+                        print(f"       Desplazando rango hacia arriba a ${new_low:.4f} - ${new_high:.4f} (Escalón {grid.trailing_up_shifts}/3).", flush=True)
+                        print(f"       Ganancia acumulada en la malla: +${grid_pnl_val:.4f} USDT. ¡Cosecha continúa!\n", flush=True)
+                        bot.save_portfolio_state()
+                        continue
+                    else:
+                        recovered_cash = sum((l["price"] * l["amount"]) for l in grid.lines if l.get("active") and l.get("side") == "buy")
+                        for l in grid.lines:
+                            l["active"] = False
+                        bot.cash += recovered_cash
+                        grid.active = False
+                        grid_pnl_val = getattr(grid, "realized_pnl", 0.0)
+                        grid.status_msg = f"Victoria Total Cosechada (+{grid_pnl_val:+.2f} USDT). Capital liberado a caja."
+                        bot.save_portfolio_state()
+                        print(f"  🚀🟢 [VICTORIA TOTAL / COSECHA {sym}] 100% de órdenes de venta cobradas con ganancia (+{grid_pnl_val:+.4f} USDT). Malla cerrada con éxito. ${recovered_cash:.2f} USDT devueltos a caja líquida para reciclaje.", flush=True)
 
                 # B. Si el precio cae por debajo del piso de la malla (con inventario vivo):
                 elif curr_p < grid.grid_lower:
@@ -2728,9 +2783,24 @@ def run_paper_trading(reset_all: bool = False):
                 elif curr_p > grid.grid_upper * 1.012:
                     grid.freeze_buys = False
                     grid.out_of_range_ticks = getattr(grid, "out_of_range_ticks", 0) + 1
-                    grid.status_msg = f"Trailing alcista activo: Subida fuerte (+{((curr_p/grid.grid_upper)-1)*100:.1f}%)"
+                    grid.status_msg = f"Ruptura alcista (+{((curr_p/grid.grid_upper)-1)*100:.1f}%)"
                     if grid.out_of_range_ticks >= 15:  # ~35s confirmado
-                        # Liquidar cualquier token que haya quedado en órdenes de venta vivas al precio vivo de ruptura
+                        opp = next((o for o in (latest_opportunities or []) if o.get("symbol") == sym), None)
+                        current_score = float(opp.get("score", 0.0)) if opp else 0.0
+                        shifts_done = getattr(grid, "trailing_up_shifts", 0)
+
+                        # Si mantiene salud y tiene margen de subida de escalón:
+                        if shifts_done < 3 and current_score >= 55.0 and bot.cash >= 10.0:
+                            new_low, new_high, recov = apply_trailing_up_shift(grid, bot, curr_p)
+                            grid_pnl_val = getattr(grid, "realized_pnl", 0.0)
+                            print(f"\n  🚀🧗 [TRAILING UP POR RUPTURA {sym}]", flush=True)
+                            print(f"       Ruptura alcista confirmada. Activo saludable (Score {current_score:.1f} >= 55).", flush=True)
+                            print(f"       Desplazando rango hacia arriba a ${new_low:.4f} - ${new_high:.4f} (Escalón {grid.trailing_up_shifts}/3).", flush=True)
+                            print(f"       Ganancia acumulada en la malla: +${grid_pnl_val:.4f} USDT. ¡Cosecha continúa!\n", flush=True)
+                            bot.save_portfolio_state()
+                            continue
+
+                        # Si ya superó 3 escalones o el score decayó: Tomar ganancias finales completas
                         active_sells = [l for l in grid.lines if l.get("active") and l.get("side") == "sell"]
                         sold_tokens = sum(l["amount"] for l in active_sells)
                         sell_proceeds = (sold_tokens * curr_p) * (1 - FEE_RATE) if sold_tokens > 0 else 0.0
@@ -2761,9 +2831,9 @@ def run_paper_trading(reset_all: bool = False):
                             )
 
                         grid.active = False
-                        grid.status_msg = f"Trailing alcista: Capital liberado (${total_recovered:.2f} USDT)"
+                        grid.status_msg = f"Trailing alcista finalizado: Capital liberado (${total_recovered:.2f} USDT)"
                         bot.save_portfolio_state()
-                        print(f"  🚀🟢 [TRAILING ALCISTA {sym}] Rompimiento alcista exitoso. Malla reciclada liberando ${total_recovered:.2f} (${recovered_buy_cash:.2f} compras canceladas + ${sell_proceeds:.2f} tokens vendidos a ${curr_p:.4f}).", flush=True)
+                        print(f"  🚀🟢 [TRAILING ALCISTA CIERRE {sym}] Rompimiento alcista exitoso completado. Malla reciclada liberando ${total_recovered:.2f} (${recovered_buy_cash:.2f} compras canceladas + ${sell_proceeds:.2f} tokens vendidos a ${curr_p:.4f}).", flush=True)
 
                 # D. En Rango Normal:
                 else:

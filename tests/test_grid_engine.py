@@ -14,6 +14,7 @@ from paper_trading_agent import (
     compress_grid_spacing,
     evaluate_anomaly_trailing_down,
     apply_trailing_down_shift,
+    apply_trailing_up_shift,
     get_position_volume_24h,
     get_tick_price_range,
 )
@@ -119,6 +120,33 @@ class TestGridEngine(unittest.TestCase):
         self.assertEqual(grid.trailing_down_shifts, 1)
         self.assertEqual(grid.anomaly_start_ts, 0.0)
         self.assertFalse(grid.freeze_buys)
+
+    def test_apply_trailing_up_shift_elevates_range_and_cancels_stale_buys(self):
+        bot = PaperBot.__new__(PaperBot)
+        bot.cash = 10.0
+        grid = GridPosition(
+            grid_id="test_shift_up",
+            symbol="ONDO/USDT",
+            grid_upper=0.52,
+            grid_lower=0.48,
+            grid_lines=5,
+            step_pct=0.01,
+            capital_total=40.0,
+            capital_per_line=10.0,
+            lines=[
+                {"price": 0.46, "side": "buy", "amount": 10.0, "active": True}, # Stale buy below new floor
+                {"price": 0.50, "side": "buy", "amount": 10.0, "active": True}, # Valid buy near new floor
+            ],
+            out_of_range_ticks=15,
+        )
+        new_lower, new_upper, recov = apply_trailing_up_shift(grid, bot, 0.525)
+        self.assertGreater(new_lower, 0.48)
+        self.assertGreater(new_upper, 0.52)
+        self.assertEqual(grid.trailing_up_shifts, 1)
+        self.assertEqual(grid.out_of_range_ticks, 0)
+        self.assertGreater(recov, 0.0)
+        self.assertGreater(bot.cash, 10.0)
+        self.assertFalse(grid.lines[0]["active"])
 
     def test_reinforcement_brain_persistence_and_decay(self):
         brain = ReinforcementBrain()
