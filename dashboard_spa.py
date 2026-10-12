@@ -1145,10 +1145,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
         const rec = an.recommendation || 'skip';
         let dirBadge = '<span class="text-[10px] text-gray-500 font-mono">OBSERVANDO</span>';
-        if (rec === 'long') {
-          dirBadge = '<span class="text-[10px] bg-emerald-500/20 text-emerald-300 font-bold px-1.5 py-0.5 rounded border border-emerald-500/30">LONG ↗</span>';
-        } else if (rec === 'short') {
-          dirBadge = '<span class="text-[10px] bg-rose-500/20 text-rose-300 font-bold px-1.5 py-0.5 rounded border border-rose-500/30">SHORT ↘</span>';
+        if (rec === 'grid' || rec === 'long') {
+          dirBadge = '<span class="text-[10px] bg-purple-500/20 text-purple-300 font-bold px-1.5 py-0.5 rounded border border-purple-500/30">MALLA 🔸</span>';
         }
 
         html += `
