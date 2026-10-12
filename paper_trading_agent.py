@@ -1471,10 +1471,10 @@ def select_best_opportunities(bot: PaperBot, top_n: int = 6) -> List[Dict]:
                 symbol, df_15m, df_1h, macro_info, btc_macro, vol_m
             )
 
-            # Filtro Antiestancamiento de Volatilidad Viva:
-            # Exigir ATR mínimo >= 1.20% para asegurar que el activo tiene movimiento y cosecha rápida
+            # Filtro de Volatilidad Viva y Agresividad de Movimiento:
+            # Exigir ATR mínimo >= 1.60% para asegurar movimientos amplios y choques constantes contra resistencias
             coin_atr_pct = analysis.get("features", {}).get("atr_pct", analysis.get("atr_pct", 0.0))
-            if coin_atr_pct < 1.20:
+            if coin_atr_pct < 1.60:
                 continue
 
             # Evaluación de Microestructura LOB (Order Book Depth 10)
@@ -2145,7 +2145,7 @@ def update_live_state(bot: PaperBot, prices: Dict[str, float],
         "generation": brain.generation,
         "equity": round(equity, 2),
         "initial_capital": INITIAL_CAPITAL,
-        "max_grids": max(1, min(6, int(equity // 125.0))) if equity >= 80.0 else 1,
+        "max_grids": max(2, min(6, int(equity // 38.0))) if equity >= 70.0 else 1,
         "cash": round(bot.cash, 2),
         "holdings_val": round(holdings_val, 2),
         "unrealized_pnl": round(unrealized_pnl, 4),
@@ -2988,12 +2988,11 @@ def run_paper_trading(reset_all: bool = False):
 
             # Escaneo de Oportunidades del Mercado (Radar):
             # Concurrencia Dinámica Escalonada por Capital (Modelo Híbrido Autónomo):
-            # $80 - $125 USDT -> 1 malla activa
-            # $125 - $250 USDT -> 2 mallas activas
-            # $250 - $375 USDT -> 3 mallas activas
-            # $375 - $550 USDT -> 4 mallas activas máximo
-            # > $550 USDT -> escala orgánicamente
-            max_allowed_grids = max(1, min(6, int(equity // 125.0))) if equity >= 80.0 else 1
+            # $70 - $140 USDT -> 2 mallas activas simultáneas (Cero capital dormido, riesgo dividido)
+            # $140 - $210 USDT -> 3 mallas activas
+            # $210 - $280 USDT -> 4 mallas activas
+            # > $280 USDT -> escala orgánicamente
+            max_allowed_grids = max(2, min(6, int(equity // 38.0))) if equity >= 70.0 else 1
             active_grids_count = len([g for g in bot.grids.values() if g.active])
             slots_available = (active_grids_count < max_allowed_grids and bot.open_positions_count() < MAX_TOTAL_POSITIONS and len(bot.pending_orders) < MAX_TOTAL_POSITIONS)
             scan_interval = FAST_SCAN_INTERVAL_SECONDS if slots_available else 60.0
@@ -3076,10 +3075,12 @@ def run_paper_trading(reset_all: bool = False):
                             else:
                                 global LAST_AGENT_PCT
                                 available_funds = bot.cash * 0.98
-                                # Poder total autónomo al bot: asigna hasta el 100% del efectivo disponible según el veredicto del comité
-                                target_by_agents = round(available_funds * comm_mult, 2)
+                                # Asignación proporcional por slots restantes para garantizar 2 mallas simultáneas:
+                                remaining_slots = max(1, (max_allowed_grids - active_grids_count))
+                                target_per_slot = available_funds / remaining_slots
+                                target_by_agents = round(target_per_slot * comm_mult, 2)
                                 adjusted_capital = max(MIN_ORDER_USDT, min(available_funds, target_by_agents))
-                                pct_display = round(comm_mult * 100, 0)
+                                pct_display = round((adjusted_capital / equity) * 100, 0)
                                 LAST_AGENT_PCT = pct_display
                                 
                                 print(f"  🏛️ [MALLA APROBADA {sym}] Techo: ${grid_upper:.4f} | Piso: ${grid_lower:.4f} | Líneas: {grid_lines} | Capital: ${adjusted_capital:.2f} ({pct_display:.0f}%)", flush=True)
@@ -3094,15 +3095,16 @@ def run_paper_trading(reset_all: bool = False):
                                         grid_lower = grid_lower - shift_down
                                         print(f"  🧗 [MALLA TIER 2 / ESCALÓN DE DESCUENTO {sym}] Rango diferenciado: ${grid_lower:.4f} - ${grid_upper:.4f}", flush=True)
 
-                                    # Ajuste institucional híbrido: Al tener 1 solo bot concentrado en $80 USDT,
-                                    # expandimos las líneas a 6 o 7 para acelerar la cadencia de rebotes y micro-ganancias:
-                                    if (adjusted_capital / 6.0) >= 10.0:
-                                        grid_lines = max(6, min(7, int(adjusted_capital // 10.4)))
-                                    elif (adjusted_capital / 5.0) >= 10.0:
-                                        grid_lines = 5
+                                    # Mallas ágiles de 3 a 4 líneas con paso óptimo (0.95% a 1.35% ATR):
+                                    # Con ~$35-$40 USDT de capital por malla, 3 a 4 líneas garantizan ~$11.50-$12.50
+                                    # por línea (>= $10 Pionex) y aseguran que cada fill coseche +$0.11 a +$0.15 USDT netos.
+                                    if (adjusted_capital / 4.0) >= 10.0:
+                                        grid_lines = 4
+                                    elif (adjusted_capital / 3.0) >= 10.0:
+                                        grid_lines = 3
                                     else:
-                                        grid_lines = max(3, min(4, int(adjusted_capital // 10.0)))
-                                    step_size = (grid_upper - grid_lower) / (grid_lines - 1)
+                                        grid_lines = max(2, int(adjusted_capital // 10.0))
+                                    step_size = (grid_upper - grid_lower) / (grid_lines - 1) if grid_lines > 1 else (grid_lower * 0.01)
                                     step_pct = step_size / grid_lower
                                     
                                     # Malla Centrada (Neutral Grid Pionex-style)
