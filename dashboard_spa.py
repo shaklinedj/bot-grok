@@ -660,7 +660,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         const gridFloating = Number(g.unrealized_pnl) || 0;
         const gridNetProfit = gridProfit + gridFloating;
         const gridNetRoi = capTotal > 0 ? ((gridNetProfit / capTotal) * 100) : 0;
+        const safeSym = g.symbol.replace('/','_');
         const tradeHistory = g.trade_history || [];
+        const matchedCycles = g.matched_cycles || [];
+        const closedCycles = matchedCycles.filter(c => c.is_closed);
+        const openCycles = matchedCycles.filter(c => !c.is_closed);
         const buyCount = Number(g.buy_fills_count) || tradeHistory.filter(t => t.side === 'buy' && t.strategy !== 'grid_init').length;
         const sellCount = Number(g.sell_fills_count) || tradeHistory.filter(t => t.side === 'sell' && t.strategy !== 'grid_manual_market_exit').length;
         const gridFills = Number(g.fills_count) || (buyCount + sellCount);
@@ -712,6 +716,63 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 ${s ? `<div class="flex items-center justify-end gap-1.5"><span>$${Number(s.price).toFixed(6)}</span> <span class="w-4 h-4 rounded bg-rose-500/20 text-rose-400 text-[10px] flex items-center justify-center font-bold">${idx + 1}</span></div>` : '<span class="text-gray-600">--</span>'}
               </td>
             </tr>`;
+        }
+
+        // Construir Ciclos Emparejados (Compra y Venta en la Misma Línea)
+        let ciclosRows = '';
+        if (matchedCycles.length === 0) {
+          ciclosRows = `<tr><td colspan="7" class="py-6 text-center text-gray-500 font-mono">Sin ciclos registrados aún en esta malla (en espera de cruces de precio)</td></tr>`;
+        } else {
+          matchedCycles.forEach((c, idx) => {
+            const isClosed = c.is_closed;
+            const buyTime = c.buy_time ? (c.buy_time.includes('T') ? c.buy_time.split('T')[1].split('.')[0] : c.buy_time) : '--:--';
+            const sellTime = c.sell_time ? (c.sell_time.includes('T') ? c.sell_time.split('T')[1].split('.')[0] : c.sell_time) : '';
+            const buyP = Number(c.buy_price || 0) < 1 ? Number(c.buy_price || 0).toFixed(6) : Number(c.buy_price || 0).toFixed(4);
+            const sellP = Number(c.sell_price || 0) < 1 ? Number(c.sell_price || 0).toFixed(6) : Number(c.sell_price || 0).toFixed(4);
+            const amt = Number(c.amount || 0).toFixed(2);
+            const buyVal = (Number(c.buy_price || 0) * Number(c.amount || 0)).toFixed(2);
+            const sellVal = (Number(c.sell_price || 0) * Number(c.amount || 0)).toFixed(2);
+            const pnlVal = Number(c.pnl || 0);
+            const retPct = Number(c.return_pct || 0).toFixed(2);
+            const feeVal = Number(c.fee || 0).toFixed(4);
+
+            const statusBadge = isClosed
+              ? `<span class="bg-emerald-950/80 text-emerald-300 border border-emerald-500/40 px-2 py-0.5 rounded text-[10px] font-bold inline-flex items-center gap-1"><span>🟢</span> COSECHADO</span>`
+              : `<span class="bg-amber-950/80 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded text-[10px] font-bold inline-flex items-center gap-1"><span>⏳</span> ESPERANDO VENTA</span>`;
+
+            const pnlHtml = isClosed
+              ? `<div class="font-mono text-emerald-400 font-bold">+$${pnlVal.toFixed(4)} USDT <span class="bg-emerald-950/60 text-emerald-300 border border-emerald-500/30 text-[10px] font-semibold px-1 py-0.5 rounded ml-1">+${retPct}%</span></div>`
+              : `<div class="font-mono text-xs text-gray-400">Objetivo: <strong class="text-cyan-300 font-bold">+${retPct}%</strong> <span class="text-[10px] text-gray-500">($${pnlVal >= 0 ? '+' : ''}${pnlVal.toFixed(4)} flot)</span></div>`;
+
+            ciclosRows += `
+            <tr class="border-b border-gray-900/80 hover:bg-gray-800/30 font-mono text-xs transition-colors">
+              <td class="py-2.5 px-3">
+                <span class="w-5 h-5 rounded bg-gray-800 text-gray-300 text-[10px] inline-flex items-center justify-center font-bold">#${matchedCycles.length - idx}</span>
+              </td>
+              <!-- ENTRADA / COMPRA -->
+              <td class="py-2.5 px-3">
+                <div class="flex flex-col">
+                  <span class="text-emerald-400 font-bold">$${buyP}</span>
+                  <span class="text-[10px] text-gray-400 font-sans">${buyTime} • ${amt} tokens ($${buyVal})</span>
+                </div>
+              </td>
+              <!-- SEPARADOR / FLECHA -->
+              <td class="py-2.5 px-1 text-center text-gray-600 font-bold">➔</td>
+              <!-- SALIDA / VENTA -->
+              <td class="py-2.5 px-3">
+                <div class="flex flex-col">
+                  <span class="${isClosed ? 'text-rose-400 font-bold' : 'text-rose-300/80'}">$${sellP}</span>
+                  <span class="text-[10px] text-gray-400 font-sans">${isClosed ? `${sellTime} • $${sellVal}` : '<span class="text-amber-400/80 font-mono">⏳ En orden viva</span>'}</span>
+                </div>
+              </td>
+              <!-- ESTADO -->
+              <td class="py-2.5 px-3">${statusBadge}</td>
+              <!-- BENEFICIO NETO -->
+              <td class="py-2.5 px-3">${pnlHtml}</td>
+              <!-- COMISIÓN -->
+              <td class="py-2.5 px-3 text-gray-400 text-right font-mono">$${feeVal}</td>
+            </tr>`;
+          });
         }
 
         let movimientosRows = '';
@@ -795,22 +856,22 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
           <!-- Barra de Navegación de Pestañas Estilo Pionex -->
           <div class="flex items-center gap-2 border-b border-gray-800 pb-2">
-            <button onclick="switchGridTab('${g.symbol}', 'colocadas')" id="tab-btn-colocadas-${g.symbol.replace('/','_')}" class="grid-tab-btn active px-4 py-1.5 rounded-lg text-xs font-bold font-mono transition-all bg-purple-600 text-white">
+            <button onclick="switchGridTab('${g.symbol}', 'colocadas')" id="tab-btn-colocadas-${safeSym}" class="grid-tab-btn active px-4 py-1.5 rounded-lg text-xs font-bold font-mono transition-all bg-purple-600 text-white">
               Colocadas (${buys.length + sells.length})
             </button>
-            <button onclick="switchGridTab('${g.symbol}', 'movimientos')" id="tab-btn-movimientos-${g.symbol.replace('/','_')}" class="grid-tab-btn px-4 py-1.5 rounded-lg text-xs font-bold font-mono transition-all text-gray-400 hover:text-white hover:bg-gray-800">
-              Movimientos (${tradeHistory.length})
+            <button onclick="switchGridTab('${g.symbol}', 'movimientos')" id="tab-btn-movimientos-${safeSym}" class="grid-tab-btn px-4 py-1.5 rounded-lg text-xs font-bold font-mono transition-all text-gray-400 hover:text-white hover:bg-gray-800">
+              Ciclos (${matchedCycles.length > 0 ? matchedCycles.length : tradeHistory.length})
             </button>
-            <button onclick="switchGridTab('${g.symbol}', 'resumen')" id="tab-btn-resumen-${g.symbol.replace('/','_')}" class="grid-tab-btn px-4 py-1.5 rounded-lg text-xs font-bold font-mono transition-all text-gray-400 hover:text-white hover:bg-gray-800">
+            <button onclick="switchGridTab('${g.symbol}', 'resumen')" id="tab-btn-resumen-${safeSym}" class="grid-tab-btn px-4 py-1.5 rounded-lg text-xs font-bold font-mono transition-all text-gray-400 hover:text-white hover:bg-gray-800">
               Resumen PnL
             </button>
-            <button onclick="switchGridTab('${g.symbol}', 'diagnostico')" id="tab-btn-diagnostico-${g.symbol.replace('/','_')}" class="grid-tab-btn px-4 py-1.5 rounded-lg text-xs font-bold font-mono transition-all text-gray-400 hover:text-white hover:bg-gray-800">
+            <button onclick="switchGridTab('${g.symbol}', 'diagnostico')" id="tab-btn-diagnostico-${safeSym}" class="grid-tab-btn px-4 py-1.5 rounded-lg text-xs font-bold font-mono transition-all text-gray-400 hover:text-white hover:bg-gray-800">
               Diagnóstico de Salud & Salida
             </button>
           </div>
 
           <!-- PESTAÑA 1: COLOCADAS (Tabla Espejo Simétrica Pionex) -->
-          <div id="grid-view-colocadas-${g.symbol.replace('/','_')}" class="grid-tab-content block space-y-3">
+          <div id="grid-view-colocadas-${safeSym}" class="grid-tab-content block space-y-3">
             <div class="flex items-center justify-between text-xs font-mono text-gray-400 bg-gray-950/60 p-2.5 rounded-lg border border-gray-800">
               <span class="text-emerald-400 font-bold flex items-center gap-1.5">
                 <span class="w-2 h-2 rounded-full bg-emerald-400"></span>${buys.length} Órdenes de Compra Límite Abajo
@@ -839,26 +900,55 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </div>
           </div>
 
-          <!-- PESTAÑA MOVIMIENTOS: HISTORIAL DE EJECUCIONES DE ESTA MALLA -->
-          <div id="grid-view-movimientos-${g.symbol.replace('/','_')}" class="grid-tab-content hidden space-y-3">
+          <!-- PESTAÑA MOVIMIENTOS: HISTORIAL DE EJECUCIONES & CICLOS DE ESTA MALLA -->
+          <div id="grid-view-movimientos-${safeSym}" class="grid-tab-content hidden space-y-3">
             <div class="flex items-center justify-between text-xs font-mono text-gray-400 bg-gray-950/60 p-2.5 rounded-lg border border-gray-800 flex-wrap gap-2">
               <div class="flex items-center gap-3">
                 <span class="text-cyan-400 font-bold flex items-center gap-1">
-                  <span>⚡</span> Total Movimientos: <strong class="text-white ml-1">${tradeHistory.length}</strong>
+                  <span>⚡</span> Ciclos Emparejados: <strong class="text-white ml-1">${matchedCycles.length}</strong>
                 </span>
                 <span class="text-emerald-400 font-semibold">
-                  Compras Límite: <strong class="text-white">${buyCount}</strong>
+                  Cosechados: <strong class="text-white">${closedCycles.length}</strong>
                 </span>
-                <span class="text-rose-400 font-semibold">
-                  Ventas Cosechadas: <strong class="text-white">${sellCount}</strong>
+                <span class="text-amber-400 font-semibold">
+                  Esperando Venta: <strong class="text-white">${openCycles.length}</strong>
                 </span>
               </div>
-              <div>
-                <span class="text-gray-400">PnL Cosechado en Fills: <strong class="${gridProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'} font-bold">${gridProfit >= 0 ? '+' : ''}$${gridProfit.toFixed(4)} USDT</strong></span>
+              <div class="flex items-center gap-3">
+                <span class="text-gray-400">Ganancia Rejilla: <strong class="${gridProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'} font-bold">${gridProfit >= 0 ? '+' : ''}$${gridProfit.toFixed(4)} USDT</strong></span>
+                <div class="flex items-center bg-gray-900 rounded-lg border border-gray-800 p-0.5 text-[10px]">
+                  <button onclick="toggleMovView('${safeSym}', 'ciclos')" id="btn-mov-ciclos-${safeSym}" class="px-2.5 py-1 rounded font-bold bg-purple-600 text-white transition-colors cursor-pointer">
+                    Ciclos Emparejados
+                  </button>
+                  <button onclick="toggleMovView('${safeSym}', 'raw')" id="btn-mov-raw-${safeSym}" class="px-2.5 py-1 rounded font-bold text-gray-400 hover:text-white transition-colors cursor-pointer">
+                    Fills Raw (${tradeHistory.length})
+                  </button>
+                </div>
               </div>
             </div>
 
-            <div class="overflow-x-auto rounded-lg border border-gray-800/80 bg-gray-950/40 max-h-72 overflow-y-auto">
+            <!-- VISTA 1: CICLOS EMPAREJADOS (COMPRA Y VENTA EN LA MISMA LÍNEA) -->
+            <div id="mov-view-ciclos-${safeSym}" class="overflow-x-auto rounded-lg border border-gray-800/80 bg-gray-950/40 max-h-72 overflow-y-auto">
+              <table class="w-full text-left">
+                <thead class="sticky top-0 bg-gray-900/95 z-10">
+                  <tr class="text-gray-400 border-b border-gray-800 font-mono text-[11px]">
+                    <th class="py-2.5 px-3">#</th>
+                    <th class="py-2.5 px-3 text-emerald-400">COMPRA (ENTRADA)</th>
+                    <th class="py-2.5 px-1 text-center text-gray-600">➔</th>
+                    <th class="py-2.5 px-3 text-rose-400">VENTA (SALIDA)</th>
+                    <th class="py-2.5 px-3">ESTADO</th>
+                    <th class="py-2.5 px-3">BENEFICIO NETO (PNL)</th>
+                    <th class="py-2.5 px-3 text-right">COMISIÓN</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${ciclosRows}
+                </tbody>
+              </table>
+            </div>
+
+            <!-- VISTA 2: FILLS RAW INDIVIDUALES -->
+            <div id="mov-view-raw-${safeSym}" class="hidden overflow-x-auto rounded-lg border border-gray-800/80 bg-gray-950/40 max-h-72 overflow-y-auto">
               <table class="w-full text-left">
                 <thead class="sticky top-0 bg-gray-900/95 z-10">
                   <tr class="text-gray-400 border-b border-gray-800 font-mono text-[11px]">
@@ -872,7 +962,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                   </tr>
                 </thead>
                 <tbody>
-                  ${movimientosRows || '<tr><td colspan="7" class="py-4 text-center text-gray-500 font-mono">Sin ejecuciones aún en esta malla (en espera de cruces de precio)</td></tr>'}
+                  ${movimientosRows || '<tr><td colspan="7" class="py-4 text-center text-gray-500 font-mono">Sin ejecuciones aún en esta malla</td></tr>'}
                 </tbody>
               </table>
             </div>
@@ -1005,6 +1095,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       for (const g of grids) {
         const activeTab = gridActiveTabs[g.symbol] || 'colocadas';
         switchGridTab(g.symbol, activeTab);
+        const safeSym = g.symbol.replace('/', '_');
+        const subMode = movSubViews[safeSym] || 'ciclos';
+        toggleMovView(safeSym, subMode);
       }
     }
     function renderPositions(positions) {
@@ -1973,6 +2066,26 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           }
         }
       });
+    }
+
+    const movSubViews = {};
+    function toggleMovView(safeSym, mode) {
+      movSubViews[safeSym] = mode;
+      const ciclosEl = document.getElementById(`mov-view-ciclos-${safeSym}`);
+      const rawEl = document.getElementById(`mov-view-raw-${safeSym}`);
+      const btnCiclos = document.getElementById(`btn-mov-ciclos-${safeSym}`);
+      const btnRaw = document.getElementById(`btn-mov-raw-${safeSym}`);
+      if (mode === 'raw') {
+        if (ciclosEl) ciclosEl.classList.add('hidden');
+        if (rawEl) rawEl.classList.remove('hidden');
+        if (btnCiclos) btnCiclos.className = 'px-2.5 py-1 rounded font-bold text-gray-400 hover:text-white transition-colors cursor-pointer';
+        if (btnRaw) btnRaw.className = 'px-2.5 py-1 rounded font-bold bg-purple-600 text-white transition-colors cursor-pointer';
+      } else {
+        if (ciclosEl) ciclosEl.classList.remove('hidden');
+        if (rawEl) rawEl.classList.add('hidden');
+        if (btnCiclos) btnCiclos.className = 'px-2.5 py-1 rounded font-bold bg-purple-600 text-white transition-colors cursor-pointer';
+        if (btnRaw) btnRaw.className = 'px-2.5 py-1 rounded font-bold text-gray-400 hover:text-white transition-colors cursor-pointer';
+      }
     }
 
     // Pre-cargar estado inicial si existe

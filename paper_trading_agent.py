@@ -22,6 +22,7 @@ Novedades Arquitecturales v12:
 import sys
 import io
 import os
+import re
 import time
 import csv
 import json
@@ -165,6 +166,97 @@ def get_position_volume_24h(position) -> float:
 
 def active_grid_orders(lines: list, side: str) -> list:
     return [line for line in lines if line.get("active") and line.get("side") == side]
+
+
+def get_grid_matched_cycles(grid, trades: list, current_price: float = 0.0) -> list:
+    """
+    Empareja de forma determinista cada compra con su respectiva venta en la misma línea.
+    Devuelve la lista de ciclos (más recientes primero):
+    - Ciclos COSECHADOS: compra completada + venta completada con ganancia neta.
+    - Ciclos EN ESPERA: compra ejecutada + orden de venta límite colocada esperando fill.
+    """
+    buys = [t for t in trades if t.get("side") == "buy" and t.get("strategy") != "grid_init"]
+    sells = [t for t in trades if t.get("side") == "sell"]
+
+    cycles = []
+    matched_buy_ids = set()
+
+    # 1. Ventas ya cosechadas
+    for s in sorted(sells, key=lambda x: x["timestamp"], reverse=True):
+        s_p = float(s["price"])
+        s_amt = float(s["amount"])
+        s_pnl = float(s["pnl"])
+        s_time = s["timestamp"]
+
+        matched_b = None
+        for b in sorted(buys, key=lambda x: x["timestamp"], reverse=True):
+            if b["id"] in matched_buy_ids or b["timestamp"] > s_time:
+                continue
+            extra_b = b.get("extra_info", "")
+            if f"{s_p:.4f}" in extra_b or abs(float(b["amount"]) - s_amt) < 0.05:
+                matched_b = b
+                matched_buy_ids.add(b["id"])
+                break
+
+        if matched_b:
+            b_p = float(matched_b["price"])
+            pct = ((s_p / b_p) - 1.0) * 100.0 if b_p > 0 else 0.0
+            cycles.append({
+                "cycle_id": f"c_{s['id']}",
+                "status": "COSECHADO",
+                "buy_time": matched_b["timestamp"],
+                "buy_price": b_p,
+                "amount": s_amt,
+                "sell_time": s_time,
+                "sell_price": s_p,
+                "pnl": s_pnl,
+                "return_pct": round(pct, 2),
+                "fee": round(float(s.get("fee", 0.0)) + float(matched_b.get("fee", 0.0)), 4),
+                "is_closed": True
+            })
+        else:
+            # Venta de token inicial sembrado al inicio de la malla
+            b_p = round(s_p - (s_pnl / s_amt), 6) if s_amt > 0 else s_p
+            pct = ((s_p / b_p) - 1.0) * 100.0 if b_p > 0 else 0.0
+            cycles.append({
+                "cycle_id": f"seed_{s['id']}",
+                "status": "COSECHADO",
+                "buy_time": getattr(grid, "created_at", s_time),
+                "buy_price": b_p,
+                "amount": s_amt,
+                "sell_time": s_time,
+                "sell_price": s_p,
+                "pnl": s_pnl,
+                "return_pct": round(pct, 2),
+                "fee": round(float(s.get("fee", 0.0)), 4),
+                "is_closed": True
+            })
+
+    # 2. Compras esperando venta
+    for b in sorted(buys, key=lambda x: x["timestamp"], reverse=True):
+        if b["id"] not in matched_buy_ids:
+            b_p = float(b["price"])
+            b_amt = float(b["amount"])
+            extra = b.get("extra_info", "")
+            m = re.search(r"Venta colocada en \$([0-9\.]+)", extra)
+            target_sell_p = float(m.group(1)) if m else (b_p * (1.0 + float(getattr(grid, "step_pct", 0.004))))
+            pct = ((target_sell_p / b_p) - 1.0) * 100.0 if b_p > 0 else 0.0
+            flot_pnl = (current_price - b_p) * b_amt if current_price > 0 else 0.0
+            cycles.append({
+                "cycle_id": f"open_{b['id']}",
+                "status": "ESPERANDO_VENTA",
+                "buy_time": b["timestamp"],
+                "buy_price": b_p,
+                "amount": b_amt,
+                "sell_time": None,
+                "sell_price": target_sell_p,
+                "pnl": round(flot_pnl, 4),
+                "return_pct": round(pct, 2),
+                "fee": round(float(b.get("fee", 0.0)), 4),
+                "is_closed": False
+            })
+
+    return cycles
 
 
 def compress_grid_spacing(grid: "GridPosition", current_price: float) -> Optional[float]:
@@ -2094,6 +2186,7 @@ def update_live_state(bot: PaperBot, prices: Dict[str, float],
                     "position_id": g_obj.grid_id,
                     "status": "OPEN"
                 }])(vault.get_trades_for_position(g.grid_id), g, prices.get(g.symbol) or ((g.grid_upper + g.grid_lower) / 2.0)),
+                "matched_cycles": get_grid_matched_cycles(g, vault.get_trades_for_position(g.grid_id), prices.get(g.symbol) or ((g.grid_upper + g.grid_lower) / 2.0)),
                 "market_value": round(sum(
                     (l["amount"] * (prices.get(g.symbol) or ((g.grid_upper + g.grid_lower) / 2.0))) if l["side"] == "sell" else (l["price"] * l["amount"])
                     for l in g.lines if l.get("active")
