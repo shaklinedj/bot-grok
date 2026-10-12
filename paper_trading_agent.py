@@ -1415,7 +1415,7 @@ def get_sniper_analysis_aggressive(symbol: str, df_15m: pd.DataFrame, df_1h: pd.
 
 
 # ====================== ESCÁNER DE MERCADO MULTI-FACTOR (MACRO + MICRO) ======================
-def select_best_opportunities(bot: PaperBot, top_n: int = 6) -> List[Dict]:
+def select_best_opportunities(bot: PaperBot, top_n: int = 15) -> List[Dict]:
     try:
         tickers = exchange.fetch_tickers()
         candidates = []
@@ -1428,19 +1428,18 @@ def select_best_opportunities(bot: PaperBot, top_n: int = 6) -> List[Dict]:
             vol = t.get("quoteVolume", 0) or 0
             pct = t.get("percentage", 0) or 0
             last_p = t.get("last", 0) or 0
-            # Filtro de Liquidez Institucional: Mínimo $15M en 24h para garantizar ejecución fluida
-            if vol >= 15_000_000 and last_p > 0:
+            # Filtro de Liquidez Institucional: Mínimo $8M en 24h para garantizar ejecución fluida y variedad
+            if vol >= 8_000_000 and last_p > 0:
                 candidates.append((sym, vol, pct, last_p))
 
-        # Canasta Cuantitativa Especializada para Mallas (Grid Mean-Reversion):
-        # Seleccionamos activos en rango saludable (-4.5% a +6.0%), evitando cimas de pumps parabólicos
-        grid_pool = [c for c in candidates if -4.5 <= c[2] <= 6.0]
-        by_vol = sorted(grid_pool, key=lambda x: x[1], reverse=True)[:15]
-        by_accumulation = sorted([c for c in grid_pool if -4.0 <= c[2] <= 1.0], key=lambda x: x[1], reverse=True)[:10]
+        # Canasta Cuantitativa Especializada para Mallas de Alta Volatilidad:
+        # Permite un amplio rango de mercado (-20.0% a +25.0%) para no asfixiar el radar durante caídas generales
+        grid_pool = [c for c in candidates if -20.0 <= c[2] <= 25.0]
+        by_vol = sorted(grid_pool, key=lambda x: x[1], reverse=True)[:35]
 
         seen = set()
         top_candidates = []
-        for item in by_vol + by_accumulation:
+        for item in by_vol:
             if item[0] not in seen:
                 seen.add(item[0])
                 top_candidates.append(item)
@@ -1473,9 +1472,9 @@ def select_best_opportunities(bot: PaperBot, top_n: int = 6) -> List[Dict]:
             )
 
             # Filtro de Volatilidad Viva y Agresividad de Movimiento:
-            # Exigir ATR mínimo >= 1.60% para asegurar movimientos amplios y choques constantes contra resistencias
+            # Exigir ATR mínimo >= 1.35% para asegurar movimientos amplios y descartar monedas muertas
             coin_atr_pct = analysis.get("features", {}).get("atr_pct", analysis.get("atr_pct", 0.0))
-            if coin_atr_pct < 1.60:
+            if coin_atr_pct < 1.35:
                 continue
 
             # Evaluación de Microestructura LOB (Order Book Depth 10)
