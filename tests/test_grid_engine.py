@@ -12,6 +12,8 @@ from paper_trading_agent import (
     INITIAL_CAPITAL,
     active_grid_orders,
     compress_grid_spacing,
+    evaluate_anomaly_trailing_down,
+    apply_trailing_down_shift,
     get_position_volume_24h,
     get_tick_price_range,
 )
@@ -54,6 +56,69 @@ class TestGridEngine(unittest.TestCase):
         sells_to_process = active_grid_orders(lines, "sell")
         lines.append({"price": 101.0, "side": "sell", "amount": 1.0, "active": True})
         self.assertEqual(sells_to_process, [])
+
+    def test_evaluate_anomaly_trailing_down_approval_and_rejection(self):
+        grid = GridPosition(
+            grid_id="test_reval",
+            symbol="ONDO/USDT",
+            grid_upper=0.52,
+            grid_lower=0.48,
+            grid_lines=5,
+            step_pct=0.01,
+            capital_total=40.0,
+            capital_per_line=10.0,
+            lines=[],
+        )
+        opps_high = [{"symbol": "ONDO/USDT", "score": 70.0}]
+        opps_low = [{"symbol": "ONDO/USDT", "score": 55.0}]
+
+        # 1. Approval: Score >= 65 and safe macro
+        approved, reason, score = evaluate_anomaly_trailing_down(
+            grid, "ONDO/USDT", 0.478, -0.4, opps_high, "BULLISH_EXPANSION"
+        )
+        self.assertTrue(approved)
+        self.assertEqual(score, 70.0)
+
+        # 2. Rejection: Score < 65
+        approved_low, reason_low, score_low = evaluate_anomaly_trailing_down(
+            grid, "ONDO/USDT", 0.478, -0.4, opps_low, "BULLISH_EXPANSION"
+        )
+        self.assertFalse(approved_low)
+        self.assertEqual(score_low, 55.0)
+
+        # 3. Rejection: Panic dump macro
+        approved_macro, reason_macro, _ = evaluate_anomaly_trailing_down(
+            grid, "ONDO/USDT", 0.478, -0.4, opps_high, "PANIC_DUMP"
+        )
+        self.assertFalse(approved_macro)
+
+        # 4. Rejection: Already shifted once
+        grid.trailing_down_shifts = 1
+        approved_limit, reason_limit, _ = evaluate_anomaly_trailing_down(
+            grid, "ONDO/USDT", 0.478, -0.4, opps_high, "BULLISH_EXPANSION"
+        )
+        self.assertFalse(approved_limit)
+
+    def test_apply_trailing_down_shift_adjusts_range_and_resets_anomaly(self):
+        grid = GridPosition(
+            grid_id="test_shift",
+            symbol="ONDO/USDT",
+            grid_upper=0.52,
+            grid_lower=0.48,
+            grid_lines=5,
+            step_pct=0.01,
+            capital_total=40.0,
+            capital_per_line=10.0,
+            lines=[],
+            anomaly_start_ts=12345.0,
+            freeze_buys=True,
+        )
+        new_lower, new_upper = apply_trailing_down_shift(grid, 0.475)
+        self.assertLess(new_lower, 0.48)
+        self.assertLess(new_upper, 0.52)
+        self.assertEqual(grid.trailing_down_shifts, 1)
+        self.assertEqual(grid.anomaly_start_ts, 0.0)
+        self.assertFalse(grid.freeze_buys)
 
     def test_reinforcement_brain_persistence_and_decay(self):
         brain = ReinforcementBrain()

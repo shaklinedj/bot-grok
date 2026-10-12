@@ -175,6 +175,52 @@ def compress_grid_spacing(grid: "GridPosition", current_price: float) -> Optiona
     return old_step
 
 
+def evaluate_anomaly_trailing_down(
+    grid: "GridPosition",
+    symbol: str,
+    current_price: float,
+    dev_floor_pct: float,
+    latest_opportunities: list,
+    btc_macro_state: str
+) -> tuple[bool, str, float]:
+    """
+    Evalúa institucionalmente si una malla en anomalía (bajo el piso) califica para
+    desplazar su rango hacia abajo (Trailing Down / Escalón de descuento) o si debe
+    ir a modo defensivo en Breakeven sin promediar a la baja.
+    """
+    opp = next((o for o in (latest_opportunities or []) if o.get("symbol") == symbol), None)
+    score = float(opp.get("score", 0.0)) if opp else 0.0
+    shifts = getattr(grid, "trailing_down_shifts", 0)
+
+    if shifts >= 1:
+        return False, f"Límite de Trailing Down alcanzado ({shifts}/1). Protegiendo capital.", score
+    if dev_floor_pct <= -3.0:
+        return False, f"Caída profunda ({dev_floor_pct:+.2f}%). Alto riesgo de capitulación.", score
+    if btc_macro_state in ("PANIC_DUMP", "EXTREME_BEAR"):
+        return False, f"Macro BTC hostil ({btc_macro_state}). Prohibido desplazar compras.", score
+    if score < 65.0:
+        return False, f"Score insuficiente ({score:.1f} < 65.0). Pureza no confirmada.", score
+
+    return True, f"Re-evaluación positiva: Score {score:.1f} >= 65 en soporte institucional.", score
+
+
+def apply_trailing_down_shift(grid: "GridPosition", current_price: float) -> tuple[float, float]:
+    """
+    Desplaza el rango de la malla hacia abajo para capturar el rebote en el siguiente
+    escalón de liquidez institucional.
+    """
+    shift_amount = (grid.grid_upper - grid.grid_lower) * 0.40
+    grid.grid_lower = max(0.000001, grid.grid_lower - shift_amount)
+    grid.grid_upper = max(current_price * 1.005, grid.grid_upper - shift_amount)
+    grid.trailing_down_shifts = getattr(grid, "trailing_down_shifts", 0) + 1
+    grid.anomaly_start_ts = 0.0  # Reiniciar reloj de anomalía al re-anclar en nuevo piso
+    if grid.grid_lines > 1:
+        grid.step_size = (grid.grid_upper - grid.grid_lower) / (grid.grid_lines - 1)
+        grid.step_pct = max(0.0042, grid.step_size / grid.grid_lower)
+    grid.freeze_buys = False
+    return grid.grid_lower, grid.grid_upper
+
+
 # ====================== CEREBRO DE APRENDIZAJE POR REFUERZO ======================
 class ReinforcementBrain:
     def __init__(self):
@@ -503,6 +549,7 @@ class GridPosition:
     freeze_buys: bool = False
     step_size: float = 0.0
     anomaly_start_ts: float = 0.0
+    trailing_down_shifts: int = 0
     reval_diagnosis: dict = field(default_factory=dict)
 
     def __post_init__(self):
@@ -2450,7 +2497,37 @@ def run_paper_trading(reset_all: bool = False):
                             bot.close_grid_market(sym, curr_p, reason=f"Time-Stop: {time_str} sin rebote a Breakeven")
                             continue
 
-                        # PROTOCOLO DE SALIDA INTELIGENTE EN BREAKEVEN ANTE ANOMALÍA
+                        # =========================================================================
+                        # 🧗 RE-EVALUACIÓN CUANTITATIVA: TRAILING DOWN vs BREAKEVEN DEFENSIVO
+                        # =========================================================================
+                        can_shift, reval_verdict, current_score = evaluate_anomaly_trailing_down(
+                            grid, sym, curr_p, dev_floor_pct, latest_opportunities, macro_engine.btc_macro_state
+                        )
+
+                        if can_shift:
+                            new_low, new_high = apply_trailing_down_shift(grid, curr_p)
+                            grid.status_msg = f"Trailing Down ejecutado: Piso ${new_low:.4f} (Score: {current_score:.0f})"
+                            reval_diag = {
+                                "state": "TRAILING_DOWN_LADDER",
+                                "reason": f"Re-evaluación positiva: {reval_verdict}. Rango adaptado para capturar rebote.",
+                                "be_price": round(be_price, 6),
+                                "held_tokens": round(total_held_tokens, 2),
+                                "recovered_cash": 0.0,
+                                "time_in_anomaly": "0m",
+                                "elapsed_seconds": 0,
+                                "deviation_floor_pct": 0.0,
+                                "dist_to_be_pct": round(dist_be_pct, 2),
+                                "floor_price": round(new_low, 4),
+                                "ceil_price": round(new_high, 4),
+                                "clinical_verdict": f"Trailing Down activo. Nuevo soporte en ${new_low:.4f}."
+                            }
+                            grid.reval_diagnosis = reval_diag
+                            print(f"\n  🧗⚡ [TRAILING DOWN / ESCALÓN DE DESCUENTO {sym}]", flush=True)
+                            print(f"       {reval_verdict}", flush=True)
+                            print(f"       Nuevo Rango: ${new_low:.4f} - ${new_high:.4f} | Escalón {grid.trailing_down_shifts}/1.", flush=True)
+                            continue
+
+                        # PROTOCOLO DE SALIDA INTELIGENTE EN BREAKEVEN ANTE ANOMALÍA (RECHAZADO TRAILING DOWN)
                         grid.freeze_buys = True
                         recovered_buy_cash = 0.0
                         for b in active_buys:
@@ -2462,10 +2539,10 @@ def run_paper_trading(reset_all: bool = False):
                         for s in active_sells:
                             s["price"] = max(be_price, curr_p * (1 + 0.0015))
 
-                        grid.status_msg = f"Anomalía detectada: Compras canceladas (+${recovered_buy_cash:.2f} libre). Ventas en Breakeven (${be_price:.6f})"
+                        grid.status_msg = f"Anomalía ({reval_verdict}): Compras canceladas (+${recovered_buy_cash:.2f} libre). Ventas en Breakeven (${be_price:.6f})"
                         reval_diag = {
                             "state": "ANOMALY_BREAKEVEN",
-                            "reason": f"Anomalía detectada ({'Caída bajo el piso' if is_below_floor else 'Estancamiento extremo y caída de volumen'}). Ventas listas en Breakeven (${be_price:.6f}) para salir sin pérdida.",
+                            "reason": f"Anomalía detectada ({reval_verdict}). Ventas listas en Breakeven (${be_price:.6f}) para salir sin pérdida.",
                             "be_price": round(be_price, 6),
                             "held_tokens": round(total_held_tokens, 2),
                             "recovered_cash": round(recovered_buy_cash, 2),
@@ -2475,9 +2552,9 @@ def run_paper_trading(reset_all: bool = False):
                             "dist_to_be_pct": round(dist_be_pct, 2),
                             "floor_price": round(grid.grid_lower, 4),
                             "ceil_price": round(grid.grid_upper, 4),
-                            "clinical_verdict": clinical_verdict
+                            "clinical_verdict": f"{clinical_verdict} (Re-evaluación: {reval_verdict})"
                         }
-                        print(f"  🛡️⚡ [ANOMALÍA DETECTADA: {sym}] Canceladas compras inferiores (+${recovered_buy_cash:.2f} a caja). Ventas en breakeven (${be_price:.6f}) para salida sin pérdida.", flush=True)
+                        print(f"  🛡️⚡ [ANOMALÍA DETECTADA: {sym}] {reval_verdict}. Canceladas compras inferiores (+${recovered_buy_cash:.2f} a caja). Ventas en breakeven (${be_price:.6f}) para salida sin pérdida.", flush=True)
                     else:
                         grid.anomaly_start_ts = 0.0
                         # OPERACIÓN NORMAL ESTÁNDAR: No interferir con la malla
