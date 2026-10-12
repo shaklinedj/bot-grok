@@ -115,10 +115,12 @@ LAST_AGENT_PCT: float = 0.0  # Último % decidido por los agentes IA (para el da
 exchange = ccxt.binance({
     "enableRateLimit": True,
     "options": {"defaultType": "spot"},
-    "timeout": 12000
+    "timeout": 30000
 })
 
 LATEST_LIVE_STATE: Dict = {}
+COMMAND_QUEUE: List[Dict] = []
+COMMAND_QUEUE_LOCK = threading.Lock()
 
 
 def _atomic_json_dump(path: str, data, **kwargs):
@@ -500,6 +502,8 @@ class GridPosition:
     fills_count: int = 0
     freeze_buys: bool = False
     step_size: float = 0.0
+    anomaly_start_ts: float = 0.0
+    reval_diagnosis: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.step_size <= 0.0 and self.grid_lines > 1 and self.grid_upper > self.grid_lower:
@@ -890,6 +894,83 @@ class PaperBot:
             dd = (self.peak_equity - equity) / self.peak_equity
             if dd > self.max_drawdown:
                 self.max_drawdown = dd
+
+    def close_grid_market(self, symbol: str, current_price: float, reason: str = "Cierre Manual a Mercado") -> Optional[Dict]:
+        """
+        Cierra forzosamente una malla activa:
+        - Cancela todas las órdenes de compra pendientes, recuperando el USDT no ejecutado.
+        - Vende a mercado todos los tokens retenidos aplicando slippage real de mercado (0.08%) y comisión taker.
+        - Registra la operación, actualiza el PnL y guarda el portafolio.
+        """
+        grid = self.grids.get(symbol)
+        if not grid or not grid.active:
+            for g in self.grids.values():
+                if g.active and (g.symbol == symbol or g.grid_id == symbol):
+                    grid = g
+                    break
+        if not grid or not grid.active:
+            return None
+
+        recovered_buy_cash = 0.0
+        sold_tokens = 0.0
+        total_buy_cost = 0.0
+
+        for l in grid.lines:
+            if not l.get("active"):
+                continue
+            if l.get("side") == "buy":
+                recovered_buy_cash += (float(l["price"]) * float(l["amount"]))
+            elif l.get("side") == "sell":
+                amt = float(l["amount"])
+                sold_tokens += amt
+                total_buy_cost += (amt * float(l.get("buy_price", l["price"] / (1 + grid.step_pct))))
+            l["active"] = False
+
+        # Simulación de Ejecución Real a Mercado: Slippage taker (0.08%) y comisión
+        effective_market_price = current_price * (1.0 - 0.0008) if sold_tokens > 0 else current_price
+        gross_sell = sold_tokens * effective_market_price
+        taker_fee = gross_sell * (FEE_RATE * 1.5)
+        sell_proceeds = (gross_sell - taker_fee) if sold_tokens > 0 else 0.0
+        liquidation_pnl = (sell_proceeds - total_buy_cost) if sold_tokens > 0 else 0.0
+        total_recovered = recovered_buy_cash + sell_proceeds
+
+        grid.realized_pnl += liquidation_pnl
+        self.total_realized_pnl_acc += liquidation_pnl
+        self.cash += total_recovered
+
+        if liquidation_pnl >= 0:
+            self.wins += 1
+        else:
+            self.losses += 1
+        self.total_trades += 1
+
+        self.log_trade(
+            symbol=grid.symbol,
+            strategy="grid_circuit_breaker" if "CATASTRÓFICO" in reason or "TIME-STOP" in reason else "grid_manual_market_exit",
+            side="sell",
+            price=round(effective_market_price, 6),
+            amount=sold_tokens,
+            pnl=round(liquidation_pnl, 4),
+            fee=round(taker_fee, 4),
+            slippage=round(sold_tokens * (current_price - effective_market_price), 4),
+            extra=f"{reason}: Canceladas compras (${recovered_buy_cash:.2f}) + Vendidos {sold_tokens:.4f} {grid.symbol} @ ${effective_market_price:.6f} (-0.08% slip). Liberados ${total_recovered:.2f} a caja líquida",
+            pos_id=grid.grid_id,
+            status="CLOSED"
+        )
+
+        grid.active = False
+        grid.status_msg = f"{reason} ({liquidation_pnl:+.4f} USDT | +${total_recovered:.2f} a caja)"
+        self.save_portfolio_state()
+        print(f"\n  🛑⚡ [{reason.upper()}: {grid.symbol}] Malla liquidada. Tokens vendidos: {sold_tokens:.4f} @ ${effective_market_price:.6f} (slip: -0.08%) | PnL: {liquidation_pnl:+.4f} USDT | Liberados ${total_recovered:.2f} a caja libre.\n", flush=True)
+
+        return {
+            "symbol": symbol,
+            "sold_tokens": sold_tokens,
+            "sell_proceeds": sell_proceeds,
+            "recovered_buy_cash": recovered_buy_cash,
+            "total_recovered": total_recovered,
+            "pnl": liquidation_pnl
+        }
 
     def reset_and_close_all(self, target_cash: float = INITIAL_CAPITAL):
         print(f"\n⚡ [REINICIO TOTAL SOLICITADO] Limpiando portafolio e iniciando en ${target_cash:.2f} USDT...", flush=True)
@@ -1897,6 +1978,29 @@ def update_live_state(bot: PaperBot, prices: Dict[str, float],
                     for l in g.lines if l.get("active")
                 ), 2),
                 "tokens_held": round(sum(l["amount"] for l in g.lines if l.get("active") and l["side"] == "sell"), 4),
+                "reval_diagnosis": (lambda diag, curr_p, be_p: {
+                    **diag,
+                    "state": diag.get("state", "MONITORING"),
+                    "reason": diag.get("reason", "Monitoreo activo de volumen, ADX y libro de órdenes cada ciclo."),
+                    "be_price": be_p,
+                    "held_tokens": diag.get("held_tokens", round(sum(l["amount"] for l in g.lines if l.get("active") and l["side"] == "sell"), 2)),
+                    "recovered_cash": diag.get("recovered_cash", 0.0),
+                    "time_in_anomaly": diag.get("time_in_anomaly") or (
+                        f"{int(max(0.0, time.time() - (getattr(g, 'anomaly_start_ts', 0.0) or getattr(g, 'last_fill_ts', time.time()))) // 3600)}h {int((max(0.0, time.time() - (getattr(g, 'anomaly_start_ts', 0.0) or getattr(g, 'last_fill_ts', time.time()))) % 3600) // 60)}m"
+                    ),
+                    "deviation_floor_pct": diag.get("deviation_floor_pct", round(((curr_p - g.grid_lower) / g.grid_lower) * 100.0, 2) if g.grid_lower > 0 else 0.0),
+                    "dist_to_be_pct": diag.get("dist_to_be_pct", round(((be_p - curr_p) / curr_p) * 100.0, 2) if curr_p > 0 else 0.0),
+                    "floor_price": round(g.grid_lower, 4),
+                    "ceil_price": round(g.grid_upper, 4),
+                    "clinical_verdict": diag.get("clinical_verdict", "Monitoreo activo de libro y salida en Breakeven.")
+                })(
+                    getattr(g, "reval_diagnosis", {}) or {},
+                    prices.get(g.symbol) or ((g.grid_upper + g.grid_lower) / 2.0),
+                    (getattr(g, "reval_diagnosis", {}) or {}).get("be_price") or (
+                        round(sum(l["amount"] * l.get("buy_price", l["price"] / (1 + g.step_pct)) for l in g.lines if l.get("active") and l["side"] == "sell") / max(0.0001, sum(l["amount"] for l in g.lines if l.get("active") and l["side"] == "sell")), 6)
+                        if any(l.get("active") and l["side"] == "sell" for l in g.lines) else (prices.get(g.symbol) or ((g.grid_upper + g.grid_lower) / 2.0))
+                    )
+                )
             }
             for g in bot.grids.values() if g.active
         ],
@@ -1947,23 +2051,37 @@ def update_live_state(bot: PaperBot, prices: Dict[str, float],
 class DynamicDashboardHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         try:
-            if self.path in ("/api/state", "/live_state.json"):
+            clean_path = self.path.split("?")[0].rstrip("/")
+            if clean_path in ("/api/state", "/live_state.json"):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
                 self.end_headers()
                 with LIVE_STATE_LOCK:
-                    state_bytes = json.dumps(LATEST_LIVE_STATE).encode("utf-8")
+                    state_obj = dict(LATEST_LIVE_STATE)
+                if not state_obj and os.path.exists(LIVE_STATE_FILE_LOCAL):
+                    try:
+                        with open(LIVE_STATE_FILE_LOCAL, "r", encoding="utf-8") as f:
+                            state_obj = json.load(f)
+                    except Exception:
+                        pass
+                state_bytes = json.dumps(state_obj).encode("utf-8")
                 self.wfile.write(state_bytes)
-            elif self.path in ("/", "/dashboard", "/dashboard.html"):
+            elif clean_path in ("", "/dashboard", "/dashboard.html"):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.end_headers()
                 with LIVE_STATE_LOCK:
                     current_snap = dict(LATEST_LIVE_STATE)
+                if not current_snap and os.path.exists(LIVE_STATE_FILE_LOCAL):
+                    try:
+                        with open(LIVE_STATE_FILE_LOCAL, "r", encoding="utf-8") as f:
+                            current_snap = json.load(f)
+                    except Exception:
+                        pass
                 html_content = dashboard_spa.get_dashboard_spa_html(initial_state=current_snap)
                 self.wfile.write(html_content.encode("utf-8"))
-            elif self.path in ("/office", "/office.html"):
+            elif clean_path in ("/office", "/office.html"):
                 office_file = os.path.join(LOG_DIR, "office.html")
                 if os.path.exists(office_file):
                     self.send_response(200)
@@ -1981,6 +2099,30 @@ class DynamicDashboardHandler(http.server.SimpleHTTPRequestHandler):
             pass
         except Exception as e:
             print(f"  [Dashboard HTTP Server Error] {e}", flush=True)
+
+    def do_POST(self):
+        try:
+            if self.path == "/api/close_grid":
+                content_length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_length).decode("utf-8") if content_length > 0 else "{}"
+                data = json.loads(body) if body else {}
+                symbol = data.get("symbol", "")
+
+                with COMMAND_QUEUE_LOCK:
+                    COMMAND_QUEUE.append({"action": "close_grid", "symbol": symbol, "timestamp": time.time()})
+
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "queued", "action": "close_grid", "symbol": symbol}).encode("utf-8"))
+            else:
+                self.send_response(404)
+                self.end_headers()
+        except Exception as e:
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "error", "message": str(e)}).encode("utf-8"))
 
     def log_message(self, format, *args):
         pass
@@ -2114,10 +2256,26 @@ def run_paper_trading(reset_all: bool = False):
                     if sym in cached_atrs:
                         atrs[sym] = cached_atrs[sym][0]
 
+            # Procesar comandos manuales recibidos desde el Dashboard SPA
+            with COMMAND_QUEUE_LOCK:
+                pending_cmds = list(COMMAND_QUEUE)
+                COMMAND_QUEUE.clear()
+
+            for cmd in pending_cmds:
+                action = cmd.get("action")
+                cmd_sym = cmd.get("symbol")
+                if action == "close_grid" and cmd_sym:
+                    cur_p = prices.get(cmd_sym) or last_known_prices.get(cmd_sym, 0.0)
+                    if cur_p > 0:
+                        bot.close_grid_market(cmd_sym, cur_p)
+                    else:
+                        print(f"  ⚠️ [CMD CLOSE_GRID] Precio no disponible para {cmd_sym}", flush=True)
+
             # 1. Gestionar Órdenes Límite Pendientes y Mallas (Grid Engine)
-            for sym, grid in list(bot.grids.items()):
+            for grid_key, grid in list(bot.grids.items()):
                 if not grid.active:
                     continue
+                sym = grid.symbol
                 curr_p = prices.get(sym)
                 if not curr_p:
                     continue
@@ -2131,7 +2289,9 @@ def run_paper_trading(reset_all: bool = False):
                 active_buys = active_grid_orders(grid.lines, "buy")
                 active_sells = active_grid_orders(grid.lines, "sell")
                 for line in sorted(active_buys, key=lambda x: -x["price"]):
-                    if line["price"] >= tick_low:
+                    # SIMULACIÓN REALISTA DE COLA LOB (0.03% de penetración para superar la fila en Binance/Pionex)
+                    penetration_buy_p = line["price"] * (1.0 - 0.0003)
+                    if tick_low <= penetration_buy_p:
                         # Ejecutar Compra Limit
                         fees = (line["amount"] * line["price"]) * FEE_RATE
                         line["active"] = False
@@ -2158,7 +2318,9 @@ def run_paper_trading(reset_all: bool = False):
                         
                 # Check lines: Procesar ventas ordenadas de menor a mayor precio
                 for line in sorted(active_sells, key=lambda x: x["price"]):
-                    if line["price"] <= tick_high:
+                    # SIMULACIÓN REALISTA DE COLA LOB (0.03% de penetración por encima para superar la fila)
+                    penetration_sell_p = line["price"] * (1.0 + 0.0003)
+                    if tick_high >= penetration_sell_p:
                         # Ejecutar Venta Limit
                         gross = line["amount"] * line["price"]
                         fees = gross * FEE_RATE
@@ -2218,7 +2380,7 @@ def run_paper_trading(reset_all: bool = False):
                 # =========================================================================
                 grid.ticks_without_fill = getattr(grid, "ticks_without_fill", 0) + 1
 
-                # 1. COMPRESIÓN DINÁMICA Y REBALANCEO POR ESTANCAMIENTO:
+                # 1. COMPRESIÓN DINÁMICA Y RE-EVALUACIÓN POR ESTANCAMIENTO:
                 # Si la moneda lateraliza en seco sin cruzar ninguna línea por ~35-40 segundos (>25 ticks)
                 if grid.ticks_without_fill >= 25:
                     grid.ticks_without_fill = 0 # Resetear contador
@@ -2233,11 +2395,113 @@ def run_paper_trading(reset_all: bool = False):
                     else:
                         grid.status_msg = "Rebalanceando escalones cerca del precio vivo"
 
+                    # RE-EVALUACIÓN ANTE ANOMALÍAS (Solo si se sale de lo normal):
+                    # Si el precio y el volumen están en rangos normales, la malla opera libremente sin intervención.
+                    active_sells = [l for l in grid.lines if l.get("active") and l.get("side") == "sell"]
+                    active_buys = [l for l in grid.lines if l.get("active") and l.get("side") == "buy"]
+
+                    total_held_tokens = sum(l["amount"] for l in active_sells)
+                    total_held_cost = sum(l["amount"] * l.get("buy_price", l["price"] / (1 + grid.step_pct)) for l in active_sells)
+                    be_price = (total_held_cost / total_held_tokens) * (1 + (FEE_RATE * 2.2)) if total_held_tokens > 0 else curr_p
+
+                    # Detección de Anomalías Reales:
+                    # 1. Ruptura por debajo del piso de la malla
+                    is_below_floor = curr_p < grid.grid_lower
+                    # 2. Estancamiento anómalo extremo: más de 80 ticks consecutivos sin fill Y volumen < $8M
+                    vol_now = volumes.get(sym, 15_000_000)
+                    is_extreme_stagnation = (getattr(grid, "ticks_without_fill", 0) >= 80) and (vol_now < 8_000_000)
+
+                    if (is_below_floor or is_extreme_stagnation) and total_held_tokens > 0:
+                        # Si es la primera vez que entra en anomalía, registrar el timestamp de inicio
+                        if getattr(grid, "anomaly_start_ts", 0.0) == 0.0:
+                            grid.anomaly_start_ts = getattr(grid, "last_fill_ts", 0.0) or time.time()
+
+                        elapsed_s = max(0.0, time.time() - grid.anomaly_start_ts)
+                        hrs = int(elapsed_s // 3600)
+                        mins = int((elapsed_s % 3600) // 60)
+                        time_str = f"{hrs}h {mins}m" if hrs > 0 else f"{mins}m"
+
+                        dev_floor_pct = ((curr_p - grid.grid_lower) / grid.grid_lower) * 100.0 if grid.grid_lower > 0 else 0.0
+                        dist_be_pct = ((be_price - curr_p) / curr_p) * 100.0 if curr_p > 0 else 0.0
+
+                        if abs(dev_floor_pct) <= 1.0:
+                            clinical_verdict = f"Desviación Leve ({dev_floor_pct:+.2f}%): Oscila apenas pegado al piso. Paciencia recomendada para rebote."
+                        elif abs(dev_floor_pct) <= 3.0:
+                            clinical_verdict = f"Desviación Moderada ({dev_floor_pct:+.2f}%): Retesteo de soporte. Salida en Breakeven a {dist_be_pct:+.2f}%."
+                        else:
+                            clinical_verdict = f"Caída Profunda ({dev_floor_pct:+.2f}%): Cortafuegos activo (límite -3.50%)."
+
+                        # =========================================================================
+                        # 🛡️ CORTAFUEGOS INSTITUCIONAL (CIRCUIT BREAKERS DE SALIDA)
+                        # =========================================================================
+                        # 1. STOP CATASTRÓFICO POR DESVIACIÓN PROFUNDA:
+                        # Si el precio perfora más de -3.50% por debajo del piso de la malla,
+                        # liquidar de inmediato para proteger el capital ante una capitulación.
+                        if dev_floor_pct <= -3.50:
+                            print(f"\n  🚨🛑 [CIRCUIT BREAKER: STOP CATASTRÓFICO {sym}] Desviación extrema ({dev_floor_pct:+.2f}% <= -3.50%). Liquidando inventario para proteger capital...", flush=True)
+                            bot.close_grid_market(sym, curr_p, reason="Stop Catastrófico: Caída > 3.5% bajo el piso")
+                            continue
+
+                        # 2. TIME-STOP / ROTACIÓN DE CAPITAL:
+                        # Si la malla permanece más de 4 horas (14400s) estancada bajo el piso sin poder rebotar al Breakeven,
+                        # liquidar la posición para liberar el USDT líquido y rotar al nuevo candidato líder del radar.
+                        if elapsed_s >= 4.0 * 3600.0:
+                            print(f"\n  ⏱️🛑 [CIRCUIT BREAKER: TIME-STOP {sym}] {time_str} estancado bajo el piso sin alcanzar Breakeven. Liquidando posición para rotación de capital...", flush=True)
+                            bot.close_grid_market(sym, curr_p, reason=f"Time-Stop: {time_str} sin rebote a Breakeven")
+                            continue
+
+                        # PROTOCOLO DE SALIDA INTELIGENTE EN BREAKEVEN ANTE ANOMALÍA
+                        grid.freeze_buys = True
+                        recovered_buy_cash = 0.0
+                        for b in active_buys:
+                            recovered_buy_cash += (b["price"] * b["amount"])
+                            b["active"] = False
+                        bot.cash += recovered_buy_cash
+
+                        # Concentrar ventas retenidas en precio de equilibrio (Breakeven + comisiones)
+                        for s in active_sells:
+                            s["price"] = max(be_price, curr_p * (1 + 0.0015))
+
+                        grid.status_msg = f"Anomalía detectada: Compras canceladas (+${recovered_buy_cash:.2f} libre). Ventas en Breakeven (${be_price:.6f})"
+                        reval_diag = {
+                            "state": "ANOMALY_BREAKEVEN",
+                            "reason": f"Anomalía detectada ({'Caída bajo el piso' if is_below_floor else 'Estancamiento extremo y caída de volumen'}). Ventas listas en Breakeven (${be_price:.6f}) para salir sin pérdida.",
+                            "be_price": round(be_price, 6),
+                            "held_tokens": round(total_held_tokens, 2),
+                            "recovered_cash": round(recovered_buy_cash, 2),
+                            "time_in_anomaly": time_str,
+                            "elapsed_seconds": round(elapsed_s, 0),
+                            "deviation_floor_pct": round(dev_floor_pct, 2),
+                            "dist_to_be_pct": round(dist_be_pct, 2),
+                            "floor_price": round(grid.grid_lower, 4),
+                            "ceil_price": round(grid.grid_upper, 4),
+                            "clinical_verdict": clinical_verdict
+                        }
+                        print(f"  🛡️⚡ [ANOMALÍA DETECTADA: {sym}] Canceladas compras inferiores (+${recovered_buy_cash:.2f} a caja). Ventas en breakeven (${be_price:.6f}) para salida sin pérdida.", flush=True)
+                    else:
+                        grid.anomaly_start_ts = 0.0
+                        # OPERACIÓN NORMAL ESTÁNDAR: No interferir con la malla
+                        reval_diag = {
+                            "state": "NORMAL",
+                            "reason": f"Comportamiento normal dentro de rango. La malla cosecha habitualmente (${grid.grid_lower:.4f} - ${grid.grid_upper:.4f}).",
+                            "be_price": round(be_price, 6),
+                            "held_tokens": round(total_held_tokens, 2),
+                            "recovered_cash": 0.0,
+                            "time_in_anomaly": "0m",
+                            "elapsed_seconds": 0,
+                            "deviation_floor_pct": 0.0,
+                            "dist_to_be_pct": round(((be_price - curr_p) / curr_p) * 100.0, 2) if curr_p > 0 else 0.0,
+                            "floor_price": round(grid.grid_lower, 4),
+                            "ceil_price": round(grid.grid_upper, 4),
+                            "clinical_verdict": "Malla operando en rango normal con oscilación activa."
+                        }
+                    grid.reval_diagnosis = reval_diag
+
                     # Reajustar la distribución de escalones para que SIEMPRE haya compras abajo y ventas arriba
                     active_buys = [l for l in grid.lines if l["active"] and l["side"] == "buy"]
                     active_sells = [l for l in grid.lines if l["active"] and l["side"] == "sell"]
                     
-                    # Si todas las compras se habían ejecutado y solo quedaban ventas, colocar compras escalonadas abajo (Solo si no está congelado por caída)
+                    # Si todas las compras se habían ejecutado y solo quedaban ventas, colocar compras escalonadas abajo (Solo si no está congelado por caída o breakeven exit)
                     is_buys_frozen = getattr(grid, "freeze_buys", False)
                     if len(active_buys) < 2 and bot.cash >= 10.0 and not is_buys_frozen:
                         rebalance_cap = min(bot.cash * 0.7, 25.0)
@@ -2468,16 +2732,45 @@ def run_paper_trading(reset_all: bool = False):
                         print(f"  🛡️ [CALENTAMIENTO DEL SISTEMA] Sincronizando feeds y radar multi-factor (Ciclo {cycle}/2)...", flush=True)
                 else:
                     if bot.cash >= MIN_ORDER_USDT:
-                        # Selección exclusiva de la Moneda #1 Absoluta (Candidato de Oro del Radar)
+                        # Selección Inteligente de Candidatos por Convicción & Calidad:
+                        # 1. Filtro de Pureza Institucional: NUNCA abrir mallas en monedas mediocres (Score < 55 o Vol < $10M).
+                        # 2. Diversificación Natural: Si hay múltiples monedas líderes (Score >= 55), se abren en monedas diferentes.
+                        # 3. Concentración por Ultra-Convicción: Si la moneda líder tiene Score >= 65 y el resto del mercado
+                        #    es mediocre, se le permite abrir una 2da malla escalonada (Tier 2 / Pullback) en rangos distintos.
+                        symbol_grid_counts = {}
+                        for g in bot.grids.values():
+                            if g.active:
+                                symbol_grid_counts[g.symbol] = symbol_grid_counts.get(g.symbol, 0) + 1
+
+                        valid_opps = [
+                            opp for opp in latest_opportunities
+                            if opp.get("score", 0.0) >= 55.0 and opp.get("volume", 0.0) >= 10_000_000
+                        ]
+
                         best_candidate = None
-                        for opp in latest_opportunities:
+                        is_tiered_discount_grid = False
+
+                        # Opción A: Buscar una moneda líder diferente que aún no tenga malla
+                        for opp in valid_opps:
                             sym = opp["symbol"]
-                            if sym in bot.longs or sym in bot.pending_orders or (sym in bot.grids and bot.grids[sym].active):
+                            if sym in bot.longs or sym in bot.pending_orders:
                                 continue
-                            if (now_ts - deliberation_cooldown.get(sym, 0.0)) < 75.0:
-                                continue
-                            best_candidate = opp
-                            break  # Tomamos la mejor opción disponible
+                            if symbol_grid_counts.get(sym, 0) == 0:
+                                if (now_ts - deliberation_cooldown.get(sym, 0.0)) < 75.0:
+                                    continue
+                                best_candidate = opp
+                                is_tiered_discount_grid = False
+                                break
+
+                        # Opción B: Si no hay otra moneda nueva con Score >= 55, pero la líder tiene Score >= 65
+                        # y tiene menos de 2 mallas activas:
+                        if not best_candidate and valid_opps:
+                            top_opp = valid_opps[0]
+                            top_sym = top_opp["symbol"]
+                            if top_opp.get("score", 0.0) >= 65.0 and symbol_grid_counts.get(top_sym, 0) < 2:
+                                if (now_ts - deliberation_cooldown.get(top_sym, 0.0)) >= 75.0:
+                                    best_candidate = top_opp
+                                    is_tiered_discount_grid = True
 
                         if best_candidate:
                             sym = best_candidate["symbol"]
@@ -2515,6 +2808,14 @@ def run_paper_trading(reset_all: bool = False):
                                 
                                 # Instanciar la Malla
                                 if grid_lines >= 2 and grid_upper > grid_lower:
+                                    if is_tiered_discount_grid:
+                                        # Malla Tier 2 de Descuento (Pullback Ladder):
+                                        # Se desplaza hacia abajo para pescar retrocesos de liquidez sin solapar la malla principal
+                                        shift_down = (grid_upper - grid_lower) * 0.45
+                                        grid_upper = max(best_candidate["price"] * 1.002, grid_upper - shift_down)
+                                        grid_lower = grid_lower - shift_down
+                                        print(f"  🧗 [MALLA TIER 2 / ESCALÓN DE DESCUENTO {sym}] Rango diferenciado: ${grid_lower:.4f} - ${grid_upper:.4f}", flush=True)
+
                                     # Ajuste institucional híbrido: Al tener 1 solo bot concentrado en $80 USDT,
                                     # expandimos las líneas a 6 o 7 para acelerar la cadencia de rebotes y micro-ganancias:
                                     if (adjusted_capital / 6.0) >= 10.0:
@@ -2570,10 +2871,10 @@ def run_paper_trading(reset_all: bool = False):
                                                 lines=lines,
                                                 step_size=step_size
                                             )
-                                            bot.grids[sym] = new_grid
+                                            bot.grids[new_grid.grid_id] = new_grid
                                             bot.cash -= total_cash_needed
                                             bot.save_portfolio_state()
-                                            print(f"  🕸️ [MALLA CENTRADA DESPLEGADA] {buys_count} Compras abajo, {sells_count} Ventas arriba preparadas.", flush=True)
+                                            print(f"  🕸️ [MALLA DESPLEGADA {sym}] ID: {new_grid.grid_id} | {buys_count} Compras abajo, {sells_count} Ventas arriba.", flush=True)
                                         else:
                                             print(f"  ⚠️ [MALLA CANCELADA] Saldo insuficiente para armar la malla centrada.", flush=True)
                                     else:

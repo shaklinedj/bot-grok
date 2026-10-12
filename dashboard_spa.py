@@ -105,7 +105,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           <span id="kpi-equity">$0.00</span>
           <span class="text-xs text-gray-500 font-medium">USDT</span>
         </div>
-        <div id="kpi-equity-pct" class="text-xs font-semibold mt-1 text-emerald-400">+0.00% (Base: $500.00)</div>
+        <div id="kpi-equity-pct" class="text-xs font-semibold mt-1 text-emerald-400">+0.00% (Base: $80.00)</div>
       </div>
 
       <div class="card p-4 border-t-2 border-t-blue-500">
@@ -536,8 +536,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       }
 
       // KPIs
-      const equity = Number(data.equity || 500.0);
-      const initCap = Number(data.initial_capital || 500.0);
+      const equity = Number(data.equity || 80.0);
+      const initCap = Number(data.initial_capital || 80.0);
       const eqPct = ((equity / initCap) - 1) * 100;
       
       const kpiEq = document.getElementById('kpi-equity');
@@ -672,194 +672,255 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         const statusMsg = g.status_msg || "Cosechando en Rango Dinámico";
         const tickTime = (data && data.timestamp) ? data.timestamp.split('T')[1]?.split('.')[0] : '';
         
-        // Generar filas para la cuadrícula de ventas (Rojas)
-        let sellsCards = '';
-        for (let i = 0; i < sells.length; i++) {
-            const l = sells[i];
-            const distPct = ((l.price - currentPrice) / currentPrice * 100).toFixed(2);
-            const isNext = (i === sells.length - 1); // Más cercana
-            const orderValUsdt = (Number(l.price) * Number(l.amount)).toFixed(2);
+        // Diagnóstico Inteligente (Solo ante Anomalías)
+        const reval = g.reval_diagnosis || {};
+        const revalState = reval.state || "NORMAL";
+        const isAnomaly = revalState === "ANOMALY_BREAKEVEN" || revalState === "BREAKEVEN_EXIT";
+        const revalBadgeColor = isAnomaly ? "bg-amber-500/20 text-amber-300 border-amber-500/40" : "bg-emerald-500/20 text-emerald-300 border-emerald-500/40";
+        const revalIcon = isAnomaly ? "🛡️" : "🟢";
+
+        // Construir Filas Simétricas Espejo para Pestaña "Colocadas" (Estilo Pionex)
+        const maxRows = Math.max(buys.length, sells.length);
+        let colocadasRows = '';
+        for (let idx = 0; idx < maxRows; idx++) {
+            const b = buys[idx];
+            const s = sells[sells.length - 1 - idx]; // El más cercano arriba primero
             
-            sellsCards += `
-            <div class="bg-[#131722] p-2.5 rounded-lg border ${isNext ? 'border-rose-500 shadow-md shadow-rose-500/20 bg-rose-950/25 ring-1 ring-rose-500/50' : 'border-gray-800/80 hover:border-gray-700'} flex flex-col justify-between transition-all">
-                <div class="flex justify-between items-center text-[10px] mb-1">
-                    <span class="text-rose-400 font-black tracking-wider flex items-center gap-1">
-                      <span class="w-1.5 h-1.5 rounded-full bg-rose-500"></span>SELL
-                    </span>
-                    ${isNext ? '<span class="bg-rose-500/30 text-rose-300 px-1.5 py-0.5 rounded text-[8px] font-black animate-pulse border border-rose-500/40">⚡ PRÓXIMA</span>' : ''}
-                </div>
-                <div class="text-sm font-black text-white font-mono">$${Number(l.price).toFixed(6)}</div>
-                <div class="text-[10px] text-gray-400 font-mono mt-1 space-y-0.5 bg-gray-950/40 p-1 rounded">
-                    <div class="flex justify-between">
-                        <span class="text-gray-500">Monto:</span>
-                        <span class="text-emerald-400 font-bold">$${orderValUsdt}</span>
-                    </div>
-                    <div class="flex justify-between">
-                        <span class="text-gray-500">Tokens:</span>
-                        <span class="text-gray-300 font-semibold">${Number(l.amount).toFixed(1)}</span>
-                    </div>
-                    <div class="flex justify-between border-t border-gray-800/60 pt-0.5 mt-0.5">
-                        <span class="text-gray-500">Falta:</span>
-                        <span class="text-rose-300 font-bold">+${distPct}%</span>
-                    </div>
-                </div>
-            </div>`;
+            const bDist = b ? (((Number(b.price) - currentPrice) / currentPrice) * 100).toFixed(2) : '--';
+            const sDist = s ? (((Number(s.price) - currentPrice) / currentPrice) * 100).toFixed(2) : '--';
+            const bVal = b ? (Number(b.price) * Number(b.amount)).toFixed(2) : '--';
+            const sVal = s ? (Number(s.price) * Number(s.amount)).toFixed(2) : '--';
+
+            colocadasRows += `
+            <tr class="border-b border-gray-900/80 hover:bg-gray-800/30 font-mono text-xs transition-colors">
+              <!-- COMPRA (Verde) -->
+              <td class="py-2.5 px-3 text-emerald-400 font-bold w-1/4">
+                ${b ? `<div class="flex items-center gap-1.5"><span class="w-4 h-4 rounded bg-emerald-500/20 text-emerald-400 text-[10px] flex items-center justify-center font-bold">${idx + 1}</span> <span>$${Number(b.price).toFixed(6)}</span></div>` : '<span class="text-gray-600">--</span>'}
+              </td>
+              <td class="py-2.5 px-3 text-cyan-400 text-right w-1/4">
+                ${b ? `<span class="bg-cyan-950/40 px-1.5 py-0.5 rounded text-[11px] font-semibold">${bDist}%</span> <span class="text-gray-500 text-[10px] ml-1">($${bVal})</span>` : ''}
+              </td>
+
+              <!-- SEPARADOR CENTRAL -->
+              <td class="py-2.5 px-1 text-center text-gray-700 w-8 border-x border-gray-800/60 font-black">|</td>
+
+              <!-- DISTANCIA VENTA (Rosa) -->
+              <td class="py-2.5 px-3 text-rose-300 w-1/4">
+                ${s ? `<span class="bg-rose-950/40 px-1.5 py-0.5 rounded text-[11px] font-semibold">+${sDist}%</span> <span class="text-gray-500 text-[10px] ml-1">($${sVal})</span>` : ''}
+              </td>
+              <!-- VENTA (Rosa) -->
+              <td class="py-2.5 px-3 text-rose-400 font-bold text-right w-1/4">
+                ${s ? `<div class="flex items-center justify-end gap-1.5"><span>$${Number(s.price).toFixed(6)}</span> <span class="w-4 h-4 rounded bg-rose-500/20 text-rose-400 text-[10px] flex items-center justify-center font-bold">${idx + 1}</span></div>` : '<span class="text-gray-600">--</span>'}
+              </td>
+            </tr>`;
         }
 
-        // Generar filas para la cuadrícula de compras (Azules)
-        let buysCards = '';
-        for (let i = 0; i < buys.length; i++) {
-            const l = buys[i];
-            const distPct = ((currentPrice - l.price) / currentPrice * 100).toFixed(2);
-            const isNext = (i === 0); // Más cercana
-            const orderValUsdt = (Number(l.price) * Number(l.amount)).toFixed(2);
-            
-            buysCards += `
-            <div class="bg-[#131722] p-2.5 rounded-lg border ${isNext ? 'border-cyan-500 shadow-md shadow-cyan-500/20 bg-cyan-950/25 ring-1 ring-cyan-500/50' : 'border-gray-800/80 hover:border-gray-700'} flex flex-col justify-between transition-all">
-                <div class="flex justify-between items-center text-[10px] mb-1">
-                    <span class="text-cyan-400 font-black tracking-wider flex items-center gap-1">
-                      <span class="w-1.5 h-1.5 rounded-full bg-cyan-400"></span>BUY
-                    </span>
-                    ${isNext ? '<span class="bg-cyan-500/30 text-cyan-300 px-1.5 py-0.5 rounded text-[8px] font-black animate-pulse border border-cyan-500/40">⚡ PRÓXIMA</span>' : ''}
-                </div>
-                <div class="text-sm font-black text-white font-mono">$${Number(l.price).toFixed(6)}</div>
-                <div class="text-[10px] text-gray-400 font-mono mt-1 space-y-0.5 bg-gray-950/40 p-1 rounded">
-                    <div class="flex justify-between">
-                        <span class="text-gray-500">Monto:</span>
-                        <span class="text-emerald-400 font-bold">$${orderValUsdt}</span>
-                    </div>
-                    <div class="flex justify-between">
-                        <span class="text-gray-500">Tokens:</span>
-                        <span class="text-gray-300 font-semibold">${Number(l.amount).toFixed(1)}</span>
-                    </div>
-                    <div class="flex justify-between border-t border-gray-800/60 pt-0.5 mt-0.5">
-                        <span class="text-gray-500">Falta:</span>
-                        <span class="text-cyan-300 font-bold">-${distPct}%</span>
-                    </div>
-                </div>
-            </div>`;
-        }
-        
         html += `
-        <div class="card p-5 border-l-4 border-l-purple-500 relative overflow-hidden group hover:border-l-purple-400 transition-colors space-y-4">
-          <!-- 1. Cabecera Macro con Estado y Precio Vivo -->
-          <div class="flex flex-wrap justify-between items-start gap-4 pb-3 border-b border-gray-800/80">
+        <div class="card p-5 border-l-4 border-l-purple-500 bg-[#0d1117] shadow-2xl relative overflow-hidden space-y-4">
+          <!-- Cabecera Macro Pionex -->
+          <div class="flex flex-wrap justify-between items-start gap-4 pb-3 border-b border-gray-800">
             <div>
               <div class="flex items-center gap-2 flex-wrap">
                 <span class="text-2xl font-black text-white tracking-tight">${g.symbol}</span>
-                <span class="text-xs bg-purple-500/20 text-purple-300 font-mono font-bold px-2 py-0.5 rounded border border-purple-500/30">MALLA CUANTITATIVA ACTIVA</span>
-                <span class="text-[11px] bg-emerald-500/10 text-emerald-400 font-mono font-semibold px-2 py-0.5 rounded border border-emerald-500/20 flex items-center gap-1">
-                  <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>${statusMsg}
+                <span class="text-xs bg-purple-500/20 text-purple-300 font-mono font-bold px-2 py-0.5 rounded border border-purple-500/30">PIONEX GRID ENGINE</span>
+                <span class="text-[11px] ${revalBadgeColor} font-mono font-bold px-2.5 py-0.5 rounded border flex items-center gap-1.5">
+                  <span>${revalIcon}</span>
+                  <span>${statusMsg}</span>
                 </span>
               </div>
               <div class="text-xs font-mono text-gray-400 mt-1 flex flex-wrap gap-4">
                 <span>Piso: <strong class="text-white">$${Number(g.grid_lower).toFixed(6)}</strong></span>
                 <span>Techo: <strong class="text-white">$${Number(g.grid_upper).toFixed(6)}</strong></span>
-                <span>Paso Dinámico: <strong class="text-purple-300">${(Number(g.step_pct)*100).toFixed(2)}%</strong></span>
+                <span>Paso Rejilla: <strong class="text-purple-300">${(Number(g.step_pct)*100).toFixed(2)}%</strong></span>
+                <span>Líneas Vivas: <strong class="text-sky-300">${buys.length + sells.length}</strong></span>
               </div>
             </div>
             
-            <!-- Bloque de Precio Vivo Binance con Indicador de Pulso -->
             <div class="flex items-center gap-3">
               <div class="text-right bg-blue-950/40 border border-blue-500/50 rounded-lg px-4 py-2">
                 <div class="text-[10px] text-blue-300 font-bold uppercase tracking-wider flex items-center justify-end gap-1.5">
                   <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block"></span>
-                  Precio Binance Vivo
+                  Precio Vivo Pionex/Binance
                 </div>
                 <div class="text-xl font-black text-white font-mono">$${Number(currentPrice).toFixed(6)}</div>
-                <div class="text-[9px] text-gray-400 font-mono mt-0.5">Actualizado: ${tickTime || 'en vivo'}</div>
+                <div class="text-[9px] text-gray-400 font-mono mt-0.5">Tick: ${tickTime || 'en vivo'}</div>
               </div>
+              <button onclick="requestCloseGrid('${g.symbol}')" class="px-3.5 py-2.5 bg-rose-600/90 hover:bg-rose-500 active:scale-95 text-white font-bold text-xs rounded-lg border border-rose-400/40 shadow-lg shadow-rose-950/50 flex items-center gap-1.5 transition-all cursor-pointer" title="Cancela compras pendientes y liquida tokens a precio de mercado">
+                <span>🛑</span>
+                <span>CERRAR A MERCADO</span>
+              </button>
             </div>
           </div>
 
-          <!-- 2. RESUMEN EXCLUSIVO DE ESTA OPERACIÓN (Estilo Pionex Open Grid) -->
-          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-gray-950/70 p-3.5 rounded-xl border border-purple-500/30 shadow-inner">
-            <div class="border-r border-gray-800/80 pr-2">
-              <div class="text-[10px] text-gray-400 uppercase font-mono font-bold">Valor en Mercado (Tokens)</div>
-              <div class="text-lg font-black font-mono text-white">$${(Number(g.market_value) || capTotal).toFixed(2)} <span class="text-xs text-gray-400 font-normal">USDT</span></div>
-              <div class="text-[10px] text-gray-500 font-mono">${g.tokens_held || ''} ${g.symbol.split('/')[0]} en órdenes vivas</div>
-            </div>
-            
-            <div class="border-r border-gray-800/80 pr-2">
-              <div class="text-[10px] text-gray-400 uppercase font-mono font-bold flex items-center gap-1">
-                <span>Cosecha en Esta Malla</span>
-                <span class="text-[9px] bg-emerald-500/20 text-emerald-300 px-1 rounded font-bold">GRID PROFIT</span>
-              </div>
-              <div class="text-lg font-black font-mono ${gridProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${gridProfit >= 0 ? '+' : ''}$${gridProfit.toFixed(4)} <span class="text-xs ${gridRoiPct >= 0 ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'} px-1.5 py-0.5 rounded font-bold">${gridRoiPct >= 0 ? '+' : ''}${gridRoiPct.toFixed(2)}%</span></div>
-              <div class="text-[10px] text-emerald-500/80 font-mono">${gridFills} fills en esta operación</div>
-            </div>
-
-            <div class="border-r border-gray-800/80 pr-2">
-              <div class="text-[10px] text-gray-400 uppercase font-mono font-bold flex items-center gap-1">
-                <span>Flotante de Tokens</span>
-                <span class="text-[9px] bg-blue-500/20 text-blue-300 px-1 rounded font-bold">FLOATING</span>
-              </div>
-              <div class="text-lg font-black font-mono ${gridFloating >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${gridFloating >= 0 ? '+' : ''}$${gridFloating.toFixed(4)}</div>
-              <div class="text-[10px] text-gray-500 font-mono">${sells.length} órdenes esperando rebote</div>
-            </div>
-
-            <div>
-              <div class="text-[10px] text-gray-400 uppercase font-mono font-bold flex items-center gap-1">
-                <span>PnL Neto Operación</span>
-                <span class="text-[9px] bg-purple-500/20 text-purple-300 px-1 rounded font-bold">TOTAL MALLA</span>
-              </div>
-              <div class="text-lg font-black font-mono ${gridNetProfit >= 0 ? 'text-emerald-400' : 'text-amber-400'}">${gridNetProfit >= 0 ? '+' : ''}$${gridNetProfit.toFixed(4)} <span class="text-xs px-1.5 py-0.5 rounded font-bold bg-gray-800 text-gray-300">${gridNetRoi >= 0 ? '+' : ''}${gridNetRoi.toFixed(2)}%</span></div>
-              <div class="text-[10px] text-cyan-400/80 font-mono">Cosecha + Valor de Tokens</div>
-            </div>
+          <!-- Barra de Navegación de Pestañas Estilo Pionex -->
+          <div class="flex items-center gap-2 border-b border-gray-800 pb-2">
+            <button onclick="switchGridTab('${g.symbol}', 'colocadas')" id="tab-btn-colocadas-${g.symbol.replace('/','_')}" class="grid-tab-btn active px-4 py-1.5 rounded-lg text-xs font-bold font-mono transition-all bg-purple-600 text-white">
+              Colocadas (${buys.length + sells.length})
+            </button>
+            <button onclick="switchGridTab('${g.symbol}', 'resumen')" id="tab-btn-resumen-${g.symbol.replace('/','_')}" class="grid-tab-btn px-4 py-1.5 rounded-lg text-xs font-bold font-mono transition-all text-gray-400 hover:text-white hover:bg-gray-800">
+              Resumen PnL
+            </button>
+            <button onclick="switchGridTab('${g.symbol}', 'diagnostico')" id="tab-btn-diagnostico-${g.symbol.replace('/','_')}" class="grid-tab-btn px-4 py-1.5 rounded-lg text-xs font-bold font-mono transition-all text-gray-400 hover:text-white hover:bg-gray-800">
+              Diagnóstico de Salud & Salida
+            </button>
           </div>
 
-          <!-- 3. Medidor Visual de Rango del Canal (Range Meter) -->
-          <div class="bg-gray-950/50 p-3 rounded-xl border border-gray-800 space-y-1.5 font-mono text-xs">
-            <div class="flex justify-between items-center text-[11px] text-gray-400">
-              <span>Piso Malla: <strong class="text-cyan-300">$${Number(g.grid_lower).toFixed(6)}</strong></span>
-              <span class="text-purple-300 font-bold bg-purple-950/60 px-2 py-0.5 rounded border border-purple-800/40">
-                Posición en Rango: ${rangePct.toFixed(1)}% | En Canal Óptimo ⚡
+          <!-- PESTAÑA 1: COLOCADAS (Tabla Espejo Simétrica Pionex) -->
+          <div id="grid-view-colocadas-${g.symbol.replace('/','_')}" class="grid-tab-content block space-y-3">
+            <div class="flex items-center justify-between text-xs font-mono text-gray-400 bg-gray-950/60 p-2.5 rounded-lg border border-gray-800">
+              <span class="text-emerald-400 font-bold flex items-center gap-1.5">
+                <span class="w-2 h-2 rounded-full bg-emerald-400"></span>${buys.length} Órdenes de Compra Límite Abajo
               </span>
-              <span>Techo Malla: <strong class="text-rose-300">$${Number(g.grid_upper).toFixed(6)}</strong></span>
+              <span class="text-gray-300">Precio Actual: <strong class="text-white font-mono">$${Number(currentPrice).toFixed(6)}</strong></span>
+              <span class="text-rose-400 font-bold flex items-center gap-1.5">
+                ${sells.length} Órdenes de Venta Límite Arriba<span class="w-2 h-2 rounded-full bg-rose-400"></span>
+              </span>
             </div>
-            <div class="w-full bg-gray-900 h-2.5 rounded-full overflow-hidden relative border border-gray-800">
-              <div class="bg-gradient-to-r from-cyan-500 via-purple-500 to-rose-500 h-full w-full opacity-60"></div>
-              <!-- Puntero del precio actual en vivo -->
-              <div class="absolute top-0 bottom-0 w-2.5 bg-white rounded-full shadow-lg shadow-white transform -translate-x-1/2 border border-gray-900" style="left: ${rangePct}%;"></div>
-            </div>
-            <div class="flex justify-between text-[10px] text-gray-500">
-              <span class="text-cyan-400 font-semibold">🟢 Zona de Compras (${buys.length} órdenes vivas)</span>
-              <span class="text-rose-400 font-semibold">Zona de Ventas (${sells.length} órdenes vivas) 🔻</span>
+
+            <div class="overflow-x-auto rounded-lg border border-gray-800/80 bg-gray-950/40">
+              <table class="w-full text-left">
+                <thead>
+                  <tr class="bg-gray-900/90 text-gray-400 border-b border-gray-800 font-mono text-[11px]">
+                    <th class="py-2 px-3 text-emerald-400">PRECIO DE COMPRA</th>
+                    <th class="py-2 px-3 text-cyan-400 text-right">DISTANCIA COMPRA</th>
+                    <th class="py-2 px-1 text-center text-gray-600">|</th>
+                    <th class="py-2 px-3 text-rose-300">DISTANCIA VENTA</th>
+                    <th class="py-2 px-3 text-rose-400 text-right">PRECIO DE VENTA</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${colocadasRows || '<tr><td colspan="5" class="py-4 text-center text-gray-500 font-mono">Sin órdenes activas</td></tr>'}
+                </tbody>
+              </table>
             </div>
           </div>
-          
-          <!-- 4. Cuadrícula de Micro-Órdenes en Vivo -->
-          <div class="space-y-4 pt-1">
-            <!-- Sección de Ventas Abajo de Techo -->
-            <div>
-              <div class="text-xs font-bold text-rose-400 uppercase tracking-wider mb-2 flex items-center justify-between">
-                <span class="flex items-center gap-1.5">🔻 Órdenes de Venta Límite (${sells.length} activas esperando subida)</span>
-                <span class="text-[10px] font-mono text-gray-500">Cosecha automáticas</span>
+
+          <!-- PESTAÑA 2: RESUMEN (KPIs de Rendimiento Pionex) -->
+          <div id="grid-view-resumen-${g.symbol.replace('/','_')}" class="grid-tab-content hidden space-y-3">
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-gray-950/80 p-4 rounded-xl border border-gray-800 shadow-inner">
+              <div class="border-r border-gray-800 pr-2">
+                <div class="text-[10px] text-gray-400 uppercase font-mono font-bold">Inversión en Malla</div>
+                <div class="text-xl font-black font-mono text-white mt-0.5">$${capTotal.toFixed(2)} <span class="text-xs text-gray-400 font-normal">USDT</span></div>
+                <div class="text-[10px] text-gray-500 font-mono mt-0.5">${(Number(g.tokens_held)||0).toFixed(1)} tokens en órdenes vivas</div>
               </div>
-              <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
-                ${sellsCards || '<div class="text-xs text-gray-500 col-span-full">Sin ventas activas</div>'}
+              
+              <div class="border-r border-gray-800 pr-2">
+                <div class="text-[10px] text-gray-400 uppercase font-mono font-bold flex items-center gap-1">
+                  <span>Ganancia Rejilla (Grid Profit)</span>
+                </div>
+                <div class="text-xl font-black font-mono ${gridProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'} mt-0.5">
+                  ${gridProfit >= 0 ? '+' : ''}$${gridProfit.toFixed(4)} <span class="text-xs px-1.5 py-0.5 rounded font-bold bg-emerald-500/20 text-emerald-300">${gridRoiPct >= 0 ? '+' : ''}${gridRoiPct.toFixed(2)}%</span>
+                </div>
+                <div class="text-[10px] text-emerald-500/80 font-mono mt-0.5">${gridFills} fills completados en esta sesión</div>
+              </div>
+
+              <div class="border-r border-gray-800 pr-2">
+                <div class="text-[10px] text-gray-400 uppercase font-mono font-bold">Flotante de Tokens (Tendencia)</div>
+                <div class="text-xl font-black font-mono ${gridFloating >= 0 ? 'text-emerald-400' : 'text-rose-400'} mt-0.5">
+                  ${gridFloating >= 0 ? '+' : ''}$${gridFloating.toFixed(4)}
+                </div>
+                <div class="text-[10px] text-gray-500 font-mono mt-0.5">Diferencial vs costo medio de compra</div>
+              </div>
+
+              <div>
+                <div class="text-[10px] text-gray-400 uppercase font-mono font-bold">PnL Total de la Operación</div>
+                <div class="text-xl font-black font-mono ${gridNetProfit >= 0 ? 'text-emerald-400' : 'text-amber-400'} mt-0.5">
+                  ${gridNetProfit >= 0 ? '+' : ''}$${gridNetProfit.toFixed(4)} <span class="text-xs px-1.5 py-0.5 rounded font-bold bg-gray-800 text-gray-300">${gridNetRoi >= 0 ? '+' : ''}${gridNetRoi.toFixed(2)}%</span>
+                </div>
+                <div class="text-[10px] text-cyan-400/80 font-mono mt-0.5">Ganancia Realizada + Flotante</div>
               </div>
             </div>
 
-            <!-- Sección de Compras Arriba de Piso -->
-            <div>
-              <div class="text-xs font-bold text-cyan-400 uppercase tracking-wider mb-2 flex items-center justify-between">
-                <span class="flex items-center gap-1.5">🟢 Órdenes de Compra Límite (${buys.length} activas esperando bajada)</span>
-                <span class="text-[10px] font-mono text-gray-500">Recompras automáticas</span>
+            <!-- Medidor de Posición en Rango -->
+            <div class="bg-gray-950/60 p-3.5 rounded-xl border border-gray-800 space-y-2 font-mono text-xs">
+              <div class="flex justify-between items-center text-[11px] text-gray-400">
+                <span>Piso Malla: <strong class="text-cyan-300">$${Number(g.grid_lower).toFixed(6)}</strong></span>
+                <span class="text-purple-300 font-bold bg-purple-950/60 px-2 py-0.5 rounded border border-purple-800/40">
+                  Ubicación en Canal: ${rangePct.toFixed(1)}%
+                </span>
+                <span>Techo Malla: <strong class="text-rose-300">$${Number(g.grid_upper).toFixed(6)}</strong></span>
               </div>
-              <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
-                ${buysCards || '<div class="text-xs text-gray-500 col-span-full">Sin compras activas</div>'}
+              <div class="w-full bg-gray-900 h-2.5 rounded-full overflow-hidden relative border border-gray-800">
+                <div class="bg-gradient-to-r from-cyan-500 via-purple-500 to-rose-500 h-full w-full opacity-60"></div>
+                <div class="absolute top-0 bottom-0 w-2.5 bg-white rounded-full shadow-lg shadow-white transform -translate-x-1/2 border border-gray-900" style="left: ${rangePct}%;"></div>
               </div>
             </div>
           </div>
-          
-          <div class="pt-3 border-t border-gray-800/80 text-xs text-gray-400 flex justify-between font-mono">
+
+          <!-- PESTAÑA 3: DIAGNÓSTICO & SALUD (Re-Evaluación Continua) -->
+          <div id="grid-view-diagnostico-${g.symbol.replace('/','_')}" class="grid-tab-content hidden space-y-3">
+            <div class="bg-gray-950/80 p-4 rounded-xl border border-gray-800 space-y-3 font-mono text-xs">
+              <div class="flex items-center justify-between">
+                <span class="font-bold text-gray-300 flex items-center gap-2">
+                  <span>🧠</span> Protocolo de Re-Evaluación Dinámica de Salud & Salida
+                </span>
+                <span class="${revalBadgeColor} px-2.5 py-0.5 rounded text-[11px] font-bold border">
+                  ${revalState}
+                </span>
+              </div>
+
+              <!-- TARJETAS DE DECISIÓN CLÍNICA EN VIVO -->
+              <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+                <div class="bg-gray-900/90 border border-gray-800 p-2.5 rounded-lg flex flex-col">
+                  <span class="text-[10px] text-gray-400">⏱️ TIEMPO EN ESTADO</span>
+                  <span class="text-sm font-bold text-amber-300 mt-0.5">${reval.time_in_anomaly || '0m'}</span>
+                  <span class="text-[9px] text-gray-500">Último fill hace ${reval.time_in_anomaly || '0m'}</span>
+                </div>
+                <div class="bg-gray-900/90 border border-gray-800 p-2.5 rounded-lg flex flex-col">
+                  <span class="text-[10px] text-gray-400">📉 DESVIACIÓN DEL PISO</span>
+                  <span class="text-sm font-bold ${Number(reval.deviation_floor_pct || 0) < 0 ? 'text-rose-400' : 'text-emerald-400'} mt-0.5">
+                    ${reval.deviation_floor_pct !== undefined ? reval.deviation_floor_pct + '%' : (((Number(currentPrice) - Number(g.grid_lower))/Number(g.grid_lower))*100).toFixed(2) + '%'}
+                  </span>
+                  <span class="text-[9px] text-gray-500">Piso: $${Number(g.grid_lower).toFixed(4)}</span>
+                </div>
+                <div class="bg-gray-900/90 border border-gray-800 p-2.5 rounded-lg flex flex-col">
+                  <span class="text-[10px] text-gray-400">🎯 REBOTE A BREAKEVEN</span>
+                  <span class="text-sm font-bold text-cyan-300 mt-0.5">
+                    +${reval.dist_to_be_pct !== undefined ? reval.dist_to_be_pct + '%' : (((Number(reval.be_price||currentPrice) - Number(currentPrice))/Number(currentPrice))*100).toFixed(2) + '%'}
+                  </span>
+                  <span class="text-[9px] text-gray-500">Salida en $${reval.be_price ? Number(reval.be_price).toFixed(4) : Number(currentPrice).toFixed(4)}</span>
+                </div>
+                <div class="bg-gray-900/90 border border-gray-800 p-2.5 rounded-lg flex flex-col">
+                  <span class="text-[10px] text-gray-400">🛡️ EFECTIVO PROTEGIDO</span>
+                  <span class="text-sm font-bold text-emerald-400 mt-0.5">+$${(reval.recovered_cash || 0).toFixed(2)} USDT</span>
+                  <span class="text-[9px] text-gray-500">Compras congeladas</span>
+                </div>
+              </div>
+
+              <div class="p-3 rounded-lg bg-gray-900/90 border border-gray-800 text-gray-300 space-y-2">
+                <div class="flex items-start gap-2">
+                  <span class="text-purple-400 font-bold">Diagnóstico:</span>
+                  <span>${reval.reason || 'Monitoreo activo de volumen, ADX y libro de órdenes cada ciclo.'}</span>
+                </div>
+                <div class="pt-2 border-t border-gray-800/80 text-[11px] text-gray-300 flex items-center justify-between">
+                  <div>Rango Malla: <strong class="text-white">$${Number(g.grid_lower).toFixed(4)}</strong> - <strong class="text-white">$${Number(g.grid_upper).toFixed(4)}</strong></div>
+                  <div>Tokens en Riesgo: <strong class="text-amber-400">${reval.held_tokens || (Number(g.tokens_held)||0).toFixed(2)} tokens</strong></div>
+                </div>
+                ${reval.clinical_verdict ? `
+                <div class="pt-2 border-t border-gray-800/80 text-[11px] text-cyan-300 flex items-center gap-1.5">
+                  <span>💡</span> <strong>Veredicto Clínico:</strong> <span>${reval.clinical_verdict}</span>
+                </div>` : ''}
+              </div>
+
+              <div class="text-[11px] text-gray-400 bg-gray-900/40 p-2.5 rounded border border-gray-800/60 leading-relaxed">
+                💡 <strong>Regla de Preservación de Capital:</strong> Si el mercado pierde volumen o entra en caída anómala, el bot <em>NO vende a pérdida a mercado</em>. Cancela las compras no ejecutadas para liberar USDT a caja y coloca una orden de salida pasiva en el precio de equilibrio (Breakeven + fee) para salir en ganancia $0.00 en el primer rebote.
+              </div>
+            </div>
+          </div>
+
+          <div class="pt-2 border-t border-gray-800/80 text-xs text-gray-400 flex justify-between font-mono">
             <span>Inversión en la Malla: <strong class="text-white">$${capTotal.toFixed(2)} USDT</strong></span>
             <span>Total de Escalones Vivos: <strong class="text-purple-300">${buys.length + sells.length} órdenes</strong></span>
           </div>
         </div>`;
       }
       container.innerHTML = html;
+
+      // Restaurar pestaña activa guardada por el usuario
+      for (const g of grids) {
+        const activeTab = gridActiveTabs[g.symbol] || 'colocadas';
+        switchGridTab(g.symbol, activeTab);
+      }
     }
     function renderPositions(positions) {
       const container = document.getElementById('positions-container');
@@ -1776,6 +1837,59 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         titleEl.innerHTML = `🧭 Escaneando pares de alta liquidez en Binance...`;
         chipsEl.innerHTML = `<span class="bg-gray-800 text-gray-400 px-2 py-0.5 rounded">Filtro $25M+ activo</span>`;
       }
+    }
+
+    async function requestCloseGrid(symbol) {
+      if (!confirm(`¿Estás seguro de que deseas CERRAR A MERCADO la malla de ${symbol}?\\n\\n- Se cancelarán inmediatamente todas las compras no tocadas (recuperando el USDT libre).\\n- Se venderán a precio de mercado todos los tokens que estén en órdenes de venta vivas.`)) {
+        return;
+      }
+      try {
+        const res = await fetch('/api/close_grid', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ symbol: symbol })
+        });
+        if (res.ok) {
+          const toast = document.createElement('div');
+          toast.className = 'fixed bottom-5 right-5 z-50 bg-rose-600 text-white font-mono text-xs px-4 py-3 rounded-lg shadow-2xl border border-rose-400 animate-bounce';
+          toast.innerText = `⚡ Solicitud enviada: Cerrando ${symbol} y vendiendo a mercado...`;
+          document.body.appendChild(toast);
+          setTimeout(() => toast.remove(), 4000);
+          fetchState();
+        } else {
+          alert('Error al enviar la solicitud de cierre al bot.');
+        }
+      } catch (err) {
+        alert('Error de conexión con el bot: ' + err.message);
+      }
+    }
+
+    const gridActiveTabs = {};
+    function switchGridTab(symbol, tabName) {
+      gridActiveTabs[symbol] = tabName;
+      const safeSym = symbol.replace('/', '_');
+      
+      const views = ['colocadas', 'resumen', 'diagnostico'];
+      views.forEach(v => {
+        const contentEl = document.getElementById(`grid-view-${v}-${safeSym}`);
+        const btnEl = document.getElementById(`tab-btn-${v}-${safeSym}`);
+        if (contentEl) {
+          if (v === tabName) {
+            contentEl.classList.remove('hidden');
+            contentEl.classList.add('block');
+          } else {
+            contentEl.classList.add('hidden');
+            contentEl.classList.remove('block');
+          }
+        }
+        if (btnEl) {
+          if (v === tabName) {
+            btnEl.className = 'grid-tab-btn active px-4 py-1.5 rounded-lg text-xs font-bold font-mono transition-all bg-purple-600 text-white';
+          } else {
+            btnEl.className = 'grid-tab-btn px-4 py-1.5 rounded-lg text-xs font-bold font-mono transition-all text-gray-400 hover:text-white hover:bg-gray-800';
+          }
+        }
+      });
     }
 
     // Pre-cargar estado inicial si existe

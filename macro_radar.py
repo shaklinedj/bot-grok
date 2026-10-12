@@ -245,9 +245,8 @@ class MacroRegimeEngine:
                 "is_risk_off": risk_off,
                 "summary": summary
             }
-            return self.btc_macro_state
-        except Exception as e:
-            print(f"  [Error Macro BTC] {e}", flush=True)
+        except Exception:
+            # Fallback seguro: mantener último régimen conocido si Binance tiene congestión temporal
             return self.btc_macro_state
 
     def analyze_coin_macro(self, symbol: str) -> Dict:
@@ -604,52 +603,75 @@ def evaluate_multi_factor_arsenal(
     }
 
 
-# ====================== MICROESTRUCTURA DE LIBRO DE ÓRDENES (OBI DEPTH 10) ======================
+# ====================== MICROESTRUCTURA DE LIBRO DE ÓRDENES (OBI & LOB RATIO) ======================
 
-def fetch_order_book_microstructure(exchange, symbol: str, depth: int = 10) -> Dict:
+def fetch_order_book_microstructure(exchange, symbol: str, depth: int = 50, window_pct: float = 0.015) -> Dict:
     """
-    Descarga el libro de órdenes en profundidad (L2 Depth 10) y evalúa:
-    1. OBI (Order Book Imbalance) = (Bids - Asks) / (Bids + Asks) en [-1.0, 1.0]
-    2. Spread Porcentual = (BestAsk - BestBid) / BestBid * 100
-    3. Detección de Absorción Pasiva Institucional
+    Descarga el libro de órdenes en profundidad (L2 Depth 50) y evalúa:
+    1. OBI (Order Book Imbalance) = (Bids - Asks) / (Bids + Asks) en [-1.0, 1.0] dentro de la ventana +-window_pct
+    2. Ratio Porcentual institucional: % Compras vs % Ventas (idéntico al indicador LOB de Pionex)
+    3. Detección de muros pesados (Order Walls) que bloqueen salidas o caídas
     """
     try:
         ob = exchange.fetch_order_book(symbol, limit=depth)
-        bids = ob.get("bids", [])[:depth]
-        asks = ob.get("asks", [])[:depth]
-        if not bids or not asks:
-            return {"obi": 0.0, "spread_pct": 0.03, "is_safe": True, "reason": "LOB sin datos"}
+        raw_bids = ob.get("bids", [])
+        raw_asks = ob.get("asks", [])
+        if not raw_bids or not raw_asks:
+            return {
+                "obi": 0.0, "spread_pct": 0.03, "is_safe": True,
+                "bids_pct": 50.0, "asks_pct": 50.0,
+                "bid_vol": 0.0, "ask_vol": 0.0, "reason": "LOB sin datos"
+            }
 
-        best_bid = float(bids[0][0])
-        best_ask = float(asks[0][0])
+        best_bid = float(raw_bids[0][0])
+        best_ask = float(raw_asks[0][0])
+        mid_price = (best_bid + best_ask) / 2.0 if best_bid > 0 else best_ask
         spread_pct = ((best_ask - best_bid) / best_bid) * 100 if best_bid > 0 else 0.0
+
+        # Ventana operativa del rango de la malla (+-window_pct, por defecto 1.5%)
+        bids = [b for b in raw_bids if float(b[0]) >= mid_price * (1.0 - window_pct)]
+        asks = [a for a in raw_asks if float(a[0]) <= mid_price * (1.0 + window_pct)]
+
+        if not bids:
+            bids = raw_bids[:10]
+        if not asks:
+            asks = raw_asks[:10]
 
         bid_vol = sum(float(b[1]) for b in bids)
         ask_vol = sum(float(a[1]) for a in asks)
         total_vol = bid_vol + ask_vol
 
         obi = (bid_vol - ask_vol) / total_vol if total_vol > 0 else 0.0
+        bids_pct = round((bid_vol / total_vol) * 100, 1) if total_vol > 0 else 50.0
+        asks_pct = round((ask_vol / total_vol) * 100, 1) if total_vol > 0 else 50.0
 
         # Reglas Cuantitativas Institucionales para Cripto Spot:
-        # - Spread <= 0.35% (35 bps, normal para altcoins en spot)
-        # - OBI >= -0.35 (evita comprar bajo muros pesados de venta)
+        # - Spread <= 0.35% (35 bps)
+        # - OBI >= -0.35 (evita comprar cuando ventas > 67.5%)
         is_safe = (spread_pct <= 0.35) and (obi >= -0.35)
-        reason = "LOB Balanceado"
+        reason = f"LOB: {bids_pct}% Compras | {asks_pct}% Ventas"
         if spread_pct > 0.35:
             reason = f"VETO MICROESTRUCTURA: Spread muy amplio ({spread_pct:.3f}% > 0.35%)"
         elif obi < -0.35:
-            reason = f"VETO MICROESTRUCTURA: Muro de venta pesado en contra (OBI: {obi:+.2f} < -0.35)"
+            reason = f"VETO MICROESTRUCTURA: Muro de venta pesado ({asks_pct}% Ventas vs {bids_pct}% Compras)"
         elif obi > 0.20:
-            reason = f"ABSORCION INSTITUCIONAL: Fuerte soporte de compra pasiva (OBI: {obi:+.2f})"
+            reason = f"ABSORCION COMPRADORA: Soporte pasivo ({bids_pct}% Compras vs {asks_pct}% Ventas)"
 
         return {
             "obi": round(float(obi), 3),
             "spread_pct": round(float(spread_pct), 4),
             "bid_vol": round(bid_vol, 2),
             "ask_vol": round(ask_vol, 2),
+            "bids_pct": bids_pct,
+            "asks_pct": asks_pct,
             "is_safe": is_safe,
             "reason": reason
         }
     except Exception as e:
-        return {"obi": 0.0, "spread_pct": 0.03, "is_safe": True, "reason": f"LOB OK (Fallback)"}
+        return {
+            "obi": 0.0, "spread_pct": 0.03, "is_safe": True,
+            "bids_pct": 50.0, "asks_pct": 50.0,
+            "bid_vol": 0.0, "ask_vol": 0.0,
+            "reason": "LOB OK (Fallback)"
+        }
 
