@@ -1920,9 +1920,15 @@ def update_live_state(bot: PaperBot, prices: Dict[str, float],
                 unrealized_pnl += (line["amount"] * curr_p - cost_of_buy)
 
     # PnL Realizado total y PnL Flotante exactos por identidad contable estricta
-    realized_pnl = bot.total_realized_pnl()
-    unrealized_pnl = equity - INITIAL_CAPITAL - realized_pnl
-    unrealized_pct = (unrealized_pnl / holdings_val * 100) if holdings_val > 0 else 0.0
+    has_active_risk = any(p.active for p in bot.longs.values()) or any(g.active for g in bot.grids.values())
+    if not has_active_risk or holdings_val <= 0.0001:
+        unrealized_pnl = 0.0
+        unrealized_pct = 0.0
+        realized_pnl = round(equity - INITIAL_CAPITAL, 4)
+    else:
+        # Si hay posiciones abiertas, el flotante acumulado es el valor vivo en riesgo
+        realized_pnl = round((equity - INITIAL_CAPITAL) - unrealized_pnl, 4)
+        unrealized_pct = (unrealized_pnl / holdings_val * 100) if holdings_val > 0 else 0.0
 
     recent_trades = vault.get_recent_trades(limit=250)
     equity_hist = vault.get_equity_history(sample_limit=300)
