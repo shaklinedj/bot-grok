@@ -138,9 +138,10 @@ class QuantitativeAgentCommittee:
         # Ajustar amplitud exacta para que el paso se mantenga estricto en el rango deseado (~0.95% a 1.35%)
         range_pct = (target_step * (grid_lines - 1)) / 2.0
         
-        grid_upper = round(price * (1 + range_pct), 6)
-        grid_lower = round(price * (1 - range_pct), 6)
-        step_size_pct = ((grid_upper - grid_lower) / grid_lower) / (grid_lines - 1) * 100
+        precision_dec = 8 if price < 0.01 else (6 if price < 1.0 else 4)
+        grid_upper = round(price * (1 + range_pct), precision_dec)
+        grid_lower = round(price * (1 - range_pct), precision_dec)
+        step_size_pct = target_step * 100.0
         
         # 2. Asignación Dinámica de Capital (Sizing Multifactorial Concentrado)
         base_mult = 0.75

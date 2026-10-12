@@ -90,10 +90,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           <span>📊</span>
           <span id="btn-trades-text">Ver Operaciones</span>
         </button>
-        <a href="/office" target="_blank" class="bg-gradient-to-r from-indigo-600 to-cyan-600 hover:from-indigo-500 hover:to-cyan-500 text-white font-bold px-3 py-1.5 rounded-lg border border-indigo-400/40 shadow-lg flex items-center gap-1.5 transition-all">
-          <span>🏢</span>
-          <span>Oficina Virtual</span>
-        </a>
       </div>
     </div>
 
@@ -308,7 +304,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             ⚡
           </div>
           <div>
-            <div class="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Pulso de Mercado & Agentes IA</div>
+            <div class="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Radar de Mercado & Comité Cuantitativo</div>
             <div id="ai-pulse-summary" class="text-sm font-bold text-white mt-0.5 flex items-center gap-2">
               <span class="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
               <span id="ai-pulse-title">Analizando radar dinámico...</span>
@@ -566,7 +562,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       document.getElementById('param-next-trade').innerText = '$' + cashAvail.toFixed(2) + ' USDT';
       const lastPct = Number(data.last_agent_pct || 0);
       if (lastPct > 0) {
-        document.getElementById('param-pct-badge').innerText = 'IA usó ' + lastPct.toFixed(0) + '% última vez';
+        document.getElementById('param-pct-badge').innerText = 'Comité asignó ' + lastPct.toFixed(0) + '% del capital';
       }
       const slotsEl = document.getElementById('param-slots');
       const maxG = data.max_grids || 4;
@@ -644,7 +640,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           <div class="col-span-full card p-8 text-center border-dashed border-gray-800">
             <div class="text-3xl mb-2">🕸️</div>
             <div class="text-gray-300 font-bold">Sin Mallas Activas</div>
-            <p class="text-xs text-gray-500 mt-1">El Arquitecto IA está buscando volatilidad en rangos.</p>
+            <p class="text-xs text-gray-500 mt-1">El Motor Cuantitativo está analizando candidatos en el radar.</p>
           </div>
         `;
         return;
@@ -1820,15 +1816,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         const icon = isApp ? '🟢' : '🛑';
         titleEl.innerHTML = `${icon} <strong class="${color}">${lastDelib.symbol}</strong>: ${lastDelib.razon_clave || lastDelib.decision} (${lastDelib.timestamp || ''})`;
         
-        const dirBadge = lastDelib.direccion === 'SHORT'
-          ? '<span class="bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2 py-0.5 rounded font-bold">SHORT ↘</span>'
-          : '<span class="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2 py-0.5 rounded font-bold">LONG ↗</span>';
+        const dirBadge = '<span class="bg-purple-500/20 text-purple-300 border border-purple-500/40 px-2 py-0.5 rounded font-bold">MALLA SPOT 🔸</span>';
+        const tactBadge = `<span class="bg-gray-800 text-gray-200 px-2 py-0.5 rounded border border-gray-700">${lastDelib.tactica || 'LIMIT MAKER'}</span>`;
+        const btcBadge = `<span class="bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded border border-indigo-500/30">BTC: ${btc.trend || 'RÉGIMEN'}</span>`;
+        const scoreVal = lastDelib.score !== undefined ? Number(lastDelib.score).toFixed(0) : '--';
+        const scoreBadge = `<span class="bg-cyan-500/20 text-cyan-300 px-2 py-0.5 rounded border border-cyan-500/30">Score: ${scoreVal} pts</span>`;
 
-        const tactBadge = `<span class="bg-gray-800 text-gray-200 px-2 py-0.5 rounded border border-gray-700">${lastDelib.tactica || 'MAKER'}</span>`;
-        const btcBadge = `<span class="bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded border border-indigo-500/30">BTC: ${btc.trend || 'NORMAL'}</span>`;
-        const newsBadge = `<span class="bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded border border-purple-500/30">Noticias: ${news.sentiment || 'NEUTRAL'}</span>`;
-
-        chipsEl.innerHTML = `${dirBadge} ${tactBadge} ${btcBadge} ${newsBadge}`;
+        chipsEl.innerHTML = `${dirBadge} ${tactBadge} ${btcBadge} ${scoreBadge}`;
       } else if (opps.length > 0) {
         const best = opps[0];
         titleEl.innerHTML = `🔭 Radar enfocado en <strong class="text-indigo-300">${best.symbol}</strong> (Score: ${Number(best.score).toFixed(1)} pts) | En espera de deliberación`;
