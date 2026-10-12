@@ -96,7 +96,26 @@ class TradeAuditor:
             return pd.DataFrame()
 
         portfolio_file = os.path.join(self.logs_dir, "portfolio_state.json")
+        live_state_file = os.path.join(self.logs_dir, "live_state.json")
         active_grid_ids = set()
+        active_grids_map = {}
+        live_prices = {}
+        if os.path.exists(live_state_file):
+            try:
+                import json
+                with open(live_state_file, "r", encoding="utf-8") as lf:
+                    l_data = json.load(lf)
+                    for g in l_data.get("grids", []):
+                        if g.get("grid_id"):
+                            active_grids_map[g["grid_id"]] = g
+                            if g.get("symbol") and g.get("current_price"):
+                                live_prices[g["symbol"]] = float(g["current_price"])
+                    for p in l_data.get("positions", []):
+                        if p.get("symbol") and p.get("current_price"):
+                            live_prices[p["symbol"]] = float(p["current_price"])
+            except Exception:
+                pass
+
         if os.path.exists(portfolio_file):
             try:
                 import json
@@ -104,7 +123,10 @@ class TradeAuditor:
                     p_data = json.load(pf)
                     for g in p_data.get("grids", {}).values():
                         if g.get("active") and g.get("grid_id"):
-                            active_grid_ids.add(g.get("grid_id"))
+                            gid = g.get("grid_id")
+                            active_grid_ids.add(gid)
+                            if gid not in active_grids_map:
+                                active_grids_map[gid] = g
             except Exception:
                 pass
 
@@ -132,51 +154,67 @@ class TradeAuditor:
                 if not is_still_open:
                     continue
                 entry_row = entry.iloc[0]
-                exit_row = entry_row
+                active_grid = active_grids_map.get(pos_id, {})
+                cur_p = live_prices.get(entry_row['symbol']) or float(active_grid.get("current_price", 0.0)) or float(entry_row['price'])
+                entry_price_val = float((entry['price'] * entry['amount']).sum() / entry['amount'].sum()) if entry['amount'].sum() > 0 else float(entry_row['price'])
+                exit_price_val = cur_p
                 has_tp1 = False
-                net_pnl = 0.0
+                net_pnl = float(active_grid.get("realized_pnl", 0.0))
                 total_fees = group['fee'].sum()
                 total_slippage = group['slippage'].sum()
-                gross_pnl = 0.0
-                hold_duration = (pd.Timestamp.now() - entry_row['ts']).total_seconds() / 60.0
+                gross_pnl = net_pnl
+                hold_duration = max(0.1, (pd.Timestamp.now() - entry_row['ts']).total_seconds() / 60.0)
                 exit_reason = 'Malla Activa (Cosecha en Curso)'
                 exit_time_val = '⚡ EN VIVO'
             else:
                 entry_row = entry.iloc[0]
-                exit_row = final_exit.iloc[-1]
-                has_tp1 = not exits[exits['strategy'].str.contains('tp1', case=False, na=False)].empty
-                net_pnl = exits['pnl'].sum()
-                total_fees = group['fee'].sum()
-                total_slippage = group['slippage'].sum()
-                gross_pnl = net_pnl + total_fees + total_slippage
-                hold_duration = (exit_row['ts'] - entry_row['ts']).total_seconds() / 60.0
-                exit_reason_raw = str(exit_row.get('extra_info', '') or '')
+                active_grid = active_grids_map.get(pos_id, {})
                 if is_still_open:
+                    cur_p = live_prices.get(entry_row['symbol']) or float(active_grid.get("current_price", 0.0)) or float(exits.iloc[-1]['price'])
+                    entry_price_val = float((entry['price'] * entry['amount']).sum() / entry['amount'].sum()) if entry['amount'].sum() > 0 else float(entry_row['price'])
+                    exit_price_val = cur_p
+                    has_tp1 = False
+                    net_pnl = float(active_grid.get("realized_pnl", exits['pnl'].sum()))
+                    total_fees = group['fee'].sum()
+                    total_slippage = group['slippage'].sum()
+                    gross_pnl = net_pnl
+                    hold_duration = max(0.1, (pd.Timestamp.now() - entry_row['ts']).total_seconds() / 60.0)
                     exit_reason = 'Malla Activa (Cosecha en Curso)'
                     exit_time_val = '⚡ EN VIVO'
-                elif 'Runner Trailing' in exit_reason_raw:
-                    exit_reason = 'Runner Trailing'
-                    exit_time_val = str(exit_row['timestamp'])
-                elif 'Break-Even' in exit_reason_raw or 'Escudo' in exit_reason_raw:
-                    exit_reason = 'Break-Even'
-                    exit_time_val = str(exit_row['timestamp'])
-                elif 'Stop Loss' in exit_reason_raw:
-                    exit_reason = 'Stop Loss'
-                    exit_time_val = str(exit_row['timestamp'])
-                elif 'TP1' in exit_reason_raw:
-                    exit_reason = 'TP1 Exit'
-                    exit_time_val = str(exit_row['timestamp'])
                 else:
-                    exit_reason = exit_reason_raw[:30] if exit_reason_raw else 'Take Profit / Cierre'
-                    exit_time_val = str(exit_row['timestamp'])
+                    exit_row = final_exit.iloc[-1]
+                    entry_price_val = float(entry_row['price'])
+                    exit_price_val = float(exit_row['price'])
+                    has_tp1 = not exits[exits['strategy'].str.contains('tp1', case=False, na=False)].empty
+                    net_pnl = exits['pnl'].sum()
+                    total_fees = group['fee'].sum()
+                    total_slippage = group['slippage'].sum()
+                    gross_pnl = net_pnl + total_fees + total_slippage
+                    hold_duration = (exit_row['ts'] - entry_row['ts']).total_seconds() / 60.0
+                    exit_reason_raw = str(exit_row.get('extra_info', '') or '')
+                    if 'Runner Trailing' in exit_reason_raw:
+                        exit_reason = 'Runner Trailing'
+                        exit_time_val = str(exit_row['timestamp'])
+                    elif 'Break-Even' in exit_reason_raw or 'Escudo' in exit_reason_raw:
+                        exit_reason = 'Break-Even'
+                        exit_time_val = str(exit_row['timestamp'])
+                    elif 'Stop Loss' in exit_reason_raw:
+                        exit_reason = 'Stop Loss'
+                        exit_time_val = str(exit_row['timestamp'])
+                    elif 'TP1' in exit_reason_raw:
+                        exit_reason = 'TP1 Exit'
+                        exit_time_val = str(exit_row['timestamp'])
+                    else:
+                        exit_reason = exit_reason_raw[:30] if exit_reason_raw else 'Take Profit / Cierre'
+                        exit_time_val = str(exit_row['timestamp'])
             
             cycles.append({
                 'position_id': pos_id,
                 'symbol': entry_row['symbol'],
                 'entry_time': str(entry_row['timestamp']),
                 'exit_time': exit_time_val,
-                'entry_price': float(entry_row['price']),
-                'exit_price': float(exit_row['price']),
+                'entry_price': float(entry_price_val),
+                'exit_price': float(exit_price_val),
                 'direction': 'LONG',
                 'net_pnl': round(float(net_pnl), 4),
                 'total_fees': round(float(total_fees), 4),
@@ -191,35 +229,48 @@ class TradeAuditor:
 
         # Garantizar que cualquier malla activa en portfolio_state aparezca en cycles
         existing_pos_ids = {c['position_id'] for c in cycles}
-        if os.path.exists(portfolio_file):
-            try:
-                import json
-                with open(portfolio_file, "r", encoding="utf-8") as pf:
-                    p_data = json.load(pf)
-                    for g in p_data.get("grids", {}).values():
-                        if g.get("active") and g.get("grid_id") and g.get("grid_id") not in existing_pos_ids:
-                            created_ts = g.get("created_at") or datetime.now().isoformat()
-                            base_p = (float(g.get("grid_upper", 0)) + float(g.get("grid_lower", 0))) / 2.0
-                            cycles.append({
-                                'position_id': g.get("grid_id"),
-                                'symbol': g.get("symbol"),
-                                'entry_time': str(created_ts),
-                                'exit_time': '⚡ EN VIVO',
-                                'entry_price': float(base_p),
-                                'exit_price': float(base_p),
-                                'direction': 'LONG',
-                                'net_pnl': round(float(g.get("realized_pnl", 0.0)), 4),
-                                'total_fees': 0.0,
-                                'total_slippage': 0.0,
-                                'gross_pnl': round(float(g.get("realized_pnl", 0.0)), 4),
-                                'hold_duration_min': 0.1,
-                                'exit_reason': 'Malla Activa (Cosecha en Curso)',
-                                'had_tp1': False,
-                                'is_win': float(g.get("realized_pnl", 0.0)) > 0,
-                                'is_open': True
-                            })
-            except Exception:
-                pass
+        for g in active_grids_map.values():
+            gid = g.get("grid_id")
+            if g.get("active", True) and gid and gid not in existing_pos_ids:
+                created_ts = g.get("created_at") or datetime.now().isoformat()
+                base_p = (float(g.get("grid_upper", 0)) + float(g.get("grid_lower", 0))) / 2.0
+                sym = g.get("symbol", "")
+                cur_p = live_prices.get(sym) or float(g.get("current_price", base_p))
+                
+                # VWAP de tokens comprados en órdenes de venta superiores
+                sells = [l for l in g.get("lines", []) if l.get("side") == "sell"]
+                tot_amt = sum(float(l["amount"]) for l in sells) if sells else 0.0
+                if tot_amt > 0:
+                    step = float(g.get("step_pct", 0.004))
+                    entry_p = sum(float(l["amount"]) * float(l.get("buy_price", float(l["price"]) / (1 + step))) for l in sells) / tot_amt
+                else:
+                    entry_p = cur_p
+                
+                try:
+                    c_dt = pd.to_datetime(created_ts)
+                    hold_dur = max(0.1, (pd.Timestamp.now() - c_dt).total_seconds() / 60.0)
+                except Exception:
+                    hold_dur = 0.1
+
+                r_pnl = float(g.get("realized_pnl", 0.0))
+                cycles.append({
+                    'position_id': gid,
+                    'symbol': sym,
+                    'entry_time': str(created_ts),
+                    'exit_time': '⚡ EN VIVO',
+                    'entry_price': round(float(entry_p), 5),
+                    'exit_price': round(float(cur_p), 5),
+                    'direction': 'LONG',
+                    'net_pnl': round(r_pnl, 4),
+                    'total_fees': 0.0,
+                    'total_slippage': 0.0,
+                    'gross_pnl': round(r_pnl, 4),
+                    'hold_duration_min': round(hold_dur, 1),
+                    'exit_reason': 'Malla Activa (Cosecha en Curso)',
+                    'had_tp1': False,
+                    'is_win': r_pnl > 0,
+                    'is_open': True
+                })
             
         if not cycles:
             return pd.DataFrame()

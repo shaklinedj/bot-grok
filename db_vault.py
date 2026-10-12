@@ -162,6 +162,33 @@ class DatabaseVault:
                 for r in rows
             ]
 
+    def get_trades_for_position(self, position_id: str, limit: int = 150) -> List[Dict[str, Any]]:
+        """Obtiene las operaciones específicas de una posición o malla (ordenadas de más reciente a más antigua)."""
+        query = "SELECT * FROM trades WHERE position_id = ? ORDER BY id DESC LIMIT ?;"
+        with self._lock:
+            cursor = self._conn.cursor()
+            cursor.execute(query, (str(position_id), limit))
+            rows = cursor.fetchall()
+            return [
+                {
+                    "id": r["id"],
+                    "timestamp": r["timestamp"],
+                    "symbol": r["symbol"],
+                    "strategy": r["strategy"],
+                    "side": r["side"],
+                    "price": float(r["price"]),
+                    "amount": float(r["amount"]),
+                    "pnl": float(r["pnl"]),
+                    "fee": float(r["fee"]),
+                    "slippage": float(r["slippage"]),
+                    "extra_info": r["extra_info"] or "",
+                    "position_id": r["position_id"] or "",
+                    "status": r["status"] or ("OPEN" if str(r["side"]).lower() == "buy" else "CLOSED")
+                }
+                for r in rows
+            ]
+
+
     def get_all_trades_df(self) -> pd.DataFrame:
         """Retorna todas las operaciones en un DataFrame de pandas para auditoría forense."""
         with self._lock:

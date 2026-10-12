@@ -660,8 +660,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         const gridFloating = Number(g.unrealized_pnl) || 0;
         const gridNetProfit = gridProfit + gridFloating;
         const gridNetRoi = capTotal > 0 ? ((gridNetProfit / capTotal) * 100) : 0;
-        const gridFills = Number(g.fills_count) || (Number(g.dynamic_adjustments_count) || 0);
-        const avgPerFill = gridFills > 0 ? (gridProfit / gridFills) : 0;
+        const tradeHistory = g.trade_history || [];
+        const buyCount = Number(g.buy_fills_count) || tradeHistory.filter(t => t.side === 'buy' && t.strategy !== 'grid_init').length;
+        const sellCount = Number(g.sell_fills_count) || tradeHistory.filter(t => t.side === 'sell' && t.strategy !== 'grid_manual_market_exit').length;
+        const gridFills = Number(g.fills_count) || (buyCount + sellCount);
+        const avgPerFill = sellCount > 0 ? (gridProfit / sellCount) : 0;
         const rangeSpread = Number(g.grid_upper) - Number(g.grid_lower);
         const rangePct = rangeSpread > 0 ? Math.min(100, Math.max(0, ((currentPrice - Number(g.grid_lower)) / rangeSpread) * 100)) : 50;
         const capPerLine = Number(g.capital_per_line) || (capTotal / Math.max(1, (g.grid_lines || 9)));
@@ -711,6 +714,48 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </tr>`;
         }
 
+        let movimientosRows = '';
+        for (const t of tradeHistory) {
+          const isBuy = (t.side === 'buy');
+          const isSell = (t.side === 'sell');
+          const isInit = (t.strategy === 'grid_init' || t.side === 'setup');
+          const isClose = (t.strategy === 'grid_manual_market_exit');
+          
+          let actionBadge = '';
+          if (isInit) {
+            actionBadge = '<span class="bg-purple-950/60 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded text-[10px] font-bold">🕸️ INICIO MALLA</span>';
+          } else if (isClose) {
+            actionBadge = '<span class="bg-rose-950/60 text-rose-300 border border-rose-500/30 px-2 py-0.5 rounded text-[10px] font-bold">🛑 SALIDA MERCADO</span>';
+          } else if (isBuy) {
+            actionBadge = '<span class="bg-emerald-950/60 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded text-[10px] font-bold">🟢 COMPRA LÍMITE</span>';
+          } else if (isSell) {
+            actionBadge = '<span class="bg-cyan-950/60 text-cyan-300 border border-cyan-500/30 px-2 py-0.5 rounded text-[10px] font-bold">🔴 VENTA COSECHADA</span>';
+          } else {
+            actionBadge = `<span class="bg-gray-800 text-gray-300 px-2 py-0.5 rounded text-[10px] font-bold">${t.side ? t.side.toUpperCase() : 'TRADE'}</span>`;
+          }
+
+          const tTime = t.timestamp ? (t.timestamp.includes('T') ? t.timestamp.split('T')[1].split('.')[0] : t.timestamp) : '--:--';
+          const pnlVal = Number(t.pnl) || 0;
+          const pnlClass = pnlVal > 0 ? 'text-emerald-400 font-bold' : (pnlVal < 0 ? 'text-rose-400 font-bold' : 'text-gray-500');
+          const pnlStr = (isSell || isClose) ? `${pnlVal >= 0 ? '+' : ''}$${pnlVal.toFixed(4)}` : '--';
+          const feeVal = Number(t.fee) || 0;
+          const feeStr = feeVal > 0 ? `$${feeVal.toFixed(4)}` : '$0.0000';
+          const priceStr = `$${Number(t.price).toFixed(6)}`;
+          const amtStr = `${Number(t.amount).toFixed(2)} tokens`;
+          const extraClean = t.extra_info ? t.extra_info.split('|').join(' • ') : '';
+
+          movimientosRows += `
+          <tr class="border-b border-gray-900/80 hover:bg-gray-800/30 font-mono text-xs transition-colors">
+            <td class="py-2.5 px-3 text-gray-400">${tTime}</td>
+            <td class="py-2.5 px-3">${actionBadge}</td>
+            <td class="py-2.5 px-3 text-white font-bold">${priceStr}</td>
+            <td class="py-2.5 px-3 text-gray-300">${amtStr}</td>
+            <td class="py-2.5 px-3 ${pnlClass}">${pnlStr}</td>
+            <td class="py-2.5 px-3 text-gray-400 text-right">${feeStr}</td>
+            <td class="py-2.5 px-3 text-gray-300 text-xs font-sans max-w-xs truncate" title="${t.extra_info || ''}">${extraClean}</td>
+          </tr>`;
+        }
+
         html += `
         <div class="card p-5 border-l-4 border-l-purple-500 bg-[#0d1117] shadow-2xl relative overflow-hidden space-y-4">
           <!-- Cabecera Macro Pionex -->
@@ -753,6 +798,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <button onclick="switchGridTab('${g.symbol}', 'colocadas')" id="tab-btn-colocadas-${g.symbol.replace('/','_')}" class="grid-tab-btn active px-4 py-1.5 rounded-lg text-xs font-bold font-mono transition-all bg-purple-600 text-white">
               Colocadas (${buys.length + sells.length})
             </button>
+            <button onclick="switchGridTab('${g.symbol}', 'movimientos')" id="tab-btn-movimientos-${g.symbol.replace('/','_')}" class="grid-tab-btn px-4 py-1.5 rounded-lg text-xs font-bold font-mono transition-all text-gray-400 hover:text-white hover:bg-gray-800">
+              Movimientos (${tradeHistory.length})
+            </button>
             <button onclick="switchGridTab('${g.symbol}', 'resumen')" id="tab-btn-resumen-${g.symbol.replace('/','_')}" class="grid-tab-btn px-4 py-1.5 rounded-lg text-xs font-bold font-mono transition-all text-gray-400 hover:text-white hover:bg-gray-800">
               Resumen PnL
             </button>
@@ -791,7 +839,46 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </div>
           </div>
 
-          <!-- PESTAÑA 2: RESUMEN (KPIs de Rendimiento Pionex) -->
+          <!-- PESTAÑA MOVIMIENTOS: HISTORIAL DE EJECUCIONES DE ESTA MALLA -->
+          <div id="grid-view-movimientos-${g.symbol.replace('/','_')}" class="grid-tab-content hidden space-y-3">
+            <div class="flex items-center justify-between text-xs font-mono text-gray-400 bg-gray-950/60 p-2.5 rounded-lg border border-gray-800 flex-wrap gap-2">
+              <div class="flex items-center gap-3">
+                <span class="text-cyan-400 font-bold flex items-center gap-1">
+                  <span>⚡</span> Total Movimientos: <strong class="text-white ml-1">${tradeHistory.length}</strong>
+                </span>
+                <span class="text-emerald-400 font-semibold">
+                  Compras Límite: <strong class="text-white">${buyCount}</strong>
+                </span>
+                <span class="text-rose-400 font-semibold">
+                  Ventas Cosechadas: <strong class="text-white">${sellCount}</strong>
+                </span>
+              </div>
+              <div>
+                <span class="text-gray-400">PnL Cosechado en Fills: <strong class="${gridProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'} font-bold">${gridProfit >= 0 ? '+' : ''}$${gridProfit.toFixed(4)} USDT</strong></span>
+              </div>
+            </div>
+
+            <div class="overflow-x-auto rounded-lg border border-gray-800/80 bg-gray-950/40 max-h-72 overflow-y-auto">
+              <table class="w-full text-left">
+                <thead class="sticky top-0 bg-gray-900/95 z-10">
+                  <tr class="text-gray-400 border-b border-gray-800 font-mono text-[11px]">
+                    <th class="py-2 px-3">HORA</th>
+                    <th class="py-2 px-3">ACCIÓN</th>
+                    <th class="py-2 px-3">PRECIO</th>
+                    <th class="py-2 px-3">CANTIDAD</th>
+                    <th class="py-2 px-3">PNL COSECHADO</th>
+                    <th class="py-2 px-3 text-right">COMISIÓN</th>
+                    <th class="py-2 px-3">DETALLE / REUBICACIÓN</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${movimientosRows || '<tr><td colspan="7" class="py-4 text-center text-gray-500 font-mono">Sin ejecuciones aún en esta malla (en espera de cruces de precio)</td></tr>'}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- PESTAÑA RESUMEN (KPIs de Rendimiento Pionex) -->
           <div id="grid-view-resumen-${g.symbol.replace('/','_')}" class="grid-tab-content hidden space-y-3">
             <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-gray-950/80 p-4 rounded-xl border border-gray-800 shadow-inner">
               <div class="border-r border-gray-800 pr-2">
@@ -807,7 +894,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <div class="text-xl font-black font-mono ${gridProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'} mt-0.5">
                   ${gridProfit >= 0 ? '+' : ''}$${gridProfit.toFixed(4)} <span class="text-xs px-1.5 py-0.5 rounded font-bold bg-emerald-500/20 text-emerald-300">${gridRoiPct >= 0 ? '+' : ''}${gridRoiPct.toFixed(2)}%</span>
                 </div>
-                <div class="text-[10px] text-emerald-500/80 font-mono mt-0.5">${gridFills} fills completados en esta sesión</div>
+                <div class="text-[10px] text-emerald-500/80 font-mono mt-0.5">
+                  ${gridFills > 0 ? `${gridFills} fills completados (${sellCount} cosechados • ${buyCount} compras)` : '0 fills completados (en espera de oscilación)'}
+                </div>
               </div>
 
               <div class="border-r border-gray-800 pr-2">
@@ -1544,12 +1633,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <td class="py-2.5 text-gray-400">${timePart}</td>
             <td class="py-2.5 font-bold text-white">${c.symbol}</td>
             <td class="py-2.5"><span class="px-2 py-0.5 rounded text-[10px] font-bold border ${badgeClass}">${c.verdict}</span></td>
-            <td class="py-2.5 text-gray-300">$${Number(c.entry_price).toFixed(5)}</td>
-            <td class="py-2.5 text-gray-300">$${Number(c.exit_price).toFixed(5)}</td>
+            <td class="py-2.5 text-gray-300 font-semibold">$${Number(c.entry_price).toFixed(5)}</td>
+            <td class="py-2.5 text-gray-300">${isLive ? `<span class="text-cyan-300 font-bold">$${Number(c.exit_price).toFixed(5)}</span> <span class="text-[9px] text-gray-500 font-sans">(en vivo)</span>` : `$${Number(c.exit_price).toFixed(5)}`}</td>
             <td class="py-2.5 ${pnlColor}">${pnlSign}$${Number(c.net_pnl).toFixed(4)}</td>
             <td class="py-2.5 text-gray-400">$${(Number(c.fees || 0) + Number(c.slippage || 0)).toFixed(4)}</td>
             <td class="py-2.5 text-gray-400">${Number(c.hold_duration_min || 0).toFixed(1)}m</td>
-            <td class="py-2.5 text-right text-gray-300">${c.exit_reason}</td>
+            <td class="py-2.5 text-right text-gray-300">${isLive ? '<span class="text-emerald-400 font-bold">⚡ Cosecha Activa en Malla</span>' : c.exit_reason}</td>
           </tr>
         `;
       }
@@ -1863,7 +1952,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       gridActiveTabs[symbol] = tabName;
       const safeSym = symbol.replace('/', '_');
       
-      const views = ['colocadas', 'resumen', 'diagnostico'];
+      const views = ['colocadas', 'movimientos', 'resumen', 'diagnostico'];
       views.forEach(v => {
         const contentEl = document.getElementById(`grid-view-${v}-${safeSym}`);
         const btnEl = document.getElementById(`tab-btn-${v}-${safeSym}`);

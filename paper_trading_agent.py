@@ -577,6 +577,8 @@ class GridPosition:
     last_fill_ts: float = field(default_factory=time.time)
     dynamic_adjustments_count: int = 0
     fills_count: int = 0
+    buy_fills_count: int = 0
+    sell_fills_count: int = 0
     freeze_buys: bool = False
     step_size: float = 0.0
     anomaly_start_ts: float = 0.0
@@ -2068,6 +2070,23 @@ def update_live_state(bot: PaperBot, prices: Dict[str, float],
                     for l in g.lines if l.get("active") and l.get("side") == "sell"
                 ), 4),
                 "fills_count": getattr(g, "fills_count", 0),
+                "buy_fills_count": getattr(g, "buy_fills_count", 0),
+                "sell_fills_count": getattr(g, "sell_fills_count", 0),
+                "trade_history": (lambda trades, g_obj, p_curr: trades if trades else [{
+                    "id": 0,
+                    "timestamp": g_obj.created_at,
+                    "symbol": g_obj.symbol,
+                    "strategy": "grid_init",
+                    "side": "setup",
+                    "price": p_curr,
+                    "amount": round(sum(l["amount"] for l in g_obj.lines if l.get("side") == "sell"), 4),
+                    "pnl": 0.0,
+                    "fee": 0.0,
+                    "slippage": 0.0,
+                    "extra_info": f"Malla Desplegada: {g_obj.grid_lines} órdenes (${g_obj.capital_total:.2f} USDT)",
+                    "position_id": g_obj.grid_id,
+                    "status": "OPEN"
+                }])(vault.get_trades_for_position(g.grid_id), g, prices.get(g.symbol) or ((g.grid_upper + g.grid_lower) / 2.0)),
                 "market_value": round(sum(
                     (l["amount"] * (prices.get(g.symbol) or ((g.grid_upper + g.grid_lower) / 2.0))) if l["side"] == "sell" else (l["price"] * l["amount"])
                     for l in g.lines if l.get("active")
@@ -2393,6 +2412,7 @@ def run_paper_trading(reset_all: bool = False):
                         grid.ticks_without_fill = 0
                         grid.last_fill_ts = time.time()
                         grid.fills_count = getattr(grid, "fills_count", 0) + 1
+                        grid.buy_fills_count = getattr(grid, "buy_fills_count", 0) + 1
                         
                         # Crear orden de venta en el siguiente escalón simétrico
                         if step_sz > 0:
@@ -2425,6 +2445,7 @@ def run_paper_trading(reset_all: bool = False):
                         grid.ticks_without_fill = 0
                         grid.last_fill_ts = time.time()
                         grid.fills_count = getattr(grid, "fills_count", 0) + 1
+                        grid.sell_fills_count = getattr(grid, "sell_fills_count", 0) + 1
                         
                         # Ganancia real rigurosa basada en el precio de compra real guardado
                         fallback_buy_p = (line["price"] - step_sz) if step_sz > 0 else (line["price"] / (1 + grid.step_pct))
