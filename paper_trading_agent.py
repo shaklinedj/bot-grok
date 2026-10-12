@@ -64,6 +64,7 @@ from macro_radar import MacroRegimeEngine, evaluate_multi_factor_arsenal, fetch_
 from ai_auditor import ai_auditor
 from agent_committee import agent_committee
 from db_vault import vault
+from ou_estimator import estimate_ornstein_uhlenbeck
 
 
 # ====================== CONFIGURACIÓN GENERAL ======================
@@ -1400,10 +1401,15 @@ def select_best_opportunities(bot: PaperBot, top_n: int = 6) -> List[Dict]:
             analysis["p_win"] = p_win
             analysis["bet_multiplier"] = bet_mult
 
+            # Estimación del Proceso de Ornstein-Uhlenbeck (Reversión a la Media)
+            ou_metrics = estimate_ornstein_uhlenbeck(df_15m["close"].values, dt_minutes=15.0)
+            analysis["ou"] = ou_metrics
+
             # Telemetría de Radar Cuantitativo (Datos objetivos para el Comité Multi-Agente)
             stage_txt = analysis.get("squeeze_state", "COILING")
             ker_val = analysis.get("ker", 0.35)
-            print(f"  📊 [RADAR CANDIDATO] {symbol} | Score: {analysis['score']:.1f} | OBI={lob['obi']:+.2f} | KER={ker_val:.2f} | Sq={stage_txt}", flush=True)
+            ou_lbl = f"OU={ou_metrics['status_label']} (τ={ou_metrics['half_life_min']:.0f}m)" if ou_metrics.get("is_mean_reverting") else f"OU={ou_metrics['status_label']}"
+            print(f"  📊 [RADAR CANDIDATO] {symbol} | Score: {analysis['score']:.1f} | OBI={lob['obi']:+.2f} | KER={ker_val:.2f} | {ou_lbl} | Sq={stage_txt}", flush=True)
 
             # Mantener en la lista de resultados para que el usuario y la oficina vean TODAS las monedas auditadas
             results.append({
@@ -1421,7 +1427,8 @@ def select_best_opportunities(bot: PaperBot, top_n: int = 6) -> List[Dict]:
                 "obi": lob.get("obi", 0.0),
                 "spread_pct": lob.get("spread_pct", 0.0),
                 "p_win": p_win,
-                "bet_multiplier": bet_mult
+                "bet_multiplier": bet_mult,
+                "ou": ou_metrics
             })
         except Exception:
             continue

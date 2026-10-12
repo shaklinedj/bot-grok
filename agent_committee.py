@@ -167,8 +167,13 @@ class QuantitativeAgentCommittee:
         is_risk_off = btc_macro.get("is_risk_off", False) if isinstance(btc_macro, dict) else False
         macro_mult = 0.85 if is_risk_off else 1.0
 
+        # Componente E: Reversión a la Media Ornstein-Uhlenbeck (Bono Positivo sin Restricciones)
+        # Si el proceso OU confirma reversión activa con vida media saludable, premiamos la convicción (+5% capital).
+        ou_info = analysis.get("ou", opp.get("ou", {}))
+        ou_adj = +0.05 if ou_info.get("is_mean_reverting") else 0.0
+
         # Multiplicador dinámico integrado (entre 60% y 100% según las condiciones en vivo)
-        raw_mult = (base_mult + score_adj + obi_adj + ker_adj) * macro_mult
+        raw_mult = (base_mult + score_adj + obi_adj + ker_adj + ou_adj) * macro_mult
         mult_clean = round(max(0.60, min(1.00, raw_mult)), 2)
 
         # 3. Filtros Cuantitativos Institucionales de Aprobación
@@ -191,10 +196,11 @@ class QuantitativeAgentCommittee:
             decision_clean = "RECHAZADO"
             veto_reason = f"Paso fuera de rango óptimo ({step_size_pct:.2f}%)"
 
+        ou_desc = f"OU: {ou_info.get('status_label', 'N/A')} (τ={ou_info.get('half_life_min', '--')}m)" if ou_info else "OU: N/A"
         debate = {
-            "centinela_macro": f"Régimen verificado ({'Cautela BTC' if is_risk_off else 'Estable'}). Volumen ${volume:,.0f} USDT.",
+            "centinela_macro": f"Régimen verificado ({'Cautela BTC' if is_risk_off else 'Estable'}). Volumen ${volume:,.0f} USDT. {ou_desc}.",
             "arquitecto_mallas": f"Malla adaptativa: rango ±{range_pct*100:.2f}% a {amplitud_malla_atr:.2f}x ATR ({grid_lines} líneas a paso {step_size_pct:.2f}%).",
-            "jefe_riesgo": f"Capital calibrado dinámicamente al {round(mult_clean*100)}% (Score {score:.1f}, OBI {obi:+.2f}, KER {ker:.2f}).",
+            "jefe_riesgo": f"Capital calibrado dinámicamente al {round(mult_clean*100)}% (Score {score:.1f}, OBI {obi:+.2f}, KER {ker:.2f}{', OU Bono +5%' if ou_adj > 0 else ''}).",
             "coordinador_ejecucion": f"Líneas de libro preparadas con paso {step_size_pct:.2f}% y spread {spread_pct:.3f}%."
         }
 
