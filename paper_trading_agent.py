@@ -339,6 +339,25 @@ def apply_trailing_up_shift(grid: "GridPosition", bot: "PaperBot", current_price
             l["active"] = False
 
     bot.cash += recovered_cash
+
+    # RECONSTITUIR ÓRDENES ACTIVAS EN EL NUEVO CANAL ALCISTA:
+    cap_line = getattr(grid, "capital_per_line", 11.50)
+    # 1. Colocar compra de retroceso justo abajo del precio actual
+    p_buy_new = current_price * (1.0 - grid.step_pct)
+    if bot.cash >= cap_line:
+        bot.cash -= cap_line
+        grid.lines.append({"price": p_buy_new, "side": "buy", "amount": cap_line / p_buy_new, "buy_price": p_buy_new, "active": True})
+
+    # 2. Si no hay ventas activas y hay saldo, comprar 1 escalón de tokens para colocar venta arriba
+    active_s = [l for l in grid.lines if l.get("active") and l.get("side") == "sell"]
+    if len(active_s) == 0 and bot.cash >= cap_line:
+        p_sell_new = current_price * (1.0 + grid.step_pct)
+        amt_tokens = cap_line / p_sell_new
+        cost = amt_tokens * current_price * (1 + FEE_RATE)
+        if bot.cash >= cost:
+            bot.cash -= cost
+            grid.lines.append({"price": p_sell_new, "side": "sell", "amount": amt_tokens, "buy_price": current_price, "active": True})
+
     grid.freeze_buys = False
     grid.out_of_range_ticks = 0
     grid.status_msg = f"Trailing Up #{grid.trailing_up_shifts}: Rango subido a ${grid.grid_lower:.4f}-${grid.grid_upper:.4f}"
@@ -2794,35 +2813,53 @@ def run_paper_trading(reset_all: bool = False):
 
                 # 2. GESTIÓN JERÁRQUICA DE COSECHA TOTAL Y RUPTURA:
                 active_sells = [l for l in grid.lines if l.get("active") and l.get("side") == "sell"]
+                active_buys = [l for l in grid.lines if l.get("active") and l.get("side") == "buy"]
 
-                # A. Victoria Total o Trailing Up (Todas las Ventas Cosechadas con Ganancia):
+                # A. Ventas Cosechadas con Ganancia:
                 if len(active_sells) == 0 and getattr(grid, "fills_count", 0) > 0:
-                    opp = next((o for o in (latest_opportunities or []) if o.get("symbol") == sym), None)
-                    current_score = float(opp.get("score", 0.0)) if opp else 0.0
-                    features = opp.get("analysis", {}).get("features", {}) if opp else {}
-                    rsi_val = float(features.get("rsi", 50.0))
-                    is_healthy_trend = (current_score >= 55.0) and (rsi_val < 75.0)
+                    # Si el precio rompió hacia arriba fuera de la malla (curr_p > grid_upper * 1.008):
+                    if curr_p > grid.grid_upper * 1.008:
+                        opp = next((o for o in (latest_opportunities or []) if o.get("symbol") == sym), None)
+                        current_score = float(opp.get("score", 0.0)) if opp else 0.0
+                        features = opp.get("analysis", {}).get("features", {}) if opp else {}
+                        rsi_val = float(features.get("rsi", 50.0))
+                        is_healthy_trend = (current_score >= 55.0) and (rsi_val < 75.0)
 
-                    # Trailing Up libre e ilimitado mientras el activo mantenga salud cuantitativa:
-                    if is_healthy_trend and bot.cash >= 10.0:
-                        new_low, new_high, recov = apply_trailing_up_shift(grid, bot, curr_p)
-                        grid_pnl_val = getattr(grid, "realized_pnl", 0.0)
-                        print(f"\n  🚀🧗 [TRAILING UP ILIMITADO {sym}]", flush=True)
-                        print(f"       100% de ventas cobradas. Tendencia activa (Score {current_score:.1f} >= 55 | RSI {rsi_val:.1f} < 75).", flush=True)
-                        print(f"       Desplazando rango hacia arriba a ${new_low:.4f} - ${new_high:.4f} (Escalón #{grid.trailing_up_shifts}).", flush=True)
-                        print(f"       Ganancia acumulada en la malla: +${grid_pnl_val:.4f} USDT. ¡Cosecha continúa!\n", flush=True)
-                        bot.save_portfolio_state()
-                        continue
+                        # Trailing Up libre e ilimitado mientras el activo mantenga salud cuantitativa:
+                        if is_healthy_trend and bot.cash >= 10.0:
+                            new_low, new_high, recov = apply_trailing_up_shift(grid, bot, curr_p)
+                            grid_pnl_val = getattr(grid, "realized_pnl", 0.0)
+                            print(f"\n  🚀🧗 [TRAILING UP ILIMITADO {sym}]", flush=True)
+                            print(f"       Precio superó techo (${curr_p:.4f} > ${grid.grid_upper:.4f}). Tendencia activa (Score {current_score:.1f} >= 55 | RSI {rsi_val:.1f} < 75).", flush=True)
+                            print(f"       Desplazando rango hacia arriba a ${new_low:.4f} - ${new_high:.4f} (Escalón #{grid.trailing_up_shifts}).", flush=True)
+                            print(f"       Ganancia acumulada en la malla: +${grid_pnl_val:.4f} USDT. ¡Cosecha continúa!\n", flush=True)
+                            bot.save_portfolio_state()
+                            continue
+                        elif len(active_buys) == 0:
+                            # Solo cerrar si el precio superó el techo Y NO quedan órdenes de compra activas
+                            recovered_cash = sum((l["price"] * l["amount"]) for l in grid.lines if l.get("active") and l.get("side") == "buy")
+                            for l in grid.lines:
+                                l["active"] = False
+                            bot.cash += recovered_cash
+                            grid.active = False
+                            grid_pnl_val = getattr(grid, "realized_pnl", 0.0)
+                            grid.status_msg = f"Victoria Total Cosechada (+{grid_pnl_val:+.2f} USDT). Capital liberado a caja."
+                            bot.save_portfolio_state()
+                            print(f"  🚀🟢 [VICTORIA TOTAL / COSECHA {sym}] Techo superado y tendencia agotada. Cierre y toma de beneficios (+{grid_pnl_val:+.4f} USDT). ${recovered_cash:.2f} USDT devueltos a caja líquida.", flush=True)
                     else:
-                        recovered_cash = sum((l["price"] * l["amount"]) for l in grid.lines if l.get("active") and l.get("side") == "buy")
-                        for l in grid.lines:
-                            l["active"] = False
-                        bot.cash += recovered_cash
-                        grid.active = False
-                        grid_pnl_val = getattr(grid, "realized_pnl", 0.0)
-                        grid.status_msg = f"Victoria Total Cosechada (+{grid_pnl_val:+.2f} USDT). Capital liberado a caja."
-                        bot.save_portfolio_state()
-                        print(f"  🚀🟢 [VICTORIA TOTAL / COSECHA {sym}] 100% de órdenes cobradas. Cierre y toma de beneficios (+{grid_pnl_val:+.4f} USDT). ${recovered_cash:.2f} USDT devueltos a caja líquida.", flush=True)
+                        # Dentro del rango: las ventas ya se cobraron con ganancia y la malla espera retroceso a las compras
+                        if len(active_buys) > 0:
+                            next_buy_p = max(l["price"] for l in active_buys)
+                            grid.status_msg = f"Cosecha en Máximos: Esperando retroceso a compra (${next_buy_p:.4f})"
+                        else:
+                            # Si se quedó sin compras ni ventas, reconstituir una compra abajo
+                            p_b = curr_p * (1.0 - grid.step_pct)
+                            cap_line = getattr(grid, "capital_per_line", 11.50)
+                            if bot.cash >= cap_line:
+                                bot.cash -= cap_line
+                                grid.lines.append({"price": p_b, "side": "buy", "amount": cap_line / p_b, "buy_price": p_b, "active": True})
+                                grid.status_msg = f"Recompra de retroceso colocada en ${p_b:.4f}"
+                                bot.save_portfolio_state()
 
                 # B. Si el precio cae por debajo del piso de la malla (con inventario vivo):
                 elif curr_p < grid.grid_lower:
@@ -3040,7 +3077,7 @@ def run_paper_trading(reset_all: bool = False):
 
                         valid_opps = [
                             opp for opp in latest_opportunities
-                            if opp.get("score", 0.0) >= 55.0 and opp.get("volume", 0.0) >= 10_000_000
+                            if opp.get("score", 0.0) >= 55.0 and opp.get("volume", 0.0) >= 4_000_000
                         ]
 
                         best_candidate = None
