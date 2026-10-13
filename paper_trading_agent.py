@@ -3115,7 +3115,7 @@ def run_paper_trading(reset_all: bool = False):
                                         print(f"  🧗 [MALLA TIER 2 / ESCALÓN DE DESCUENTO {sym}] Rango diferenciado: ${grid_lower:.4f} - ${grid_upper:.4f}", flush=True)
 
                                     # Mallas ágiles de 3 a 4 líneas con paso óptimo (0.95% a 1.35% ATR):
-                                    # Con ~$35-$40 USDT de capital por malla, 3 a 4 líneas garantizan ~$11.50-$12.50
+                                    # Con ~$35-$40 USDT de capital por malla, 3 líneas garantizan ~$11.50-$12.50
                                     # por línea (>= $10 Pionex) y aseguran que cada fill coseche +$0.11 a +$0.15 USDT netos.
                                     if (adjusted_capital / 4.0) >= 10.0:
                                         grid_lines = 4
@@ -3123,39 +3123,37 @@ def run_paper_trading(reset_all: bool = False):
                                         grid_lines = 3
                                     else:
                                         grid_lines = max(2, int(adjusted_capital // 10.0))
-                                    step_size = (grid_upper - grid_lower) / (grid_lines - 1) if grid_lines > 1 else (grid_lower * 0.01)
-                                    step_pct = step_size / grid_lower
+
+                                    current_price = best_candidate["price"]
+                                    # Paso dinámico estricto entre 0.95% y 1.35% ATR
+                                    coin_atr = float(analysis.get("features", {}).get("atr_pct", analysis.get("atr_pct", 2.0)))
+                                    opt_step_pct = max(0.0095, min(0.0135, (coin_atr / 100.0) * 0.35 if coin_atr >= 1.2 else 0.0110))
+                                    step_size = current_price * opt_step_pct
+                                    step_pct = opt_step_pct
+
+                                    # Rango centrado y compacto adaptado al número real de líneas:
+                                    # Para 3 líneas: 1 venta arriba (+step_pct), 1 compra abajo (-step_pct), 1 compra de reserva (-2*step_pct)
+                                    grid_upper = round(current_price * (1.0 + step_pct), 8)
+                                    grid_lower = round(current_price * (1.0 - (step_pct * (grid_lines - 1))), 8)
                                     
                                     # Malla Centrada (Neutral Grid Pionex-style)
                                     cap_per_line = adjusted_capital / grid_lines
                                     if cap_per_line >= 10.0:
                                         lines = []
                                         total_cash_needed = 0.0
-                                        buys_count = 0
-                                        sells_count = 0
-                                        current_price = best_candidate["price"]
-                                        
-                                        p = grid_lower
-                                        while p <= grid_upper + (step_size * 0.1): # Tolerancia de flotantes
-                                            if p < current_price * 0.998:
-                                                # Orden Límite de Compra
-                                                lines.append({"price": p, "side": "buy", "amount": cap_per_line / p, "buy_price": p, "active": True})
-                                                total_cash_needed += cap_per_line
-                                                buys_count += 1
-                                            elif p > current_price * 1.002:
-                                                # Orden Límite de Venta (Requiere compra inicial a current_price)
-                                                amount = cap_per_line / p
-                                                cost = amount * current_price * (1 + FEE_RATE)
-                                                lines.append({"price": p, "side": "sell", "amount": amount, "buy_price": current_price, "active": True})
-                                                total_cash_needed += cost
-                                                sells_count += 1
-                                            else:
-                                                # Si el escalón cae virtualmente en el precio de mercado (+-0.2%), reubicarlo medio paso abajo para evitar fills inmediatos con pérdida de fee
-                                                p_buy = current_price * (1 - (step_pct * 0.5))
-                                                lines.append({"price": p_buy, "side": "buy", "amount": cap_per_line / p_buy, "buy_price": p_buy, "active": True})
-                                                total_cash_needed += cap_per_line
-                                                buys_count += 1
-                                            p += step_size
+                                        # 1 Orden de venta arriba pegada (+step_pct):
+                                        p_sell = current_price * (1.0 + step_pct)
+                                        amt_sell = cap_per_line / p_sell
+                                        cost_sell = amt_sell * current_price * (1 + FEE_RATE)
+                                        lines.append({"price": p_sell, "side": "sell", "amount": amt_sell, "buy_price": current_price, "active": True})
+                                        total_cash_needed += cost_sell
+
+                                        # Órdenes de compra abajo escalonadas (-step_pct, -2*step_pct, etc.)
+                                        buys_to_create = grid_lines - 1
+                                        for b_idx in range(1, buys_to_create + 1):
+                                            p_b = current_price * (1.0 - (step_pct * b_idx))
+                                            lines.append({"price": p_b, "side": "buy", "amount": cap_per_line / p_b, "buy_price": p_b, "active": True})
+                                            total_cash_needed += cap_per_line
                                             
                                         if bot.cash >= total_cash_needed:
                                             new_grid = GridPosition(
@@ -3173,7 +3171,9 @@ def run_paper_trading(reset_all: bool = False):
                                             bot.grids[new_grid.grid_id] = new_grid
                                             bot.cash -= total_cash_needed
                                             bot.save_portfolio_state()
-                                            print(f"  🕸️ [MALLA DESPLEGADA {sym}] ID: {new_grid.grid_id} | {buys_count} Compras abajo, {sells_count} Ventas arriba.", flush=True)
+                                            buys_count = len([x for x in lines if x["side"] == "buy"])
+                                            sells_count = len([x for x in lines if x["side"] == "sell"])
+                                            print(f"  🕸️ [MALLA DESPLEGADA {sym}] ID: {new_grid.grid_id} | {buys_count} Compras abajo, {sells_count} Ventas arriba (Paso: {step_pct*100:.2f}%).", flush=True)
                                         else:
                                             print(f"  ⚠️ [MALLA CANCELADA] Saldo insuficiente para armar la malla centrada.", flush=True)
                                     else:
