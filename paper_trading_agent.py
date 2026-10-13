@@ -1428,14 +1428,14 @@ def select_best_opportunities(bot: PaperBot, top_n: int = 15) -> List[Dict]:
             vol = t.get("quoteVolume", 0) or 0
             pct = t.get("percentage", 0) or 0
             last_p = t.get("last", 0) or 0
-            # Filtro de Liquidez Institucional: Mínimo $8M en 24h para garantizar ejecución fluida y variedad
-            if vol >= 8_000_000 and last_p > 0:
+            # Filtro de Liquidez Institucional: Mínimo $4M en 24h para garantizar ejecución fluida y máxima variedad
+            if vol >= 4_000_000 and last_p > 0:
                 candidates.append((sym, vol, pct, last_p))
 
         # Canasta Cuantitativa Especializada para Mallas de Alta Volatilidad:
         # Permite un amplio rango de mercado (-20.0% a +25.0%) para no asfixiar el radar durante caídas generales
         grid_pool = [c for c in candidates if -20.0 <= c[2] <= 25.0]
-        by_vol = sorted(grid_pool, key=lambda x: x[1], reverse=True)[:35]
+        by_vol = sorted(grid_pool, key=lambda x: x[1], reverse=True)[:50]
 
         seen = set()
         top_candidates = []

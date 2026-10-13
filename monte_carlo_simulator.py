@@ -64,12 +64,14 @@ def simulate_monte_carlo_forward(
     # Deriva theta acotada [0.001, 0.15]
     theta_eff = float(max(0.001, min(0.15, theta if theta > 0 else 0.015)))
 
-    # Sigma relativo (volatilidad por minuto) derivado del ATR o de OU
+    # Sigma relativo (volatilidad por minuto): combinar ATR y OU para reflejar la oscilación real
+    atr_vol = ((atr_pct / 100.0) / np.sqrt(60.0)) if atr_pct > 0 else 0.002
     if sigma is None or sigma <= 0:
-        vol_per_min = (atr_pct / 100.0) / np.sqrt(60.0)
+        vol_per_min = atr_vol
     else:
-        # Convertir sigma absoluto a relativo respecto al precio
-        vol_per_min = float(sigma / current_price) if current_price > 0 else 0.002
+        # Convertir sigma absoluto de OU a relativo respecto al precio
+        ou_vol = float(sigma / current_price) if current_price > 0 else 0.002
+        vol_per_min = max(atr_vol, ou_vol)
     vol_per_min = float(max(0.0005, min(0.025, vol_per_min)))
 
     steps = int(max(15, min(240, horizon_minutes / dt_minutes)))
