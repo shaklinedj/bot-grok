@@ -318,46 +318,57 @@ def apply_trailing_down_shift(grid: "GridPosition", current_price: float) -> tup
 def apply_trailing_up_shift(grid: "GridPosition", bot: "PaperBot", current_price: float) -> tuple[float, float, float]:
     """
     Desplaza el rango de la malla hacia arriba (Trailing Up):
-    - Cancela compras bajas ociosas recuperando su USDT líquido.
-    - Desplaza el piso y techo hacia arriba siguiendo la inercia alcista.
-    - Coloca compras en el nuevo soporte y ventas en los nuevos techos.
+    - Libera capital cancelando las órdenes de compra más profundas y lejanas.
+    - Compra 1 escalón de tokens al precio actual para colocar la nueva venta arriba (+step_pct).
+    - Desplaza el piso y techo de la malla hacia arriba para seguir cabalgando la tendencia.
     """
-    shift_amount = (grid.grid_upper - grid.grid_lower) * 0.35
-    grid.grid_lower += shift_amount
-    grid.grid_upper = max(current_price * 1.015, grid.grid_upper + shift_amount)
-    grid.trailing_up_shifts = getattr(grid, "trailing_up_shifts", 0) + 1
+    cap_line = getattr(grid, "capital_per_line", 12.0)
+    step_pct = max(0.0120, getattr(grid, "step_pct", 0.0160))
 
-    if grid.grid_lines > 1:
-        grid.step_size = (grid.grid_upper - grid.grid_lower) / (grid.grid_lines - 1)
-        grid.step_pct = max(0.0042, grid.step_size / grid.grid_lower)
-
-    # Cancelar compras que quedaron demasiado abajo (lejos del precio vivo)
+    # 1. Liberar la compra más baja activa para fondear la nueva venta arriba
+    active_buys = sorted([l for l in grid.lines if l.get("active") and l.get("side") == "buy"], key=lambda x: x["price"])
     recovered_cash = 0.0
-    for l in grid.lines:
-        if l.get("active") and l.get("side") == "buy" and l["price"] < (grid.grid_lower * 0.995):
-            recovered_cash += (l["price"] * l["amount"])
-            l["active"] = False
+    while (bot.cash + recovered_cash) < cap_line and active_buys:
+        lowest_buy = active_buys.pop(0)
+        recovered_cash += (lowest_buy["price"] * lowest_buy["amount"])
+        lowest_buy["active"] = False
 
     bot.cash += recovered_cash
 
-    # RECONSTITUIR ÓRDENES ACTIVAS EN EL NUEVO CANAL ALCISTA:
-    cap_line = getattr(grid, "capital_per_line", 11.50)
-    # 1. Colocar compra de retroceso justo abajo del precio actual
-    p_buy_new = current_price * (1.0 - grid.step_pct)
-    if bot.cash >= cap_line:
-        bot.cash -= cap_line
-        grid.lines.append({"price": p_buy_new, "side": "buy", "amount": cap_line / p_buy_new, "buy_price": p_buy_new, "active": True})
+    # 2. Comprar 1 lote al precio actual y colocar orden de venta arriba (+step_pct)
+    active_sells = [l for l in grid.lines if l.get("active") and l.get("side") == "sell"]
+    if len(active_sells) == 0 and bot.cash >= 10.0:
+        cost = min(bot.cash * 0.98, cap_line)
+        amt_tokens = cost / current_price
+        bot.cash -= cost
+        p_sell_new = round(current_price * (1.0 + step_pct), 6)
+        grid.lines.append({
+            "price": p_sell_new,
+            "side": "sell",
+            "amount": amt_tokens,
+            "buy_price": current_price,
+            "active": True
+        })
+        print(f"\n  🚀🧗 [TRAILING UP ACCIÓN {grid.symbol}] Comprados {amt_tokens:.4f} {grid.symbol} @ ${current_price:.4f} (${cost:.2f} USDT). Nueva venta en techo colocada a ${p_sell_new:.4f} (+{step_pct*100:.2f}%)", flush=True)
 
-    # 2. Si no hay ventas activas y hay saldo, comprar 1 escalón de tokens para colocar venta arriba
-    active_s = [l for l in grid.lines if l.get("active") and l.get("side") == "sell"]
-    if len(active_s) == 0 and bot.cash >= cap_line:
-        p_sell_new = current_price * (1.0 + grid.step_pct)
-        amt_tokens = cap_line / p_sell_new
-        cost = amt_tokens * current_price * (1 + FEE_RATE)
-        if bot.cash >= cost:
-            bot.cash -= cost
-            grid.lines.append({"price": p_sell_new, "side": "sell", "amount": amt_tokens, "buy_price": current_price, "active": True})
+    # 3. Colocar orden de compra de retroceso justo debajo del precio actual (-step_pct) si hay saldo
+    p_buy_new = round(current_price * (1.0 - step_pct), 6)
+    existing_buy_prices = [l["price"] for l in grid.lines if l.get("active") and l.get("side") == "buy"]
+    if bot.cash >= 10.0 and not any(abs(p - p_buy_new) / p_buy_new < 0.003 for p in existing_buy_prices):
+        cost_b = min(bot.cash * 0.98, cap_line)
+        bot.cash -= cost_b
+        grid.lines.append({
+            "price": p_buy_new,
+            "side": "buy",
+            "amount": cost_b / p_buy_new,
+            "buy_price": p_buy_new,
+            "active": True
+        })
 
+    # 4. Actualizar piso, techo y contador
+    grid.grid_upper = max(current_price * (1.0 + step_pct * 1.2), grid.grid_upper)
+    grid.grid_lower = max(current_price * (1.0 - step_pct * (grid.grid_lines - 1)), grid.grid_lower)
+    grid.trailing_up_shifts = getattr(grid, "trailing_up_shifts", 0) + 1
     grid.freeze_buys = False
     grid.out_of_range_ticks = 0
     grid.status_msg = f"Trailing Up #{grid.trailing_up_shifts}: Rango subido a ${grid.grid_lower:.4f}-${grid.grid_upper:.4f}"
@@ -2813,21 +2824,21 @@ def run_paper_trading(reset_all: bool = False):
 
                 # A. Ventas Cosechadas con Ganancia:
                 if len(active_sells) == 0 and getattr(grid, "fills_count", 0) > 0:
-                    # 1. Si el precio rompió hacia arriba fuera de la malla (curr_p > grid_upper * 1.008):
+                    # 1. Si el precio está en el techo o por encima (curr_p >= grid_upper * 0.998):
                     # PRIORIDAD AL TRAILING UP: Dejar correr las ganancias si hay inercia alcista institucional
-                    if curr_p > grid.grid_upper * 1.008:
+                    if curr_p >= grid.grid_upper * 0.998:
                         opp = next((o for o in (latest_opportunities or []) if o.get("symbol") == sym), None)
                         current_score = float(opp.get("score", 0.0)) if opp else 0.0
                         features = opp.get("analysis", {}).get("features", {}) if opp else {}
                         rsi_val = float(features.get("rsi", 50.0))
-                        is_healthy_trend = (current_score >= 35.0) and (rsi_val < 78.0)
+                        is_healthy_trend = (current_score >= 30.0) and (rsi_val < 78.0)
 
                         # Trailing Up libre e ilimitado mientras el activo mantenga salud cuantitativa:
-                        if is_healthy_trend and bot.cash >= 10.0:
+                        if is_healthy_trend:
                             new_low, new_high, recov = apply_trailing_up_shift(grid, bot, curr_p)
                             grid_pnl_val = getattr(grid, "realized_pnl", 0.0)
                             print(f"\n  🚀🧗 [TRAILING UP ILIMITADO {sym}]", flush=True)
-                            print(f"       Precio superó techo (${curr_p:.4f} > ${grid.grid_upper:.4f}). Tendencia activa (Score {current_score:.1f} >= 35 | RSI {rsi_val:.1f} < 78).", flush=True)
+                            print(f"       Precio superó techo (${curr_p:.4f} >= ${grid.grid_upper:.4f}). Tendencia activa (Score {current_score:.1f} >= 30 | RSI {rsi_val:.1f} < 78).", flush=True)
                             print(f"       Desplazando rango hacia arriba a ${new_low:.4f} - ${new_high:.4f} (Escalón #{grid.trailing_up_shifts}).", flush=True)
                             print(f"       Ganancia acumulada en la malla: +${grid_pnl_val:.4f} USDT. ¡Cosecha continúa!\n", flush=True)
                             bot.save_portfolio_state()
@@ -2969,23 +2980,23 @@ def run_paper_trading(reset_all: bool = False):
                         grid.status_msg = f"Modo Paciente: Caída -{dist_below_floor_pct:.1f}% bajo piso (RSI 1h: {rsi_1h:.1f}). Compras congeladas, esperando resolución."
 
                 # C. Ruptura de Techo hacia arriba (Tendencia alcista fuerte con ventas aún vivas):
-                elif curr_p > grid.grid_upper * 1.012:
+                elif curr_p > grid.grid_upper * 1.002:
                     grid.freeze_buys = False
                     grid.out_of_range_ticks = getattr(grid, "out_of_range_ticks", 0) + 1
                     grid.status_msg = f"Ruptura alcista (+{((curr_p/grid.grid_upper)-1)*100:.1f}%)"
-                    if grid.out_of_range_ticks >= 15:  # ~35s confirmado
+                    if grid.out_of_range_ticks >= 6:  # ~10s confirmado
                         opp = next((o for o in (latest_opportunities or []) if o.get("symbol") == sym), None)
                         current_score = float(opp.get("score", 0.0)) if opp else 0.0
                         features = opp.get("analysis", {}).get("features", {}) if opp else {}
                         rsi_val = float(features.get("rsi", 50.0))
-                        is_healthy_trend = (current_score >= 35.0) and (rsi_val < 78.0)
+                        is_healthy_trend = (current_score >= 30.0) and (rsi_val < 78.0)
 
                         # Trailing Up libre e ilimitado mientras el activo mantenga salud cuantitativa:
-                        if is_healthy_trend and bot.cash >= 10.0:
+                        if is_healthy_trend:
                             new_low, new_high, recov = apply_trailing_up_shift(grid, bot, curr_p)
                             grid_pnl_val = getattr(grid, "realized_pnl", 0.0)
                             print(f"\n  🚀🧗 [TRAILING UP POR RUPTURA {sym}]", flush=True)
-                            print(f"       Ruptura alcista confirmada (Score {current_score:.1f} >= 35 | RSI {rsi_val:.1f} < 78).", flush=True)
+                            print(f"       Ruptura alcista confirmada (Score {current_score:.1f} >= 30 | RSI {rsi_val:.1f} < 78).", flush=True)
                             print(f"       Desplazando rango hacia arriba a ${new_low:.4f} - ${new_high:.4f} (Escalón #{grid.trailing_up_shifts}).", flush=True)
                             print(f"       Ganancia acumulada en la malla: +${grid_pnl_val:.4f} USDT. ¡Cosecha continúa!\n", flush=True)
                             bot.save_portfolio_state()
