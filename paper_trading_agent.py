@@ -1433,6 +1433,12 @@ def get_sniper_analysis_aggressive(symbol: str, df_15m: pd.DataFrame, df_1h: pd.
 
 
 
+INSTITUTIONAL_WHITELIST = {
+    "BTC/USDT", "ETH/USDT", "SOL/USDT", "SUI/USDT", "NEAR/USDT",
+    "AVAX/USDT", "LINK/USDT", "ADA/USDT", "INJ/USDT", "RENDER/USDT",
+    "AAVE/USDT", "DOT/USDT", "UNI/USDT", "XRP/USDT", "BNB/USDT"
+}
+
 # ====================== ESCÁNER DE MERCADO MULTI-FACTOR (MACRO + MICRO) ======================
 def select_best_opportunities(bot: PaperBot, top_n: int = 15) -> List[Dict]:
     try:
@@ -1441,20 +1447,18 @@ def select_best_opportunities(bot: PaperBot, top_n: int = 15) -> List[Dict]:
         for sym, t in tickers.items():
             if not sym.endswith("/USDT"):
                 continue
-            base = sym.split("/")[0]
-            if base in STABLE_BASES:
+            if sym not in INSTITUTIONAL_WHITELIST:
                 continue
             vol = t.get("quoteVolume", 0) or 0
             pct = t.get("percentage", 0) or 0
             last_p = t.get("last", 0) or 0
-            # Filtro de Liquidez Institucional: Mínimo $4M en 24h para garantizar ejecución fluida y máxima variedad
-            if vol >= 4_000_000 and last_p > 0:
+            if vol >= 2_000_000 and last_p > 0:
                 candidates.append((sym, vol, pct, last_p))
 
-        # Canasta Cuantitativa Especializada para Mallas de Alta Volatilidad:
-        # Permite un amplio rango de mercado (-20.0% a +25.0%) para no asfixiar el radar durante caídas generales
+        # Canasta Cuantitativa Institucional Blindada:
+        # Priorizar monedas líderes de alta convicción
         grid_pool = [c for c in candidates if -20.0 <= c[2] <= 25.0]
-        by_vol = sorted(grid_pool, key=lambda x: x[1], reverse=True)[:50]
+        by_vol = sorted(grid_pool, key=lambda x: x[1], reverse=True)[:25]
 
         seen = set()
         top_candidates = []
@@ -2686,22 +2690,14 @@ def run_paper_trading(reset_all: bool = False):
                             clinical_verdict = f"Caída Profunda ({dev_floor_pct:+.2f}%): Cortafuegos activo (límite -3.50%)."
 
                         # =========================================================================
-                        # 🛡️ CORTAFUEGOS INSTITUCIONAL (CIRCUIT BREAKERS DE SALIDA)
+                        # 🛡️ CORTAFUEGOS INSTITUCIONAL BLINDADO (OPCIÓN A)
                         # =========================================================================
-                        # 1. STOP CATASTRÓFICO POR DESVIACIÓN PROFUNDA:
-                        # Si el precio perfora más de -3.50% por debajo del piso de la malla,
-                        # liquidar de inmediato para proteger el capital ante una capitulación.
-                        if dev_floor_pct <= -3.50:
-                            print(f"\n  🚨🛑 [CIRCUIT BREAKER: STOP CATASTRÓFICO {sym}] Desviación extrema ({dev_floor_pct:+.2f}% <= -3.50%). Liquidando inventario para proteger capital...", flush=True)
-                            bot.close_grid_market(sym, curr_p, reason="Stop Catastrófico: Caída > 3.5% bajo el piso")
-                            continue
-
-                        # 2. TIME-STOP / ROTACIÓN DE CAPITAL:
-                        # Si la malla permanece más de 4 horas (14400s) estancada bajo el piso sin poder rebotar al Breakeven,
-                        # liquidar la posición para liberar el USDT líquido y rotar al nuevo candidato líder del radar.
-                        if elapsed_s >= 4.0 * 3600.0:
-                            print(f"\n  ⏱️🛑 [CIRCUIT BREAKER: TIME-STOP {sym}] {time_str} estancado bajo el piso sin alcanzar Breakeven. Liquidando posición para rotación de capital...", flush=True)
-                            bot.close_grid_market(sym, curr_p, reason=f"Time-Stop: {time_str} sin rebote a Breakeven")
+                        # En Spot institucional, NO se liquida por tiempo (Cero Time-Stops a mercado).
+                        # Si el precio cae bajo el piso (-9% buffer), compras congeladas en Modo Paciente.
+                        # Stop de Emergencia SOLO ante capitulación extrema (> -6.0% bajo piso, -15% total):
+                        if dev_floor_pct <= -6.00:
+                            print(f"\n  🚨🛑 [STOP DE EMERGENCIA ESTRUCTURAL {sym}] Desviación extrema ({dev_floor_pct:+.2f}% <= -6.00%). Preservando capital...", flush=True)
+                            bot.close_grid_market(sym, curr_p, reason="Stop de Emergencia: Caída > 6% bajo el piso")
                             continue
 
                         # =========================================================================
@@ -2817,7 +2813,20 @@ def run_paper_trading(reset_all: bool = False):
 
                 # A. Ventas Cosechadas con Ganancia:
                 if len(active_sells) == 0 and getattr(grid, "fills_count", 0) > 0:
-                    # Si el precio rompió hacia arriba fuera de la malla (curr_p > grid_upper * 1.008):
+                    # 1. Si la malla ya acumuló >= $2.00 USDT de ganancia pura (Objetivo 2:1 cumplido):
+                    if getattr(grid, "realized_pnl", 0.0) >= 2.00:
+                        recovered_cash = sum((l["price"] * l["amount"]) for l in grid.lines if l.get("active") and l.get("side") == "buy")
+                        for l in grid.lines:
+                            l["active"] = False
+                        bot.cash += recovered_cash
+                        grid.active = False
+                        grid_pnl_val = getattr(grid, "realized_pnl", 0.0)
+                        grid.status_msg = f"Objetivo de Ciclo Cumplido (+{grid_pnl_val:+.2f} USDT). Capital liberado a caja."
+                        bot.save_portfolio_state()
+                        print(f"  🏆💰 [OBJETIVO DE CICLO CUMPLIDO {sym}] +${grid_pnl_val:.4f} USDT cosechados (Ratio 2:1). Liberados ${recovered_cash:.2f} a caja líquida para nuevo ciclo compuesto.", flush=True)
+                        continue
+
+                    # 2. Si el precio rompió hacia arriba fuera de la malla (curr_p > grid_upper * 1.008):
                     if curr_p > grid.grid_upper * 1.008:
                         opp = next((o for o in (latest_opportunities or []) if o.get("symbol") == sym), None)
                         current_score = float(opp.get("score", 0.0)) if opp else 0.0
@@ -3043,12 +3052,10 @@ def run_paper_trading(reset_all: bool = False):
                 macro_engine.run_macro_cycle(list(monitored_symbols) + ["BTC/USDT", "ETH/USDT"])
 
             # Escaneo de Oportunidades del Mercado (Radar):
-            # Concurrencia Dinámica Escalonada por Capital (Modelo Híbrido Autónomo):
-            # $70 - $140 USDT -> 2 mallas activas simultáneas (Cero capital dormido, riesgo dividido)
-            # $140 - $210 USDT -> 3 mallas activas
-            # $210 - $280 USDT -> 4 mallas activas
-            # > $280 USDT -> escala orgánicamente
-            max_allowed_grids = max(2, min(6, int(equity // 38.0))) if equity >= 70.0 else 1
+            # Concurrencia Ultra-Convicción Blindada (Opción A):
+            # Para cuentas < $130 USDT -> 1 sola malla institucional sólida (6 líneas, -9% amortiguación)
+            # Para cuentas >= $130 USDT -> 2 mallas
+            max_allowed_grids = max(1, min(4, int(equity // 70.0)))
             active_grids_count = len([g for g in bot.grids.values() if g.active])
             slots_available = (active_grids_count < max_allowed_grids and bot.open_positions_count() < MAX_TOTAL_POSITIONS and len(bot.pending_orders) < MAX_TOTAL_POSITIONS)
             scan_interval = FAST_SCAN_INTERVAL_SECONDS if slots_available else 60.0
@@ -3151,25 +3158,23 @@ def run_paper_trading(reset_all: bool = False):
                                         grid_lower = grid_lower - shift_down
                                         print(f"  🧗 [MALLA TIER 2 / ESCALÓN DE DESCUENTO {sym}] Rango diferenciado: ${grid_lower:.4f} - ${grid_upper:.4f}", flush=True)
 
-                                    # Mallas ágiles de 3 a 4 líneas con paso óptimo (0.95% a 1.35% ATR):
-                                    # Con ~$35-$40 USDT de capital por malla, 3 líneas garantizan ~$11.50-$12.50
-                                    # por línea (>= $10 Pionex) y aseguran que cada fill coseche +$0.11 a +$0.15 USDT netos.
-                                    if (adjusted_capital / 4.0) >= 10.0:
-                                        grid_lines = 4
-                                    elif (adjusted_capital / 3.0) >= 10.0:
-                                        grid_lines = 3
-                                    else:
+                                    # Malla de Ultra-Convicción Blindada (Opción A):
+                                    # Con ~$65-$75 USDT de capital, colocamos de 5 a 6 líneas a ~$11.50-$12.50
+                                    # con paso amplio y seguro (1.60% a 2.40% ATR) para cubrir entre -8% y -10% de caída.
+                                    target_line_budget = 11.50
+                                    grid_lines = min(6, max(3, int(adjusted_capital // target_line_budget)))
+                                    if (adjusted_capital / grid_lines) < 10.0:
                                         grid_lines = max(2, int(adjusted_capital // 10.0))
 
                                     current_price = best_candidate["price"]
-                                    # Paso dinámico estricto entre 0.95% y 1.35% ATR
+                                    # Paso dinámico institucional amplio (1.60% a 2.40% ATR)
                                     coin_atr = float(analysis.get("features", {}).get("atr_pct", analysis.get("atr_pct", 2.0)))
-                                    opt_step_pct = max(0.0095, min(0.0135, (coin_atr / 100.0) * 0.35 if coin_atr >= 1.2 else 0.0110))
+                                    opt_step_pct = max(0.0160, min(0.0240, (coin_atr / 100.0) * 0.65 if coin_atr >= 1.5 else 0.0180))
                                     step_size = current_price * opt_step_pct
                                     step_pct = opt_step_pct
 
-                                    # Rango centrado y compacto adaptado al número real de líneas:
-                                    # Para 3 líneas: 1 venta arriba (+step_pct), 1 compra abajo (-step_pct), 1 compra de reserva (-2*step_pct)
+                                    # Rango centrado y amplio con gran amortiguación hacia abajo:
+                                    # 1 venta arriba (+step_pct), y (grid_lines - 1) compras abajo (hasta -step_pct * (grid_lines - 1))
                                     grid_upper = round(current_price * (1.0 + step_pct), 8)
                                     grid_lower = round(current_price * (1.0 - (step_pct * (grid_lines - 1))), 8)
                                     
