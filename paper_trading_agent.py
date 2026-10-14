@@ -3084,7 +3084,7 @@ def run_paper_trading(reset_all: bool = False):
 
                         valid_opps = [
                             opp for opp in latest_opportunities
-                            if opp.get("score", 0.0) >= 55.0 and opp.get("volume", 0.0) >= 4_000_000
+                            if opp.get("score", 0.0) >= 30.0 and opp.get("volume", 0.0) >= 2_000_000
                         ]
 
                         best_candidate = None
@@ -3102,12 +3102,12 @@ def run_paper_trading(reset_all: bool = False):
                                 is_tiered_discount_grid = False
                                 break
 
-                        # Opción B: Si no hay otra moneda nueva con Score >= 55, pero la líder tiene Score >= 65
+                        # Opción B: Si no hay otra moneda nueva con Score >= 30, pero la líder tiene Score >= 45
                         # y tiene menos de 2 mallas activas:
                         if not best_candidate and valid_opps:
                             top_opp = valid_opps[0]
                             top_sym = top_opp["symbol"]
-                            if top_opp.get("score", 0.0) >= 65.0 and symbol_grid_counts.get(top_sym, 0) < 2:
+                            if top_opp.get("score", 0.0) >= 45.0 and symbol_grid_counts.get(top_sym, 0) < 2:
                                 if (now_ts - deliberation_cooldown.get(top_sym, 0.0)) >= 75.0:
                                     best_candidate = top_opp
                                     is_tiered_discount_grid = True
@@ -3138,10 +3138,13 @@ def run_paper_trading(reset_all: bool = False):
                             else:
                                 global LAST_AGENT_PCT
                                 available_funds = bot.cash * 0.98
-                                # Asignación proporcional por slots restantes para garantizar 2 mallas simultáneas:
+                                # Asignación por slots: Si es 1 sola malla (Opción A), asignar el 100% del slot (~$68 USDT)
                                 remaining_slots = max(1, (max_allowed_grids - active_grids_count))
                                 target_per_slot = available_funds / remaining_slots
-                                target_by_agents = round(target_per_slot * comm_mult, 2)
+                                if max_allowed_grids == 1:
+                                    target_by_agents = target_per_slot
+                                else:
+                                    target_by_agents = round(target_per_slot * comm_mult, 2)
                                 adjusted_capital = max(MIN_ORDER_USDT, min(available_funds, target_by_agents))
                                 pct_display = round((adjusted_capital / equity) * 100, 0)
                                 LAST_AGENT_PCT = pct_display
@@ -3159,9 +3162,9 @@ def run_paper_trading(reset_all: bool = False):
                                         print(f"  🧗 [MALLA TIER 2 / ESCALÓN DE DESCUENTO {sym}] Rango diferenciado: ${grid_lower:.4f} - ${grid_upper:.4f}", flush=True)
 
                                     # Malla de Ultra-Convicción Blindada (Opción A):
-                                    # Con ~$65-$75 USDT de capital, colocamos de 5 a 6 líneas a ~$11.50-$12.50
+                                    # Con ~$65-$70 USDT de capital, colocamos 6 líneas a ~$11.00-$11.50
                                     # con paso amplio y seguro (1.60% a 2.40% ATR) para cubrir entre -8% y -10% de caída.
-                                    target_line_budget = 11.50
+                                    target_line_budget = 11.00
                                     grid_lines = min(6, max(3, int(adjusted_capital // target_line_budget)))
                                     if (adjusted_capital / grid_lines) < 10.0:
                                         grid_lines = max(2, int(adjusted_capital // 10.0))
