@@ -709,6 +709,7 @@ class GridPosition:
     trailing_down_shifts: int = 0
     trailing_up_shifts: int = 0
     reval_diagnosis: dict = field(default_factory=dict)
+    breakout_ticks: int = 0
 
     def __post_init__(self):
         if self.step_size <= 0.0 and self.grid_lines > 1 and self.grid_upper > self.grid_lower:
@@ -722,6 +723,93 @@ class GridPosition:
     def from_dict(cls, d: dict):
         clean_d = {k: v for k, v in d.items() if k in cls.__dataclass_fields__}
         return cls(**clean_d)
+
+
+def validate_anti_mechazo_breakout(
+    sym: str, 
+    curr_p: float, 
+    grid: GridPosition, 
+    bot: "PaperBot", 
+    latest_opportunities: list,
+    required_ticks: int = 8
+) -> tuple[bool, str]:
+    """
+    Protocolo Institucional Anti-Mechazos (Anti-Wick Shield & Breakout Validation):
+    Blindaje multi-capa para evitar recomprar en la punta de mechas de absorción o falsas rupturas.
+    
+    Capas de Validación:
+    1. Persistencia Temporal: Exige >= 8 ticks (~12-16s) consecutivos confirmados sobre o al límite del techo.
+       Si el precio cae por debajo de techo * 0.995, el acumulador de ticks se reinicia a 0.
+    2. Microestructura LOB: Analiza profundidad del libro de órdenes (Order Book Imbalance).
+       Si OBI < -0.15 (pared vendedora pasiva institucional), veta como Bull Trap / trampa de liquidez.
+    3. Agotamiento Cuantitativo: Veta si RSI 1h >= 72.0, si el precio está > 2.2% sobre SMA20 1h,
+       o si perfora la banda superior de Bollinger en clímax.
+    4. Escudo Macro BTC: Veta si BTC está en modo Risk-Off.
+    5. Salud Cuantitativa: Exige Score multi-factor >= 25.0 en el radar.
+    
+    Retorna: (is_confirmed: bool, details_msg: str)
+    """
+    # 1. Acumulación y Persistencia Temporal
+    is_at_ceiling = (curr_p >= grid.grid_upper * 0.998)
+    if is_at_ceiling:
+        grid.breakout_ticks = getattr(grid, "breakout_ticks", 0) + 1
+    elif curr_p < grid.grid_upper * 0.995:
+        grid.breakout_ticks = 0
+
+    if grid.breakout_ticks < required_ticks:
+        return False, f"Acumulando confirmación ({grid.breakout_ticks}/{required_ticks} ticks sobre techo)"
+
+    # 2. Escudo Macro BTC
+    if getattr(bot, "btc_risk_off", False):
+        grid.breakout_ticks = max(0, grid.breakout_ticks - 2)
+        return False, "Veto Macro: BTC en modo Risk-Off (Altcoins vulnerables a mechas falsas)"
+
+    # 3. Agotamiento Cuantitativo (Régimen 1h)
+    regime = get_symbol_1h_regime(sym)
+    rsi_1h = regime.get("rsi_1h", 50.0)
+    sma20 = regime.get("sma20", 0.0)
+    upper_bb = regime.get("upper_bb", 999999.0)
+
+    if rsi_1h >= 72.0:
+        grid.breakout_ticks = 0
+        return False, f"Veto Agotamiento: RSI 1h={rsi_1h:.1f} >= 72.0 (Sobrecompra / Clímax)"
+
+    if sma20 > 0 and ((curr_p - sma20) / sma20) > 0.022:
+        grid.breakout_ticks = 0
+        return False, f"Veto Extensión: Precio +{((curr_p/sma20)-1)*100:.1f}% sobre SMA20 1h"
+
+    if curr_p >= upper_bb * 1.004:
+        grid.breakout_ticks = 0
+        return False, f"Veto Bollinger: Precio sobre Banda Superior (${upper_bb:.4f})"
+
+    # 4. Microestructura LOB (Order Book Imbalance)
+    now_ts = time.time()
+    cached_lob = getattr(grid, "_last_lob_cache", (0, 0.0))
+    if now_ts - cached_lob[0] < 6.0:
+        obi = cached_lob[1]
+    else:
+        try:
+            ob = exchange.fetch_order_book(sym, limit=10)
+            bids = sum(b[1] for b in ob.get("bids", []))
+            asks = sum(a[1] for a in ob.get("asks", []))
+            obi = (bids - asks) / (bids + asks) if (bids + asks) > 0 else 0.0
+            grid._last_lob_cache = (now_ts, obi)
+        except Exception:
+            obi = 0.0
+
+    if obi < -0.15:
+        grid.breakout_ticks = max(0, grid.breakout_ticks - 3)
+        return False, f"Veto LOB: Pared vendedora institucional (OBI={obi:+.2f} < -0.15, trampa de liquidez)"
+
+    # 5. Radar y Momentum Multi-Factor
+    opp = next((o for o in (latest_opportunities or []) if o.get("symbol") == sym), None)
+    if opp:
+        score = float(opp.get("score", 0.0))
+        if score < 25.0:
+            return False, f"Veto Radar: Score multi-factor insuficiente ({score:.1f} < 25.0)"
+
+    return True, f"Ruptura Institucional Validada ({grid.breakout_ticks} ticks | OBI={obi:+.2f} | RSI={rsi_1h:.1f})"
+
 
 @dataclass
 class PendingLimitOrder:
@@ -2825,24 +2913,25 @@ def run_paper_trading(reset_all: bool = False):
                 # A. Ventas Cosechadas con Ganancia:
                 if len(active_sells) == 0 and getattr(grid, "fills_count", 0) > 0:
                     # 1. Si el precio está en el techo o por encima (curr_p >= grid_upper * 0.998):
-                    # PRIORIDAD AL TRAILING UP: Dejar correr las ganancias si hay inercia alcista institucional
+                    # PRIORIDAD AL TRAILING UP BLINDADO: Reevaluación cuantitativa antes de ejecutar (Escudo Anti-Mechazos)
                     if curr_p >= grid.grid_upper * 0.998:
-                        opp = next((o for o in (latest_opportunities or []) if o.get("symbol") == sym), None)
-                        current_score = float(opp.get("score", 0.0)) if opp else 0.0
-                        features = opp.get("analysis", {}).get("features", {}) if opp else {}
-                        rsi_val = float(features.get("rsi", 50.0))
-                        is_healthy_trend = (current_score >= 30.0) and (rsi_val < 78.0)
-
-                        # Trailing Up libre e ilimitado mientras el activo mantenga salud cuantitativa:
-                        if is_healthy_trend:
+                        is_valid_breakout, breakout_reason = validate_anti_mechazo_breakout(
+                            sym, curr_p, grid, bot, latest_opportunities, required_ticks=8
+                        )
+                        if is_valid_breakout:
                             new_low, new_high, recov = apply_trailing_up_shift(grid, bot, curr_p)
+                            grid.breakout_ticks = 0
                             grid_pnl_val = getattr(grid, "realized_pnl", 0.0)
-                            print(f"\n  🚀🧗 [TRAILING UP ILIMITADO {sym}]", flush=True)
-                            print(f"       Precio superó techo (${curr_p:.4f} >= ${grid.grid_upper:.4f}). Tendencia activa (Score {current_score:.1f} >= 30 | RSI {rsi_val:.1f} < 78).", flush=True)
+                            print(f"\n  🚀🧗 [TRAILING UP CONFIRMADO {sym}]", flush=True)
+                            print(f"       {breakout_reason}.", flush=True)
                             print(f"       Desplazando rango hacia arriba a ${new_low:.4f} - ${new_high:.4f} (Escalón #{grid.trailing_up_shifts}).", flush=True)
                             print(f"       Ganancia acumulada en la malla: +${grid_pnl_val:.4f} USDT. ¡Cosecha continúa!\n", flush=True)
                             bot.save_portfolio_state()
                             continue
+                        else:
+                            grid.status_msg = f"Escudo Anti-Mechazos: {breakout_reason}"
+                    elif curr_p < grid.grid_upper * 0.995:
+                        grid.breakout_ticks = 0
 
                     # 2. Si la malla ya acumuló >= $2.00 USDT de ganancia pura (Objetivo 2:1 cumplido en rango lateral / oscilación):
                     if getattr(grid, "realized_pnl", 0.0) >= 2.00:
@@ -2982,27 +3071,24 @@ def run_paper_trading(reset_all: bool = False):
                 # C. Ruptura de Techo hacia arriba (Tendencia alcista fuerte con ventas aún vivas):
                 elif curr_p > grid.grid_upper * 1.002:
                     grid.freeze_buys = False
-                    grid.out_of_range_ticks = getattr(grid, "out_of_range_ticks", 0) + 1
-                    grid.status_msg = f"Ruptura alcista (+{((curr_p/grid.grid_upper)-1)*100:.1f}%)"
-                    if grid.out_of_range_ticks >= 6:  # ~10s confirmado
-                        opp = next((o for o in (latest_opportunities or []) if o.get("symbol") == sym), None)
-                        current_score = float(opp.get("score", 0.0)) if opp else 0.0
-                        features = opp.get("analysis", {}).get("features", {}) if opp else {}
-                        rsi_val = float(features.get("rsi", 50.0))
-                        is_healthy_trend = (current_score >= 30.0) and (rsi_val < 78.0)
+                    is_valid_breakout, breakout_reason = validate_anti_mechazo_breakout(
+                        sym, curr_p, grid, bot, latest_opportunities, required_ticks=8
+                    )
+                    if is_valid_breakout:
+                        new_low, new_high, recov = apply_trailing_up_shift(grid, bot, curr_p)
+                        grid.breakout_ticks = 0
+                        grid_pnl_val = getattr(grid, "realized_pnl", 0.0)
+                        print(f"\n  🚀🧗 [TRAILING UP POR RUPTURA CONFIRMADA {sym}]", flush=True)
+                        print(f"       {breakout_reason}.", flush=True)
+                        print(f"       Desplazando rango hacia arriba a ${new_low:.4f} - ${new_high:.4f} (Escalón #{grid.trailing_up_shifts}).", flush=True)
+                        print(f"       Ganancia acumulada en la malla: +${grid_pnl_val:.4f} USDT. ¡Cosecha continúa!\n", flush=True)
+                        bot.save_portfolio_state()
+                        continue
+                    else:
+                        grid.status_msg = f"Escudo Anti-Mechazos (Ruptura): {breakout_reason}"
 
-                        # Trailing Up libre e ilimitado mientras el activo mantenga salud cuantitativa:
-                        if is_healthy_trend:
-                            new_low, new_high, recov = apply_trailing_up_shift(grid, bot, curr_p)
-                            grid_pnl_val = getattr(grid, "realized_pnl", 0.0)
-                            print(f"\n  🚀🧗 [TRAILING UP POR RUPTURA {sym}]", flush=True)
-                            print(f"       Ruptura alcista confirmada (Score {current_score:.1f} >= 30 | RSI {rsi_val:.1f} < 78).", flush=True)
-                            print(f"       Desplazando rango hacia arriba a ${new_low:.4f} - ${new_high:.4f} (Escalón #{grid.trailing_up_shifts}).", flush=True)
-                            print(f"       Ganancia acumulada en la malla: +${grid_pnl_val:.4f} USDT. ¡Cosecha continúa!\n", flush=True)
-                            bot.save_portfolio_state()
-                            continue
-
-                        # Si el score decayó o entró en sobrecompra extrema (RSI >= 75): Tomar ganancias finales completas
+                    # Si persistió afuera por más de 15 ticks pero fue vetado por agotamiento/sobrecompra extrema: Tomar ganancias finales completas
+                    if getattr(grid, "breakout_ticks", 0) >= 15:
                         active_sells = [l for l in grid.lines if l.get("active") and l.get("side") == "sell"]
                         sold_tokens = sum(l["amount"] for l in active_sells)
                         sell_proceeds = (sold_tokens * curr_p) * (1 - FEE_RATE) if sold_tokens > 0 else 0.0
