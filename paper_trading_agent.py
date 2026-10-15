@@ -261,10 +261,11 @@ def get_grid_matched_cycles(grid, trades: list, current_price: float = 0.0) -> l
 
 
 def compress_grid_spacing(grid: "GridPosition", current_price: float) -> Optional[float]:
-    if grid.step_pct <= 0.0042:
+    # Suelo institucional de paso: nunca comprimir por debajo de 1.35% para que las comisiones no coman el beneficio
+    if grid.step_pct <= 0.0140:
         return None
     old_step = grid.step_pct
-    grid.step_pct = max(0.0040, grid.step_pct * 0.88)
+    grid.step_pct = max(0.0135, grid.step_pct * 0.92)
     grid.step_size = current_price * grid.step_pct
     return old_step
 
@@ -310,7 +311,7 @@ def apply_trailing_down_shift(grid: "GridPosition", current_price: float) -> tup
     grid.anomaly_start_ts = 0.0  # Reiniciar reloj de anomalía al re-anclar en nuevo piso
     if grid.grid_lines > 1:
         grid.step_size = (grid.grid_upper - grid.grid_lower) / (grid.grid_lines - 1)
-        grid.step_pct = max(0.0042, grid.step_size / grid.grid_lower)
+        grid.step_pct = max(0.0140, grid.step_size / grid.grid_lower)
     grid.freeze_buys = False
     return grid.grid_lower, grid.grid_upper
 
@@ -322,8 +323,8 @@ def apply_trailing_up_shift(grid: "GridPosition", bot: "PaperBot", current_price
     - Compra 1 escalón de tokens al precio actual para colocar la nueva venta arriba (+step_pct).
     - Desplaza el piso y techo de la malla hacia arriba para seguir cabalgando la tendencia.
     """
-    cap_line = getattr(grid, "capital_per_line", 12.0)
-    step_pct = max(0.0120, getattr(grid, "step_pct", 0.0160))
+    cap_line = getattr(grid, "capital_per_line", 20.0)
+    step_pct = max(0.0140, getattr(grid, "step_pct", 0.0160))
 
     # 1. Liberar la compra más baja activa para fondear la nueva venta arriba
     active_buys = sorted([l for l in grid.lines if l.get("active") and l.get("side") == "buy"], key=lambda x: x["price"])
@@ -2883,18 +2884,23 @@ def run_paper_trading(reset_all: bool = False):
                     # Si todas las compras se habían ejecutado y solo quedaban ventas, colocar compras escalonadas abajo (Solo si no está congelado por caída o breakeven exit)
                     is_buys_frozen = getattr(grid, "freeze_buys", False)
                     if len(active_buys) < 2 and bot.cash >= 10.0 and not is_buys_frozen:
-                        rebalance_cap = min(bot.cash * 0.7, 25.0)
-                        lines_to_add = 3
-                        sub_cap = rebalance_cap / lines_to_add
-                        step_val = step_sz if step_sz > 0 else (curr_p * grid.step_pct)
+                        # ENFOQUE CONCENTRADO (Opción 2): Órdenes sólidas ($15-$25) con paso amplio para asegurar ganancias > $0.25 por trade
+                        cap_line = getattr(grid, "capital_per_line", 20.0)
+                        lines_to_add = 1 if bot.cash < (cap_line * 1.8) else 2
+                        sub_cap = bot.cash if lines_to_add == 1 else min(bot.cash * 0.5, cap_line)
+                        min_step_pct = max(0.0140, getattr(grid, "step_pct", 0.0150))
+                        step_val = max(curr_p * min_step_pct, step_sz if step_sz > 0 else (curr_p * min_step_pct))
                         for step_i in range(1, lines_to_add + 1):
+                            if bot.cash < (sub_cap * 0.95) or sub_cap < 10.0:
+                                break
                             p_buy = curr_p - (step_val * step_i)
                             bot.cash -= sub_cap
                             grid.lines.append({"price": p_buy, "side": "buy", "amount": sub_cap / p_buy, "buy_price": p_buy, "active": True})
-                            print(f"  🕸️🟢 [REBALANCEO DINÁMICO {sym}] Compra simétrica recolocada a ${p_buy:.4f}", flush=True)
+                            print(f"  🕸️🟢 [REBALANCEO CONCENTRADO {sym}] Compra sólida recolocada a ${p_buy:.4f} (${sub_cap:.2f} USDT | Paso: {min_step_pct*100:.2f}%)", flush=True)
                     
-                    # Ajustar precios de órdenes existentes asegurando SIEMPRE ganancia neta (preservar target profit)
-                    step_val = step_sz if step_sz > 0 else (curr_p * grid.step_pct)
+                    # Ajustar precios de órdenes existentes asegurando SIEMPRE ganancia neta sustancial (> 1.40%)
+                    min_step_pct = max(0.0140, getattr(grid, "step_pct", 0.0150))
+                    step_val = max(curr_p * min_step_pct, step_sz if step_sz > 0 else (curr_p * min_step_pct))
                     for idx, l in enumerate(sorted([x for x in grid.lines if x['active'] and x['side'] == 'sell'], key=lambda x: x['price'])):
                         min_profit_price = l.get('buy_price', curr_p) + step_val
                         if l.get('price', 0.0) < min_profit_price:
@@ -3259,13 +3265,13 @@ def run_paper_trading(reset_all: bool = False):
                                         grid_lower = grid_lower - shift_down
                                         print(f"  🧗 [MALLA TIER 2 / ESCALÓN DE DESCUENTO {sym}] Rango diferenciado: ${grid_lower:.4f} - ${grid_upper:.4f}", flush=True)
 
-                                    # Malla de Ultra-Convicción Blindada (Opción A):
-                                    # Con ~$65-$70 USDT de capital, colocamos 6 líneas a ~$11.00-$11.50
-                                    # con paso amplio y seguro (1.60% a 2.40% ATR) para cubrir entre -8% y -10% de caída.
-                                    target_line_budget = 11.00
-                                    grid_lines = min(6, max(3, int(adjusted_capital // target_line_budget)))
-                                    if (adjusted_capital / grid_lines) < 10.0:
-                                        grid_lines = max(2, int(adjusted_capital // 10.0))
+                                    # Malla de Ultra-Convicción Concentrada (Opción 2):
+                                    # Con ~$70-$80 USDT de capital, colocamos 4 líneas a ~$18.00-$20.00
+                                    # con paso amplio (1.50% a 2.40% ATR) para que cada fill rinda +$0.25 a +$0.40 USDT netos.
+                                    target_line_budget = 19.50
+                                    grid_lines = min(4, max(3, int(adjusted_capital // target_line_budget)))
+                                    if (adjusted_capital / grid_lines) < 15.0:
+                                        grid_lines = max(2, int(adjusted_capital // 15.0))
 
                                     current_price = best_candidate["price"]
                                     # Paso dinámico institucional amplio (1.60% a 2.40% ATR)
