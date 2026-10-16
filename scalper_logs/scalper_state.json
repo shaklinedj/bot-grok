@@ -1,0 +1,11 @@
+{
+  "cash": 80.0,
+  "realized_pnl": 0.0,
+  "wins": 0,
+  "losses": 0,
+  "total_trades": 0,
+  "status_msg": "Escaneando 13 pares l\u00edderes... Esperando alineaci\u00f3n de Order Flow (OBI > +0.20).",
+  "active_trade": null,
+  "pending_order": null,
+  "updated_at": "2026-10-16T15:49:43.329851"
+}
