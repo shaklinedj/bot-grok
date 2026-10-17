@@ -2,12 +2,14 @@
 ========================================================================================
   THE 1-DOLLAR SCALPER (CERO MALLAS, CERO SHORT - ORDER FLOW MOMENTUM ENGINE)
   - Modo: PIONEX CUENTA REAL SPOT (Live Execution via pionex-trade-cli)
+  - Persistencia: SQLite WAL (Cero CSV, Ultra-rápido, Cero Bloqueos)
+  - Base de Datos: scalper_logs/scalper_vault.db
   - Saldo Inicial Real: ~$70.35 USDT (Liberados tras liquidación de XLM)
   - Objetivo: Cazar +$1.00 USDT limpios por trade y volver 100% a caja líquida.
   - Ejecución: Entrada Maker Límite en micro-retroceso sobre Bid Wall (Cero FOMO).
   - Salida Objetivo: +1.70% fijo (+$1.00 netos descontando comisión Pionex 0.05%).
   - Stop Defensivo: -1.20% estricto (arriesga ~$0.75 para ganar ~$1.00 -> Ratio R:R > 1.3:1).
-  - Telemetría de Alta Frecuencia: 13 pares líderes con radar LOB OBI en vivo.
+  - Telemetría en Vivo: 13 pares líderes con radar LOB OBI y almacenamiento SQLite.
   - Dashboard reactivo ultra-visual: http://localhost:8899
 ========================================================================================
 """
@@ -17,6 +19,7 @@ import sys
 import time
 import json
 import math
+import sqlite3
 import http.server
 import threading
 import subprocess
@@ -24,7 +27,6 @@ from collections import deque
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
-import csv
 import ccxt
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -38,8 +40,9 @@ if hasattr(sys.stdout, "reconfigure"):
 PIONEX_LIVE_MODE = True  # EJECUCIÓN REAL EN VIVO EN PIONEX
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PORTFOLIO_DIR = os.path.join(BASE_DIR, "scalper_logs")
+SCALPER_DB_FILE = os.path.join(PORTFOLIO_DIR, "scalper_vault.db")
 SCALPER_STATE_FILE = os.path.join(PORTFOLIO_DIR, "scalper_live_state.json")
-SCALPER_TRADES_FILE = os.path.join(PORTFOLIO_DIR, "scalper_live_trades.csv")
+SCALPER_STANDALONE_HTML = os.path.join(PORTFOLIO_DIR, "dashboard.html")
 SCALPER_HTTP_PORT = 8899
 
 PIONEX_FEE_RATE = 0.0005    # 0.05% Pionex Spot Maker/Taker estándar
@@ -57,6 +60,104 @@ INSTITUTIONAL_SCALP_WHITELIST = [
 
 os.makedirs(PORTFOLIO_DIR, exist_ok=True)
 exchange = ccxt.binance({"enableRateLimit": True, "timeout": 8000})
+
+
+# ====================== BASE DE DATOS SQLITE (ALTA VELOCIDAD) ======================
+class ScalperDatabase:
+    """Gestor de persistencia transaccional SQLite de alto rendimiento con WAL."""
+
+    def __init__(self, db_path: str = SCALPER_DB_FILE):
+        self.db_path = db_path
+        self._init_db()
+
+    def _get_connection(self):
+        conn = sqlite3.connect(self.db_path, timeout=15)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA synchronous = NORMAL;")
+        return conn
+
+    def _init_db(self):
+        with self._get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS trades (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    price REAL NOT NULL,
+                    amount REAL NOT NULL,
+                    capital REAL NOT NULL,
+                    pnl REAL NOT NULL,
+                    fee REAL NOT NULL,
+                    order_id TEXT,
+                    target_order_id TEXT,
+                    note TEXT,
+                    mode TEXT DEFAULT 'LIVE_SPOT'
+                );
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades(timestamp);")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    message TEXT NOT NULL
+                );
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(timestamp);")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS equity_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    cash REAL NOT NULL,
+                    equity REAL NOT NULL,
+                    realized_pnl REAL NOT NULL,
+                    win_rate REAL,
+                    total_trades INTEGER
+                );
+            """)
+            conn.commit()
+
+    def insert_trade(self, symbol: str, side: str, price: float, amount: float, capital: float,
+                     pnl: float, fee: float, note: str, order_id: str = "", target_order_id: str = "", mode: str = "LIVE_SPOT"):
+        ts = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            conn.execute("""
+                INSERT INTO trades (timestamp, symbol, side, price, amount, capital, pnl, fee, order_id, target_order_id, note, mode)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (ts, symbol, side, price, amount, capital, pnl, fee, order_id, target_order_id, note, mode))
+            conn.commit()
+
+    def insert_event(self, event_type: str, message: str):
+        ts = datetime.now().strftime("%H:%M:%S")
+        with self._get_connection() as conn:
+            conn.execute("""
+                INSERT INTO events (timestamp, event_type, message)
+                VALUES (?, ?, ?)
+            """, (ts, event_type, message))
+            conn.commit()
+
+    def insert_equity(self, cash: float, equity: float, realized_pnl: float, win_rate: float, total_trades: int):
+        ts = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            conn.execute("""
+                INSERT INTO equity_history (timestamp, cash, equity, realized_pnl, win_rate, total_trades)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (ts, cash, equity, realized_pnl, win_rate, total_trades))
+            conn.commit()
+
+    def get_recent_trades(self, limit: int = 50) -> List[Dict]:
+        with self._get_connection() as conn:
+            rows = conn.execute("SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_recent_events(self, limit: int = 40) -> List[Dict]:
+        with self._get_connection() as conn:
+            rows = conn.execute("SELECT timestamp as time, event_type as type, message as text FROM events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+            res = [dict(r) for r in rows]
+            res.reverse()
+            return res
 
 
 # ====================== EJECUTOR REAL PIONEX (CLI) ======================
@@ -85,18 +186,21 @@ class PionexLiveExecutor:
             return {"result": False, "error": str(e)}
 
     @classmethod
-    def get_usdt_balance(cls) -> float:
-        """Obtiene el saldo disponible libre en USDT de Pionex."""
+    def get_usdt_balance(cls) -> Tuple[float, float]:
+        """Obtiene el saldo libre y congelado en USDT de Pionex."""
         res = cls.run_cmd(["account", "balance"])
         if not res.get("result"):
-            return 0.0
+            return 0.0, 0.0
+        free_usdt = 0.0
+        frozen_usdt = 0.0
         for b in res.get("data", {}).get("balances", []):
             if b.get("coin") == "USDT":
                 try:
-                    return float(b.get("free", 0.0))
+                    free_usdt = float(b.get("free", 0.0))
+                    frozen_usdt = float(b.get("frozen", 0.0))
                 except Exception:
-                    return 0.0
-        return 0.0
+                    pass
+        return free_usdt, frozen_usdt
 
     @classmethod
     def get_symbol_rules(cls) -> Dict:
@@ -119,6 +223,14 @@ class PionexLiveExecutor:
             cls._symbol_rules_cache = rules
             cls._last_rules_update = now
         return cls._symbol_rules_cache
+
+    @classmethod
+    def get_open_orders(cls, pio_symbol: str) -> List[Dict]:
+        """Retorna las órdenes abiertas activas para un par."""
+        res = cls.run_cmd(["orders", "open", "--symbol", pio_symbol])
+        if res.get("result"):
+            return res.get("data", {}).get("orders", [])
+        return []
 
     @classmethod
     def place_limit_buy(cls, pio_symbol: str, price: float, size: float) -> Optional[str]:
@@ -186,25 +298,19 @@ class PionexLiveExecutor:
         return None
 
     @classmethod
-    def cancel_order(cls, pio_symbol: str, order_id: str) -> bool:
-        """Cancela una orden activa en Pionex."""
-        res = cls.run_cmd([
-            "orders", "cancel",
-            "--symbol", pio_symbol,
-            "--order-id", str(order_id)
-        ])
+    def cancel_all_orders(cls, pio_symbol: str) -> bool:
+        """Cancela todas las órdenes abiertas de un par en Pionex."""
+        res = cls.run_cmd(["orders", "cancel_all", "--symbol", pio_symbol])
         return bool(res.get("result"))
 
     @classmethod
-    def get_order_status(cls, pio_symbol: str, order_id: str) -> Optional[Dict]:
-        """Consulta el estado en vivo de una orden en Pionex."""
-        res = cls.run_cmd([
-            "orders", "get",
-            "--symbol", pio_symbol,
-            "--order-id", str(order_id)
-        ])
+    def get_latest_order(cls, pio_symbol: str) -> Optional[Dict]:
+        """Obtiene la última orden ejecutada o cerrada del par."""
+        res = cls.run_cmd(["orders", "all", "--symbol", pio_symbol, "--limit", "1"])
         if res.get("result"):
-            return res.get("data", {})
+            orders = res.get("data", {}).get("orders", [])
+            if orders:
+                return orders[0]
         return None
 
 
@@ -212,7 +318,7 @@ class PionexLiveExecutor:
 class ScalperTrade:
     def __init__(self, trade_id: str, symbol: str, entry_price: float, amount: float, capital: float, target_order_id: str = ""):
         self.trade_id = trade_id
-        self.symbol = symbol  # Ej: NEAR_USDT
+        self.symbol = symbol
         self.entry_price = entry_price
         self.amount = amount
         self.capital = capital
@@ -263,7 +369,9 @@ class ScalperPendingOrder:
 
 class ScalperBot:
     def __init__(self):
+        self.db = ScalperDatabase(SCALPER_DB_FILE)
         self.cash = 0.0
+        self.frozen = 0.0
         self.active_trade: Optional[ScalperTrade] = None
         self.pending_order: Optional[ScalperPendingOrder] = None
         self.realized_pnl = 0.0
@@ -277,7 +385,7 @@ class ScalperBot:
         self.data_lock = threading.Lock()
         self.sync_balance()
         self.load_state()
-        self.add_log("🚀 Motor The 1-Dollar Scalper iniciado. Conectado a Pionex Spot Real.", "info")
+        self.add_log("🚀 Motor The 1-Dollar Scalper iniciado. Base de datos SQLite activa (WAL mode).", "info")
 
     def add_log(self, text: str, log_type: str = "info"):
         now_str = datetime.now().strftime("%H:%M:%S")
@@ -286,12 +394,17 @@ class ScalperBot:
             "text": text,
             "type": log_type
         })
+        try:
+            self.db.insert_event(log_type, text)
+        except Exception:
+            pass
 
     def sync_balance(self):
         """Sincroniza el saldo real con Pionex."""
-        real_usdt = PionexLiveExecutor.get_usdt_balance()
-        if real_usdt > 0:
-            self.cash = real_usdt
+        free, frozen = PionexLiveExecutor.get_usdt_balance()
+        if (free + frozen) > 0:
+            self.cash = free
+            self.frozen = frozen
 
     def load_state(self):
         if os.path.exists(SCALPER_STATE_FILE):
@@ -323,6 +436,8 @@ class ScalperBot:
     def save_state(self):
         d = {
             "cash": round(self.cash, 4),
+            "frozen": round(self.frozen, 4),
+            "equity": round(self.cash + self.frozen + (self.active_trade.capital if self.active_trade else 0.0), 4),
             "realized_pnl": round(self.realized_pnl, 4),
             "wins": self.wins,
             "losses": self.losses,
@@ -331,18 +446,27 @@ class ScalperBot:
             "active_trade": self.active_trade.to_dict() if self.active_trade else None,
             "pending_order": self.pending_order.to_dict() if self.pending_order else None,
             "updated_at": datetime.now().isoformat(),
-            "mode": "PIONEX_LIVE_SPOT"
+            "mode": "PIONEX_LIVE_SPOT",
+            "db": "SQLite WAL"
         }
         with open(SCALPER_STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(d, f, indent=2)
 
-    def log_trade(self, symbol: str, side: str, price: float, amount: float, pnl: float, fee: float, note: str):
-        row = f"{datetime.now().isoformat()},{symbol},{side},{price:.6f},{amount:.6f},{pnl:.4f},{fee:.4f},{note}\n"
-        if not os.path.exists(SCALPER_TRADES_FILE):
-            with open(SCALPER_TRADES_FILE, "w", encoding="utf-8") as f:
-                f.write("timestamp,symbol,side,price,amount,pnl,fee,note\n")
-        with open(SCALPER_TRADES_FILE, "a", encoding="utf-8") as f:
-            f.write(row)
+    def log_trade(self, symbol: str, side: str, price: float, amount: float, pnl: float, fee: float, note: str, order_id: str = "", target_order_id: str = ""):
+        capital = price * amount
+        self.db.insert_trade(
+            symbol=symbol,
+            side=side,
+            price=price,
+            amount=amount,
+            capital=capital,
+            pnl=pnl,
+            fee=fee,
+            note=note,
+            order_id=order_id,
+            target_order_id=target_order_id,
+            mode="LIVE_SPOT"
+        )
 
 
 # ====================== SCANNER DE ORDER FLOW & TELEMETRÍA ======================
@@ -355,9 +479,8 @@ def fetch_full_radar_telemetry(bot: ScalperBot) -> List[Dict]:
     telemetry_list = []
 
     try:
-        # 1. Fetch simultáneo de todos los tickers en un solo request batch (ultra rápido)
         tickers = exchange.fetch_tickers(INSTITUTIONAL_SCALP_WHITELIST)
-    except Exception as e:
+    except Exception:
         return bot.radar_telemetry
 
     for ccxt_sym in INSTITUTIONAL_SCALP_WHITELIST:
@@ -380,7 +503,6 @@ def fetch_full_radar_telemetry(bot: ScalperBot) -> List[Dict]:
         sma20 = curr_p
 
         try:
-            # 2. Libro de órdenes (LOB profundidad 15 niveles)
             ob = exchange.fetch_order_book(ccxt_sym, limit=15)
             bids = sum(b[1] for b in ob.get("bids", []))
             asks = sum(a[1] for a in ob.get("asks", []))
@@ -390,7 +512,6 @@ def fetch_full_radar_telemetry(bot: ScalperBot) -> List[Dict]:
                 bid_pct = (bids / tot_depth) * 100.0
                 ask_pct = (asks / tot_depth) * 100.0
 
-            # 3. Klines para tendencia y RSI
             ohlcv = exchange.fetch_ohlcv(ccxt_sym, "15m", limit=20)
             if len(ohlcv) >= 15:
                 closes = [c[4] for c in ohlcv]
@@ -412,10 +533,8 @@ def fetch_full_radar_telemetry(bot: ScalperBot) -> List[Dict]:
         except Exception:
             pass
 
-        # Condición estricta de disparo franco-tirador
         is_valid_flow = (obi >= 0.18) and (curr_p >= sma20 * 0.998) and (47.0 <= rsi <= 65.0)
 
-        # Conviction score (0 a 100)
         score = (obi * 40.0) + (min(2.0, vol_spike) * 20.0) + (25.0 if curr_p > sma20 else 0.0) + ((rsi - 45.0) * 0.75)
         score = max(0.0, min(100.0, score))
 
@@ -425,7 +544,6 @@ def fetch_full_radar_telemetry(bot: ScalperBot) -> List[Dict]:
         q_prec = sym_rule.get("quotePrecision", 4)
         entry_limit = round(curr_p * 0.9975, q_prec)
 
-        # Estado legible
         if trigger_ready:
             flow_status = "🟢 DISPARO LISTO"
         elif score >= 30.0:
@@ -476,7 +594,7 @@ def telemetry_background_thread(bot: ScalperBot):
                         "radar"
                     )
             time.sleep(2.5)
-        except Exception as e:
+        except Exception:
             time.sleep(3.0)
 
 
@@ -485,7 +603,7 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
     bot_ref: Optional[ScalperBot] = None
 
     def do_GET(self):
-        if self.path == "/api/status":
+        if self.path.startswith("/api/status"):
             b = self.bot_ref
             if not b:
                 self.send_response(500)
@@ -494,13 +612,23 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
 
             with b.data_lock:
                 telemetry = list(b.radar_telemetry)
-                logs = list(b.event_log)
 
-            equity = b.cash + (b.active_trade.capital if b.active_trade else 0.0)
+            # Saldo y Equity Total Vivo
+            free_cash = b.cash
+            frozen_cash = b.frozen
+            active_cap = b.active_trade.capital if b.active_trade else 0.0
+            equity = free_cash + frozen_cash + active_cap
+
             win_rate = (b.wins / b.total_trades * 100.0) if b.total_trades > 0 else 100.0
+
+            trades_list = b.db.get_recent_trades(50)
+            events_list = b.db.get_recent_events(40)
+
             data = {
                 "mode": "PIONEX LIVE SPOT",
-                "cash": round(b.cash, 2),
+                "storage": "SQLite WAL",
+                "cash": round(free_cash, 2),
+                "frozen": round(frozen_cash, 2),
                 "equity": round(equity, 2),
                 "realized_pnl": round(b.realized_pnl, 4),
                 "wins": b.wins,
@@ -513,22 +641,14 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
                 "pending_order": b.pending_order.to_dict() if b.pending_order else None,
                 "top_candidate": telemetry[0] if telemetry else None,
                 "radar_telemetry": telemetry,
-                "event_log": logs
+                "event_log": events_list,
+                "trades": trades_list
             }
-            trades_list = []
-            if os.path.exists(SCALPER_TRADES_FILE):
-                try:
-                    with open(SCALPER_TRADES_FILE, "r", encoding="utf-8") as f:
-                        reader = csv.DictReader(f)
-                        rows = list(reader)
-                        for r in rows[-30:]:
-                            trades_list.append(r)
-                        trades_list.reverse()
-                except Exception:
-                    pass
-            data["trades"] = trades_list
+
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
             self.end_headers()
             self.wfile.write(json.dumps(data).encode("utf-8"))
             return
@@ -536,8 +656,18 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
         # HTML Dashboard en vivo
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.end_headers()
-        html = """<!DOCTYPE html>
+        html = get_scalper_dashboard_html()
+        self.wfile.write(html.encode("utf-8"))
+
+    def log_message(self, format, *args):
+        pass
+
+
+def get_scalper_dashboard_html() -> str:
+    return """<!DOCTYPE html>
 <html lang="es">
 <head>
     <title>THE 1-DOLLAR SCALPER | Pionex Live Spot Telemetry Engine</title>
@@ -880,17 +1010,12 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
         .log-text-trade { color: #ffa657; font-weight: bold; }
         .log-text-info { color: #c9d1d9; }
 
-        /* FLASH ANIMATIONS ON PRICE UPDATE */
-        .flash-green {
-            animation: flash-g 0.8s ease;
-        }
+        .flash-green { animation: flash-g 0.8s ease; }
         @keyframes flash-g {
             0% { background-color: rgba(63, 185, 80, 0.4); color: #ffffff; }
             100% { background-color: transparent; }
         }
-        .flash-red {
-            animation: flash-r 0.8s ease;
-        }
+        .flash-red { animation: flash-r 0.8s ease; }
         @keyframes flash-r {
             0% { background-color: rgba(248, 81, 73, 0.4); color: #ffffff; }
             100% { background-color: transparent; }
@@ -904,12 +1029,12 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
             <div class="radar-spinner"></div>
             <div>
                 <div class="title">THE 1-DOLLAR SCALPER <span style="font-size: 13px; color: var(--text-dim); font-weight: normal;">| Pionex Spot Live Engine</span></div>
-                <div style="font-size: 11px; color: var(--text-dim); margin-top: 2px;">Vigilancia LOB en Alta Frecuencia • Disparo Maker • Salida +1.70% (+$1.00 USD) • Stop -1.20%</div>
+                <div style="font-size: 11px; color: var(--text-dim); margin-top: 2px;">Vigilancia LOB en Alta Frecuencia • Persistencia SQLite WAL • Maker Límite • Salida +1.70% (+$1.00 USD) • Stop -1.20%</div>
             </div>
         </div>
         <div class="badge-live">
             <div class="pulse-dot"></div>
-            <span>PIONEX CUENTA REAL VIVA</span>
+            <span id="conn-badge">PIONEX CUENTA REAL VIVA (SQLite)</span>
         </div>
     </div>
 
@@ -919,15 +1044,19 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
             🛡️ <b>MOMENTUM SNIPER SPOT:</b> Radar analizando libros de órdenes (LOB Imbalance) de las 13 líderes en tiempo real. Cero mallas atrapadas. El capital entra, cobra el dólar y vuelve 100% a caja líquida.
         </div>
         <div style="font-family: monospace; font-size: 12px; color: #58a6ff;">
-            Barrido #<span id="cycle-count">0</span> • Latencia LOB: &lt;150ms
+            Barrido #<span id="cycle-count">0</span> • Base de Datos: <span style="color:#3fb950; font-weight:bold;">SQLite WAL (scalper_vault.db)</span>
         </div>
     </div>
 
     <!-- KPIs Bar -->
     <div class="grid-kpis">
         <div class="card-kpi" style="border-top: 3px solid #388bfd;">
-            <div class="kpi-label">Saldo Pionex USDT</div>
+            <div class="kpi-label">Saldo Pionex USDT (Libre)</div>
             <div class="kpi-val" id="cash">$70.35</div>
+        </div>
+        <div class="card-kpi" style="border-top: 3px solid #d29922;">
+            <div class="kpi-label">En Orden Maker (Frozen)</div>
+            <div class="kpi-val val-gold" id="frozen">$0.00</div>
         </div>
         <div class="card-kpi" style="border-top: 3px solid #238636;">
             <div class="kpi-label">Equity Total Vivo</div>
@@ -936,10 +1065,6 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
         <div class="card-kpi" style="border-top: 3px solid #3fb950;">
             <div class="kpi-label">Ganancia Neta (Live)</div>
             <div class="kpi-val val-green" id="pnl">+$0.00</div>
-        </div>
-        <div class="card-kpi" style="border-top: 3px solid #d29922;">
-            <div class="kpi-label">Win Rate Francotirador</div>
-            <div class="kpi-val val-gold" id="winrate">100%</div>
         </div>
         <div class="card-kpi" style="border-top: 3px solid #a371f7;">
             <div class="kpi-label">Disparos Cerrados</div>
@@ -997,7 +1122,7 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
     <!-- CYBER TERMINAL EVENT STREAM -->
     <div style="margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
         <span style="font-size: 13px; font-weight: 700; color: #58a6ff;">⚡ REGISTRO DE PENSAMIENTO & TELEMETRÍA EN VIVO (EVENT STREAM)</span>
-        <span style="font-size: 11px; color: var(--text-dim); font-family: monospace;">Streaming cada 1.5s</span>
+        <span style="font-size: 11px; color: var(--text-dim); font-family: monospace;">Streaming SQLite WAL cada 1.5s</span>
     </div>
     <div class="terminal-box" id="terminal-feed">
         <div class="log-row"><span class="log-time">[--:--:--]</span> <span class="log-text-info">Iniciando consola de telemetría en vivo...</span></div>
@@ -1034,13 +1159,13 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
         </div>
     </div>
 
-    <!-- AUDITORÍA DE ÓRDENES EN PIONEX -->
+    <!-- AUDITORÍA DE ÓRDENES EN PIONEX (SQLITE) -->
     <div class="radar-card">
         <div class="section-header">
             <div class="section-title">
-                <span>📋 AUDITORÍA DE ÓRDENES REALES EN PIONEX SPOT</span>
+                <span>📋 AUDITORÍA DE ÓRDENES REALES EN PIONEX SPOT (SQLITE WAL)</span>
             </div>
-            <span style="font-size: 12px; color: var(--text-dim);">Historial transparente con Fees Pionex (0.05%) y PnL Neto</span>
+            <span style="font-size: 12px; color: var(--text-dim);">Historial persistente en scalper_vault.db</span>
         </div>
         <div style="overflow-x: auto;">
             <table>
@@ -1053,11 +1178,11 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
                         <th>Cantidad</th>
                         <th>PnL Neto</th>
                         <th>Fee Pionex</th>
-                        <th>Ticket / Motivo</th>
+                        <th>Modo / Ticket</th>
                     </tr>
                 </thead>
                 <tbody id="trades-tbody">
-                    <tr><td colspan="8" style="text-align: center; color: var(--text-dim); padding: 20px;">Esperando primera operación en Pionex...</td></tr>
+                    <tr><td colspan="8" style="text-align: center; color: var(--text-dim); padding: 20px;">Cargando órdenes desde SQLite...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -1067,16 +1192,36 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
         let prevPrices = {};
 
         async function updateDashboard() {
+            const endpoints = [
+                '/api/status',
+                'http://localhost:8899/api/status',
+                'http://127.0.0.1:8899/api/status'
+            ];
+
+            let res = null;
+            for (const ep of endpoints) {
+                try {
+                    res = await fetch(ep, { cache: 'no-store' });
+                    if (res && res.ok) break;
+                } catch(e) {}
+            }
+
             try {
-                const res = await fetch('/api/status');
+                if (!res || !res.ok) {
+                    document.getElementById('conn-badge').innerText = 'CONECTANDO A :8899...';
+                    return;
+                }
                 const d = await res.json();
+                document.getElementById('conn-badge').innerText = 'PIONEX CUENTA REAL VIVA (SQLite)';
 
                 // 1. KPIs
-                document.getElementById('cash').innerText = '$' + d.cash.toFixed(2);
-                document.getElementById('equity').innerText = '$' + d.equity.toFixed(2);
-                document.getElementById('pnl').innerText = (d.realized_pnl >= 0 ? '+$' : '-$') + Math.abs(d.realized_pnl).toFixed(4);
-                document.getElementById('winrate').innerText = d.win_rate.toFixed(1) + '%';
-                document.getElementById('trades').innerText = d.total_trades + ' (' + d.wins + 'W / ' + d.losses + 'L)';
+                document.getElementById('cash').innerText = '$' + Number(d.cash || 0).toFixed(2);
+                document.getElementById('frozen').innerText = '$' + Number(d.frozen || 0).toFixed(2);
+                document.getElementById('equity').innerText = '$' + Number(d.equity || 0).toFixed(2);
+                const pnlVal = Number(d.realized_pnl || 0);
+                document.getElementById('pnl').innerText = (pnlVal >= 0 ? '+$' : '-$') + Math.abs(pnlVal).toFixed(4);
+                document.getElementById('winrate').innerText = Number(d.win_rate || 100).toFixed(1) + '%';
+                document.getElementById('trades').innerText = (d.total_trades || 0) + ' (' + (d.wins || 0) + 'W / ' + (d.losses || 0) + 'L)';
                 document.getElementById('cycle-count').innerText = d.scan_cycle || 0;
 
                 // 2. Spotlight Hero Card
@@ -1091,10 +1236,10 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
                     document.getElementById('spotlight-sym').style.background = '#238636';
                     document.getElementById('spotlight-badge').className = 'tag-ready';
                     document.getElementById('spotlight-badge').innerText = 'ORDEN VENTA PIONEX #' + (act.target_order_id || 'ACTIVA');
-                    document.getElementById('spotlight-price').innerText = '$' + act.entry_price.toFixed(4);
-                    document.getElementById('spotlight-entry').innerText = '$' + act.entry_price.toFixed(4);
-                    document.getElementById('spotlight-target').innerText = '$' + act.target_price.toFixed(4);
-                    document.getElementById('spotlight-stop').innerText = '$' + act.stop_price.toFixed(4);
+                    document.getElementById('spotlight-price').innerText = '$' + Number(act.entry_price).toFixed(4);
+                    document.getElementById('spotlight-entry').innerText = '$' + Number(act.entry_price).toFixed(4);
+                    document.getElementById('spotlight-target').innerText = '$' + Number(act.target_price).toFixed(4);
+                    document.getElementById('spotlight-stop').innerText = '$' + Number(act.stop_price).toFixed(4);
                 } else if (pend) {
                     document.getElementById('spotlight-box').style.borderColor = '#d29922';
                     document.getElementById('spotlight-title').innerHTML = '<span style=\"color:#d29922;\">⏳ ORDEN MAKER LÍMITE EN PIONEX:</span>';
@@ -1102,8 +1247,8 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
                     document.getElementById('spotlight-sym').style.background = '#d29922';
                     document.getElementById('spotlight-badge').className = 'tag-warm';
                     document.getElementById('spotlight-badge').innerText = 'ESPERANDO RETROCESO (#' + pend.order_id + ')';
-                    document.getElementById('spotlight-price').innerText = '$' + pend.limit_price.toFixed(4);
-                    document.getElementById('spotlight-entry').innerText = '$' + pend.limit_price.toFixed(4);
+                    document.getElementById('spotlight-price').innerText = '$' + Number(pend.limit_price).toFixed(4);
+                    document.getElementById('spotlight-entry').innerText = '$' + Number(pend.limit_price).toFixed(4);
                 } else if (top) {
                     document.getElementById('spotlight-box').style.borderColor = '#388bfd';
                     document.getElementById('spotlight-title').innerHTML = '<span>🎯 CANDIDATO LÍDER EN EL RADAR:</span>';
@@ -1111,17 +1256,19 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
                     document.getElementById('spotlight-sym').style.background = '#1f2738';
                     document.getElementById('spotlight-badge').className = top.trigger_ready ? 'tag-ready' : (top.score >= 30 ? 'tag-warm' : 'tag-neutral');
                     document.getElementById('spotlight-badge').innerText = top.status;
-                    document.getElementById('spotlight-price').innerText = '$' + top.price.toFixed(4);
-                    const chgColor = top.change_24h >= 0 ? '#3fb950' : '#f85149';
-                    document.getElementById('spotlight-chg').innerHTML = '<span style=\"color:' + chgColor + '\">' + (top.change_24h >= 0 ? '+' : '') + top.change_24h.toFixed(2) + '%</span>';
-                    document.getElementById('spotlight-entry').innerText = '$' + top.entry_limit.toFixed(4);
-                    document.getElementById('spotlight-target').innerText = '$' + (top.entry_limit * 1.017).toFixed(4);
-                    document.getElementById('spotlight-stop').innerText = '$' + (top.entry_limit * 0.988).toFixed(4);
+                    document.getElementById('spotlight-price').innerText = '$' + Number(top.price).toFixed(4);
+                    const chg = Number(top.change_24h || 0);
+                    const chgColor = chg >= 0 ? '#3fb950' : '#f85149';
+                    document.getElementById('spotlight-chg').innerHTML = '<span style=\"color:' + chgColor + '\">' + (chg >= 0 ? '+' : '') + chg.toFixed(2) + '%</span>';
+                    document.getElementById('spotlight-entry').innerText = '$' + Number(top.entry_limit).toFixed(4);
+                    document.getElementById('spotlight-target').innerText = '$' + (Number(top.entry_limit) * 1.017).toFixed(4);
+                    document.getElementById('spotlight-stop').innerText = '$' + (Number(top.entry_limit) * 0.988).toFixed(4);
 
                     // Duel Bar
-                    document.getElementById('duel-bids-pct').innerText = top.bid_pct.toFixed(1) + '%';
-                    document.getElementById('duel-asks-pct').innerText = top.ask_pct.toFixed(1) + '%';
-                    document.getElementById('duel-obi').innerText = (top.obi >= 0 ? '+' : '') + top.obi.toFixed(3);
+                    document.getElementById('duel-bids-pct').innerText = Number(top.bid_pct).toFixed(1) + '%';
+                    document.getElementById('duel-asks-pct').innerText = Number(top.ask_pct).toFixed(1) + '%';
+                    const obi = Number(top.obi || 0);
+                    document.getElementById('duel-obi').innerText = (obi >= 0 ? '+' : '') + obi.toFixed(3);
                     document.getElementById('bar-bids').style.width = top.bid_pct + '%';
                     document.getElementById('bar-asks').style.width = top.ask_pct + '%';
                 }
@@ -1132,46 +1279,48 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
                     let rows = '';
                     d.radar_telemetry.forEach((c, idx) => {
                         const rankClass = idx === 0 ? 'coin-rank rank-top' : 'coin-rank';
-                        const chgSign = c.change_24h >= 0 ? '+' : '';
-                        const chgColor = c.change_24h >= 0 ? '#3fb950' : '#f85149';
+                        const chg = Number(c.change_24h || 0);
+                        const chgSign = chg >= 0 ? '+' : '';
+                        const chgColor = chg >= 0 ? '#3fb950' : '#f85149';
                         
-                        // Price flash
+                        const p = Number(c.price || 0);
                         const prev = prevPrices[c.ccxt_symbol];
                         let flashClass = '';
                         if (prev !== undefined) {
-                            if (c.price > prev) flashClass = 'flash-green';
-                            else if (c.price < prev) flashClass = 'flash-red';
+                            if (p > prev) flashClass = 'flash-green';
+                            else if (p < prev) flashClass = 'flash-red';
                         }
-                        prevPrices[c.ccxt_symbol] = c.price;
+                        prevPrices[c.ccxt_symbol] = p;
 
                         const tagClass = c.trigger_ready ? 'tag-ready' : (c.score >= 30 ? 'tag-warm' : 'tag-neutral');
-                        const obiColor = c.obi >= 0.18 ? '#3fb950' : (c.obi >= 0 ? '#58a6ff' : '#f85149');
+                        const obi = Number(c.obi || 0);
+                        const obiColor = obi >= 0.18 ? '#3fb950' : (obi >= 0 ? '#58a6ff' : '#f85149');
 
                         rows += `<tr>
                             <td><span class="${rankClass}">${idx + 1}</span></td>
                             <td><div class="coin-cell"><span>${c.name}</span><span style="font-size:10px; color:#8b949e; font-weight:normal;">/USDT</span></div></td>
-                            <td class="${flashClass}" style="font-weight: bold; color: #ffffff;">$${c.price.toFixed(4)}</td>
-                            <td style="color: ${chgColor}; font-weight: bold;">${chgSign}${c.change_24h.toFixed(2)}%</td>
+                            <td class="${flashClass}" style="font-weight: bold; color: #ffffff;">$${p.toFixed(4)}</td>
+                            <td style="color: ${chgColor}; font-weight: bold;">${chgSign}${chg.toFixed(2)}%</td>
                             <td>
                                 <div style="display: flex; align-items: center; gap: 8px;">
-                                    <span style="color: ${obiColor}; font-weight: bold; width: 55px;">${c.obi >= 0 ? '+' : ''}${c.obi.toFixed(3)}</span>
+                                    <span style="color: ${obiColor}; font-weight: bold; width: 55px;">${obi >= 0 ? '+' : ''}${obi.toFixed(3)}</span>
                                     <div style="width: 70px; height: 6px; background: #21262d; border-radius: 3px; display: flex; overflow: hidden;">
                                         <div style="width: ${c.bid_pct}%; background: #3fb950;"></div>
                                         <div style="width: ${c.ask_pct}%; background: #f85149;"></div>
                                     </div>
-                                    <span style="font-size: 11px; color: #8b949e;">${c.bid_pct.toFixed(0)}% Bids</span>
+                                    <span style="font-size: 11px; color: #8b949e;">${Number(c.bid_pct).toFixed(0)}% Bids</span>
                                 </div>
                             </td>
-                            <td><span style="color: ${c.rsi >= 47 && c.rsi <= 65 ? '#3fb950' : '#d29922'}; font-weight: bold;">${c.rsi.toFixed(1)}</span></td>
-                            <td><span style="color: #c9d1d9;">${c.vol_spike.toFixed(2)}x</span></td>
+                            <td><span style="color: ${c.rsi >= 47 && c.rsi <= 65 ? '#3fb950' : '#d29922'}; font-weight: bold;">${Number(c.rsi).toFixed(1)}</span></td>
+                            <td><span style="color: #c9d1d9;">${Number(c.vol_spike).toFixed(2)}x</span></td>
                             <td>
                                 <div class="score-bar-bg">
                                     <div class="score-bar-fill" style="width: ${Math.min(100, c.score)}%;"></div>
                                     <div class="score-target-mark" title="Objetivo Disparo: 45.0"></div>
                                 </div>
-                                <span style="font-weight: bold; color: ${c.score >= 45 ? '#3fb950' : '#ffffff'};">${c.score.toFixed(1)}</span>
+                                <span style="font-weight: bold; color: ${c.score >= 45 ? '#3fb950' : '#ffffff'};">${Number(c.score).toFixed(1)}</span>
                             </td>
-                            <td style="color: #58a6ff; font-weight: bold;">$${c.entry_limit.toFixed(4)}</td>
+                            <td style="color: #58a6ff; font-weight: bold;">$${Number(c.entry_limit).toFixed(4)}</td>
                             <td><span class="${tagClass}">${c.status}</span></td>
                         </tr>`;
                     });
@@ -1190,26 +1339,27 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
                     term.scrollTop = term.scrollHeight;
                 }
 
-                // 5. Trades Table
+                // 5. Trades Table (SQLite)
                 const tradesBody = document.getElementById('trades-tbody');
                 if (d.trades && d.trades.length > 0) {
                     let tHtml = '';
                     d.trades.forEach(t => {
                         const isBuy = t.side === 'BUY';
                         const badge = isBuy ? '<span class="tag-ready">🟢 COMPRA</span>' : '<span style="background:rgba(163,113,247,0.2); color:#bc8cff; padding:2px 6px; border-radius:4px; font-weight:bold;">🔴 VENTA</span>';
-                        const pnlVal = parseFloat(t.pnl || 0);
-                        const pnlColor = pnlVal > 0 ? '#3fb950' : (pnlVal < 0 ? '#f85149' : '#8b949e');
-                        const pnlStr = !isBuy ? ('<span style="color:' + pnlColor + '; font-weight:bold;">' + (pnlVal >= 0 ? '+' : '') + '$' + pnlVal.toFixed(4) + '</span>') : '<span style="color:#8b949e;">-</span>';
+                        const pnl = Number(t.pnl || 0);
+                        const pnlColor = pnl > 0 ? '#3fb950' : (pnl < 0 ? '#f85149' : '#8b949e');
+                        const pnlStr = !isBuy ? ('<span style="color:' + pnlColor + '; font-weight:bold;">' + (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(4) + '</span>') : '<span style="color:#8b949e;">-</span>';
                         const tTime = t.timestamp ? (t.timestamp.includes('T') ? t.timestamp.split('T')[1].split('.')[0] : t.timestamp) : '--:--';
+                        const noteStr = t.note || (t.mode ? ('Modo: ' + t.mode) : '');
                         tHtml += `<tr>
                             <td style="color:#8b949e;">${tTime}</td>
                             <td style="font-weight:bold; color:#f0f6fc;">${t.symbol}</td>
                             <td>${badge}</td>
-                            <td style="color:#f0f6fc;">$${parseFloat(t.price || 0).toFixed(4)}</td>
-                            <td style="color:#8b949e;">${parseFloat(t.amount || 0).toFixed(2)}</td>
+                            <td style="color:#f0f6fc;">$${Number(t.price || 0).toFixed(4)}</td>
+                            <td style="color:#8b949e;">${Number(t.amount || 0).toFixed(2)}</td>
                             <td>${pnlStr}</td>
-                            <td style="color:#8b949e;">$${parseFloat(t.fee || 0).toFixed(4)}</td>
-                            <td style="color:#e6edf3; font-family:sans-serif; font-size:12px;">${t.note || ''}</td>
+                            <td style="color:#8b949e;">$${Number(t.fee || 0).toFixed(4)}</td>
+                            <td style="color:#e6edf3; font-family:sans-serif; font-size:12px;">${noteStr}</td>
                         </tr>`;
                     });
                     tradesBody.innerHTML = tHtml;
@@ -1217,7 +1367,9 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
                     tradesBody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: var(--text-dim); padding: 20px;">Esperando primera operación en Pionex...</td></tr>';
                 }
 
-            } catch (err) {}
+            } catch (err) {
+                console.error("Dashboard update error:", err);
+            }
         }
 
         setInterval(updateDashboard, 1500);
@@ -1225,16 +1377,19 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
     </script>
 </body>
 </html>"""
-        self.wfile.write(html.encode("utf-8"))
-
-    def log_message(self, format, *args):
-        pass
 
 
 def start_scalper_dashboard(bot: ScalperBot, port: int = SCALPER_HTTP_PORT):
     ScalperDashboardHandler.bot_ref = bot
+    
     try:
-        server = http.server.ThreadingHTTPServer(("127.0.0.1", port), ScalperDashboardHandler)
+        with open(SCALPER_STANDALONE_HTML, "w", encoding="utf-8") as f:
+            f.write(get_scalper_dashboard_html())
+    except Exception:
+        pass
+
+    try:
+        server = http.server.ThreadingHTTPServer(("0.0.0.0", port), ScalperDashboardHandler)
         t = threading.Thread(target=server.serve_forever, daemon=True)
         t.start()
         print(f"  🌐 [1-DOLLAR SCALPER DASHBOARD] Accede en vivo: http://localhost:{port}", flush=True)
@@ -1247,16 +1402,15 @@ def run_dollar_scalper():
     bot = ScalperBot()
     start_scalper_dashboard(bot, SCALPER_HTTP_PORT)
 
-    # Iniciar hilo de telemetría de alta frecuencia
     telemetry_thread = threading.Thread(target=telemetry_background_thread, args=(bot,), daemon=True)
     telemetry_thread.start()
 
-    # Reglas de símbolos Pionex
     rules = PionexLiveExecutor.get_symbol_rules()
     print("=" * 80, flush=True)
     print("  THE 1-DOLLAR SCALPER - PIONEX LIVE SPOT EXECUTION ENGINE", flush=True)
     print("  • Modo                           -> PIONEX CUENTA REAL SPOT VIVA", flush=True)
-    print(f"  • Saldo Pionex Detectado         -> ${bot.cash:.2f} USDT", flush=True)
+    print("  • Persistencia Transaccional     -> SQLite WAL (scalper_vault.db)", flush=True)
+    print(f"  • Saldo Pionex Detectado         -> ${bot.cash:.2f} USDT (Libre: ${bot.cash:.2f} | Frozen: ${bot.frozen:.2f})", flush=True)
     print(f"  • Objetivo por Disparo           -> +1.70% (+$1.00 USDT netos)", flush=True)
     print(f"  • Stop Defensivo                 -> -1.20% (-$0.75 USDT) | R:R > 1.3:1", flush=True)
     print(f"  • Dashboard en Vivo              -> http://localhost:{SCALPER_HTTP_PORT}", flush=True)
@@ -1278,7 +1432,6 @@ def run_dollar_scalper():
                 pio_sym = trade.symbol
                 ccxt_sym = pio_sym.replace("_", "/")
 
-                # Obtener precio de mercado actual
                 try:
                     t = exchange.fetch_ticker(ccxt_sym)
                     curr_p = float(t.get("last", 0.0))
@@ -1286,16 +1439,14 @@ def run_dollar_scalper():
                     time.sleep(1.5)
                     continue
 
-                # Consultar estado de la orden de venta Target en Pionex
-                order_status = None
-                if trade.target_order_id:
-                    order_status = PionexLiveExecutor.get_order_status(pio_sym, trade.target_order_id)
+                # Comprobar si la orden de venta Target sigue abierta en Pionex
+                open_sells = PionexLiveExecutor.get_open_orders(pio_sym)
+                has_open_target_sell = any(str(o.get("orderId")) == str(trade.target_order_id) for o in open_sells) if trade.target_order_id else False
 
-                # A. TARGET ALCANZADO (Orden de venta Pionex cerrada/ejecutada o precio sobre target)
-                is_target_filled = (order_status and order_status.get("status") == "CLOSED") or (curr_p >= trade.target_price)
+                is_target_filled = (trade.target_order_id and not has_open_target_sell) or (curr_p >= trade.target_price)
                 if is_target_filled:
-                    if order_status and order_status.get("status") != "CLOSED":
-                        PionexLiveExecutor.cancel_order(pio_sym, trade.target_order_id)
+                    if has_open_target_sell:
+                        PionexLiveExecutor.cancel_all_orders(pio_sym)
                         PionexLiveExecutor.place_market_sell(pio_sym, trade.amount)
 
                     time.sleep(2.0)
@@ -1306,9 +1457,16 @@ def run_dollar_scalper():
                     bot.realized_pnl += profit
                     bot.wins += 1
                     bot.total_trades += 1
+                    
                     bot.log_trade(
-                        pio_sym, "SELL", trade.target_price, trade.amount,
-                        profit, fees, f"🎯 TARGET +1.70% EN PIONEX COBRADO! Ganancia neta: +${profit:.4f} USDT | 100% Caja Líquida"
+                        symbol=pio_sym,
+                        side="SELL",
+                        price=trade.target_price,
+                        amount=trade.amount,
+                        pnl=profit,
+                        fee=fees,
+                        note=f"🎯 TARGET +1.70% EN PIONEX COBRADO! Ganancia: +${profit:.4f} USDT",
+                        target_order_id=trade.target_order_id
                     )
                     bot.add_log(f"🎯💵 ¡TARGET COBRADO! Salida en {pio_sym} a ${trade.target_price:.4f}. Ganancia: +${profit:.4f} USDT.", "trade")
                     print(f"\n  🎯💵 [1-DOLLAR COBRADO EN PIONEX! {pio_sym}] Ganancia: +${profit:.4f} USDT. Saldo Pionex: ${bot.cash:.2f} USDT.\n", flush=True)
@@ -1318,11 +1476,9 @@ def run_dollar_scalper():
                     time.sleep(10)
                     continue
 
-                # B. STOP LOSS DEFENSIVO (-1.20% = Preservar Capital Inmediato)
                 elif curr_p <= trade.stop_price:
                     bot.add_log(f"🛑 ACTIVANDO STOP DEFENSIVO en {pio_sym} @ ${curr_p:.4f} para cortar pérdida.", "trade")
-                    if trade.target_order_id:
-                        PionexLiveExecutor.cancel_order(pio_sym, trade.target_order_id)
+                    PionexLiveExecutor.cancel_all_orders(pio_sym)
                     time.sleep(0.5)
                     sell_res = PionexLiveExecutor.place_market_sell(pio_sym, trade.amount)
 
@@ -1334,9 +1490,15 @@ def run_dollar_scalper():
                     bot.realized_pnl += loss
                     bot.losses += 1
                     bot.total_trades += 1
+                    
                     bot.log_trade(
-                        pio_sym, "SELL", curr_p, trade.amount,
-                        loss, fees, f"🛑 STOP DEFENSIVO EN PIONEX EJECUTADO. Pérdida: ${loss:.4f} USDT | Capital protegido"
+                        symbol=pio_sym,
+                        side="SELL",
+                        price=curr_p,
+                        amount=trade.amount,
+                        pnl=loss,
+                        fee=fees,
+                        note=f"🛑 STOP DEFENSIVO EN PIONEX EJECUTADO. Pérdida: ${loss:.4f} USDT"
                     )
                     bot.add_log(f"🛑 Stop ejecutado en {pio_sym}. Pérdida limitada: ${loss:.4f} USDT. Saldo protegido: ${bot.cash:.2f} USDT.", "trade")
                     bot.active_trade = None
@@ -1345,13 +1507,11 @@ def run_dollar_scalper():
                     time.sleep(10)
                     continue
 
-                # C. TIME-DECAY EXIT (40 min)
                 elapsed_s = now_ts - trade.entry_time
                 if elapsed_s >= MAX_HOLD_TIME_SECS:
                     pct_diff = (curr_p - trade.entry_price) / trade.entry_price
                     if pct_diff >= 0.002:
-                        if trade.target_order_id:
-                            PionexLiveExecutor.cancel_order(pio_sym, trade.target_order_id)
+                        PionexLiveExecutor.cancel_all_orders(pio_sym)
                         time.sleep(0.5)
                         PionexLiveExecutor.place_market_sell(pio_sym, trade.amount)
                         time.sleep(2.0)
@@ -1364,7 +1524,15 @@ def run_dollar_scalper():
                         else:
                             bot.losses += 1
                         bot.total_trades += 1
-                        bot.log_trade(pio_sym, "SELL", curr_p, trade.amount, profit, fees, f"Salida por Tiempo (Stall Exit): +${profit:.4f} USDT")
+                        bot.log_trade(
+                            symbol=pio_sym,
+                            side="SELL",
+                            price=curr_p,
+                            amount=trade.amount,
+                            pnl=profit,
+                            fee=fees,
+                            note=f"Salida por Tiempo (Stall Exit): +${profit:.4f} USDT"
+                        )
                         bot.add_log(f"⏱️ Salida por tiempo en {pio_sym} (+${profit:.4f} USDT). Capital liberado.", "trade")
                         bot.active_trade = None
                         bot.status_msg = f"Salida por estancamiento. Saldo en Pionex: ${bot.cash:.2f} USDT."
@@ -1381,41 +1549,61 @@ def run_dollar_scalper():
             # -------------------------------------------------------------
             if bot.pending_order:
                 po = bot.pending_order
-                status_res = PionexLiveExecutor.get_order_status(po.symbol, po.order_id)
+                open_buys = PionexLiveExecutor.get_open_orders(po.symbol)
+                is_still_open = any(str(o.get("orderId")) == str(po.order_id) for o in open_buys)
 
-                if status_res and status_res.get("status") == "CLOSED":
-                    filled_size = float(status_res.get("filledSize", po.size) or po.size)
-                    filled_amount = float(status_res.get("filledAmount", po.capital) or po.capital)
-                    entry_p = filled_amount / filled_size if filled_size > 0 else po.limit_price
+                if not is_still_open:
+                    latest = PionexLiveExecutor.get_latest_order(po.symbol)
+                    if latest and latest.get("status") == "CLOSED" and float(latest.get("filledSize", 0) or 0) > 0:
+                        filled_size = float(latest.get("filledSize"))
+                        filled_amount = float(latest.get("filledAmount"))
+                        entry_p = filled_amount / filled_size if filled_size > 0 else po.limit_price
 
-                    bot.add_log(f"🟢 ¡ORDEN MAKER EJECUTADA en Pionex! {filled_size:.4f} {po.symbol} @ ${entry_p:.4f} (${filled_amount:.2f} USDT)", "trade")
+                        bot.add_log(f"🟢 ¡ORDEN MAKER EJECUTADA en Pionex! {filled_size:.4f} {po.symbol} @ ${entry_p:.4f} (${filled_amount:.2f} USDT)", "trade")
 
-                    target_p = round(entry_p * (1.0 + TARGET_PROFIT_PCT), rules.get(po.symbol, {}).get("quotePrecision", 4))
-                    target_order_id = PionexLiveExecutor.place_limit_sell(po.symbol, target_p, filled_size)
-                    bot.add_log(f"🎯 Orden de venta colocada en Pionex #{target_order_id} @ ${target_p:.4f} (+1.70%).", "trade")
+                        target_p = round(entry_p * (1.0 + TARGET_PROFIT_PCT), rules.get(po.symbol, {}).get("quotePrecision", 4))
+                        target_order_id = PionexLiveExecutor.place_limit_sell(po.symbol, target_p, filled_size)
+                        bot.add_log(f"🎯 Orden de venta colocada en Pionex #{target_order_id} @ ${target_p:.4f} (+1.70%).", "trade")
 
-                    trade = ScalperTrade(
-                        trade_id=f"pio_{po.order_id}",
-                        symbol=po.symbol,
-                        entry_price=entry_p,
-                        amount=filled_size,
-                        capital=filled_amount,
-                        target_order_id=target_order_id or ""
-                    )
-                    trade.target_price = target_p
-                    trade.stop_price = round(entry_p * (1.0 - STOP_LOSS_PCT), rules.get(po.symbol, {}).get("quotePrecision", 4))
+                        trade = ScalperTrade(
+                            trade_id=f"pio_{po.order_id}",
+                            symbol=po.symbol,
+                            entry_price=entry_p,
+                            amount=filled_size,
+                            capital=filled_amount,
+                            target_order_id=target_order_id or ""
+                        )
+                        trade.target_price = target_p
+                        trade.stop_price = round(entry_p * (1.0 - STOP_LOSS_PCT), rules.get(po.symbol, {}).get("quotePrecision", 4))
 
-                    bot.active_trade = trade
-                    bot.pending_order = None
-                    bot.sync_balance()
-                    bot.log_trade(po.symbol, "BUY", entry_p, filled_size, 0.0, filled_amount * PIONEX_FEE_RATE, f"Maker Entry en Pionex #{po.order_id} (${filled_amount:.2f} USDT)")
-                    bot.status_msg = f"Posición abierta en {po.symbol} @ ${entry_p:.4f}. Esperando Target +1.70% (Venta #{target_order_id})."
-                    bot.save_state()
-                    continue
+                        bot.active_trade = trade
+                        bot.pending_order = None
+                        bot.sync_balance()
+                        
+                        bot.log_trade(
+                            symbol=po.symbol,
+                            side="BUY",
+                            price=entry_p,
+                            amount=filled_size,
+                            pnl=0.0,
+                            fee=filled_amount * PIONEX_FEE_RATE,
+                            note=f"Maker Entry en Pionex #{po.order_id} (${filled_amount:.2f} USDT)",
+                            order_id=po.order_id,
+                            target_order_id=target_order_id or ""
+                        )
+                        bot.status_msg = f"Posición abierta en {po.symbol} @ ${entry_p:.4f}. Esperando Target +1.70% (Venta #{target_order_id})."
+                        bot.save_state()
+                        continue
+                    else:
+                        bot.pending_order = None
+                        bot.sync_balance()
+                        bot.status_msg = "Orden cancelada. Escaneando nuevo candidato."
+                        bot.save_state()
+                        continue
 
                 if now_ts >= po.expires_at:
-                    bot.add_log(f"⏱️ Orden #{po.order_id} ({po.symbol}) expiró sin retroceso. Cancelada sin FOMO.", "info")
-                    PionexLiveExecutor.cancel_order(po.symbol, po.order_id)
+                    bot.add_log(f"⏱️ Orden #{po.order_id} ({po.symbol}) expiró sin retroceso. Cancelando sin FOMO.", "info")
+                    PionexLiveExecutor.cancel_all_orders(po.symbol)
                     bot.pending_order = None
                     bot.sync_balance()
                     bot.status_msg = "Orden expirada sin FOMO. Escaneando nuevo candidato."
@@ -1459,6 +1647,7 @@ def run_dollar_scalper():
                                     reason=f"OBI={top['obi']:+.2f} | RSI={top['rsi']:.1f} | Score={top['score']:.1f}"
                                 )
                                 bot.pending_order = po
+                                bot.sync_balance()
                                 bot.add_log(f"✅ Orden de Compra Colocada en Pionex #{order_id} ({size} {pio_sym} por ${trade_capital:.2f} USDT)", "trade")
                                 bot.status_msg = f"Orden Maker #{order_id} colocada en {pio_sym} @ ${entry_limit:.4f} (Score {top['score']:.1f})"
                                 bot.save_state()

@@ -25,8 +25,12 @@ ENV/
 # 3. Logs de Ejecución y Estado Volátil en Tiempo Real
 paper_logs/*
 !paper_logs/.gitkeep
+scalper_logs/*
+!scalper_logs/.gitkeep
 paper_logs_backup_*/
 *.log
+*.db-shm
+*.db-wal
 equity_chart.png
 
 # 4. Archivos de Sistema Operativo e IDEs
