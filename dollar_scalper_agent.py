@@ -7,7 +7,8 @@
   - Ejecución: Entrada Maker Límite en micro-retroceso sobre Bid Wall (Cero FOMO).
   - Salida Objetivo: +1.70% fijo (+$1.00 netos descontando comisión Pionex 0.05%).
   - Stop Defensivo: -1.20% estricto (arriesga ~$0.75 para ganar ~$1.00 -> Ratio R:R > 1.3:1).
-  - Dashboard propio: http://localhost:8899
+  - Telemetría de Alta Frecuencia: 13 pares líderes con radar LOB OBI en vivo.
+  - Dashboard reactivo ultra-visual: http://localhost:8899
 ========================================================================================
 """
 
@@ -19,6 +20,7 @@ import math
 import http.server
 import threading
 import subprocess
+from collections import deque
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -269,8 +271,21 @@ class ScalperBot:
         self.losses = 0
         self.total_trades = 0
         self.status_msg = "Sincronizando con Pionex Real..."
+        self.scan_cycle = 0
+        self.radar_telemetry: List[Dict] = []
+        self.event_log = deque(maxlen=40)
+        self.data_lock = threading.Lock()
         self.sync_balance()
         self.load_state()
+        self.add_log("🚀 Motor The 1-Dollar Scalper iniciado. Conectado a Pionex Spot Real.", "info")
+
+    def add_log(self, text: str, log_type: str = "info"):
+        now_str = datetime.now().strftime("%H:%M:%S")
+        self.event_log.append({
+            "time": now_str,
+            "text": text,
+            "type": log_type
+        })
 
     def sync_balance(self):
         """Sincroniza el saldo real con Pionex."""
@@ -330,83 +345,142 @@ class ScalperBot:
             f.write(row)
 
 
-# ====================== SCANNER DE ORDER FLOW ======================
-def scan_order_flow_opportunities() -> List[Dict]:
+# ====================== SCANNER DE ORDER FLOW & TELEMETRÍA ======================
+def fetch_full_radar_telemetry(bot: ScalperBot) -> List[Dict]:
     """
-    Escanea las 13 líderes buscando:
-    1. Alta liquidez pasiva en Bid Book (OBI >= +0.18).
-    2. Momentum 15m saludable: Precio >= EMA20 * 0.998 y RSI entre 47 y 65.
-    3. Score cuantitativo de convicción >= 45.0.
+    Escanea los 13 pares líderes y genera telemetría de alta resolución.
+    Calcula en tiempo real OBI (-1.0 a +1.0), RSI, EMA20 y Conviction Score.
     """
     rules = PionexLiveExecutor.get_symbol_rules()
-    opps = []
+    telemetry_list = []
+
+    try:
+        # 1. Fetch simultáneo de todos los tickers en un solo request batch (ultra rápido)
+        tickers = exchange.fetch_tickers(INSTITUTIONAL_SCALP_WHITELIST)
+    except Exception as e:
+        return bot.radar_telemetry
 
     for ccxt_sym in INSTITUTIONAL_SCALP_WHITELIST:
         pio_sym = ccxt_sym.replace("/", "_")
-        if pio_sym not in rules:
+        sym_rule = rules.get(pio_sym, {"basePrecision": 2, "quotePrecision": 4, "minAmount": 10.0})
+        t = tickers.get(ccxt_sym, {})
+        curr_p = float(t.get("last", 0.0) or 0.0)
+        chg_24h = float(t.get("percentage", 0.0) or 0.0)
+        high_24h = float(t.get("high", curr_p) or curr_p)
+        low_24h = float(t.get("low", curr_p) or curr_p)
+
+        if curr_p <= 0:
             continue
 
-        try:
-            t = exchange.fetch_ticker(ccxt_sym)
-            curr_p = float(t.get("last", 0.0))
-            vol_24h = float(t.get("quoteVolume", 0.0) or 0.0)
-            if curr_p <= 0 or vol_24h < 15_000_000:
-                continue
+        obi = 0.0
+        bid_pct = 50.0
+        ask_pct = 50.0
+        rsi = 50.0
+        vol_spike = 1.0
+        sma20 = curr_p
 
+        try:
+            # 2. Libro de órdenes (LOB profundidad 15 niveles)
             ob = exchange.fetch_order_book(ccxt_sym, limit=15)
             bids = sum(b[1] for b in ob.get("bids", []))
             asks = sum(a[1] for a in ob.get("asks", []))
             tot_depth = bids + asks
-            if tot_depth <= 0:
-                continue
-            obi = (bids - asks) / tot_depth
+            if tot_depth > 0:
+                obi = (bids - asks) / tot_depth
+                bid_pct = (bids / tot_depth) * 100.0
+                ask_pct = (asks / tot_depth) * 100.0
 
-            ohlcv = exchange.fetch_ohlcv(ccxt_sym, "15m", limit=25)
-            if len(ohlcv) < 20:
-                continue
-            closes = [c[4] for c in ohlcv]
-            volumes = [c[5] for c in ohlcv]
+            # 3. Klines para tendencia y RSI
+            ohlcv = exchange.fetch_ohlcv(ccxt_sym, "15m", limit=20)
+            if len(ohlcv) >= 15:
+                closes = [c[4] for c in ohlcv]
+                volumes = [c[5] for c in ohlcv]
+                sma20 = sum(closes[-15:]) / 15.0
 
-            sma20 = sum(closes[-20:]) / 20.0
+                gains, losses = [], []
+                for i in range(1, 15):
+                    diff = closes[-15+i] - closes[-15+i-1]
+                    gains.append(max(0.0, diff))
+                    losses.append(max(0.0, -diff))
+                avg_g = sum(gains) / 14.0 if gains else 0.0001
+                avg_l = sum(losses) / 14.0 if losses else 0.0001
+                rs = avg_g / (avg_l if avg_l > 0 else 0.0001)
+                rsi = 100.0 - (100.0 / (1.0 + rs))
 
-            gains, losses = [], []
-            for i in range(1, 15):
-                diff = closes[-15+i] - closes[-15+i-1]
-                gains.append(max(0.0, diff))
-                losses.append(max(0.0, -diff))
-            avg_g = sum(gains) / 14.0 if gains else 0.0001
-            avg_l = sum(losses) / 14.0 if losses else 0.0001
-            rs = avg_g / (avg_l if avg_l > 0 else 0.0001)
-            rsi = 100.0 - (100.0 / (1.0 + rs))
-
-            avg_vol = sum(volumes[-15:]) / 15.0 if volumes else 1.0
-            vol_spike = (volumes[-1] / avg_vol) if avg_vol > 0 else 1.0
-
-            is_valid_flow = (obi >= 0.18) and (curr_p >= sma20 * 0.998) and (47.0 <= rsi <= 65.0)
-
-            score = (obi * 40.0) + (min(2.0, vol_spike) * 20.0) + (25.0 if curr_p > sma20 else 0.0) + ((rsi - 45.0) * 0.75)
-            score = max(0.0, min(100.0, score))
-
-            if is_valid_flow and score >= 45.0:
-                q_prec = rules[pio_sym]["quotePrecision"]
-                entry_limit = round(curr_p * 0.9975, q_prec)
-                opps.append({
-                    "ccxt_symbol": ccxt_sym,
-                    "pio_symbol": pio_sym,
-                    "price": curr_p,
-                    "entry_limit": entry_limit,
-                    "obi": round(obi, 3),
-                    "rsi": round(rsi, 1),
-                    "vol_spike": round(vol_spike, 2),
-                    "score": round(score, 1)
-                })
+                avg_vol = sum(volumes[-15:]) / 15.0 if volumes else 1.0
+                vol_spike = (volumes[-1] / avg_vol) if avg_vol > 0 else 1.0
         except Exception:
-            continue
+            pass
 
-    return sorted(opps, key=lambda x: x["score"], reverse=True)
+        # Condición estricta de disparo franco-tirador
+        is_valid_flow = (obi >= 0.18) and (curr_p >= sma20 * 0.998) and (47.0 <= rsi <= 65.0)
+
+        # Conviction score (0 a 100)
+        score = (obi * 40.0) + (min(2.0, vol_spike) * 20.0) + (25.0 if curr_p > sma20 else 0.0) + ((rsi - 45.0) * 0.75)
+        score = max(0.0, min(100.0, score))
+
+        trigger_ready = is_valid_flow and (score >= 45.0)
+        gap_to_trigger = max(0.0, round(45.0 - score, 1))
+
+        q_prec = sym_rule.get("quotePrecision", 4)
+        entry_limit = round(curr_p * 0.9975, q_prec)
+
+        # Estado legible
+        if trigger_ready:
+            flow_status = "🟢 DISPARO LISTO"
+        elif score >= 30.0:
+            flow_status = "🟡 ACUMULANDO"
+        else:
+            flow_status = "⚪ NEUTRAL"
+
+        telemetry_list.append({
+            "ccxt_symbol": ccxt_sym,
+            "pio_symbol": pio_sym,
+            "name": ccxt_sym.split("/")[0],
+            "price": curr_p,
+            "change_24h": round(chg_24h, 2),
+            "high_24h": high_24h,
+            "low_24h": low_24h,
+            "obi": round(obi, 3),
+            "bid_pct": round(bid_pct, 1),
+            "ask_pct": round(ask_pct, 1),
+            "rsi": round(rsi, 1),
+            "vol_spike": round(vol_spike, 2),
+            "score": round(score, 1),
+            "entry_limit": entry_limit,
+            "is_valid_flow": is_valid_flow,
+            "trigger_ready": trigger_ready,
+            "gap_to_trigger": gap_to_trigger,
+            "status": flow_status
+        })
+
+    telemetry_list.sort(key=lambda x: x["score"], reverse=True)
+    return telemetry_list
 
 
-# ====================== DASHBOARD HTTP LOCAL ======================
+def telemetry_background_thread(bot: ScalperBot):
+    """Hilo dedicado de escaneo continuo de alta frecuencia cada 2.5s."""
+    print("  📡 [RADAR TELEMETRY ENGINE] Hilo de escaneo activo en segundo plano.", flush=True)
+    while True:
+        try:
+            bot.scan_cycle += 1
+            data = fetch_full_radar_telemetry(bot)
+            with bot.data_lock:
+                bot.radar_telemetry = data
+
+            if data:
+                top = data[0]
+                if bot.scan_cycle % 3 == 0:
+                    bot.add_log(
+                        f"📡 Radar sweep #{bot.scan_cycle}: Top {top['name']} (Score {top['score']:.1f} | OBI {top['obi']:+.2f} | RSI {top['rsi']:.1f})",
+                        "radar"
+                    )
+            time.sleep(2.5)
+        except Exception as e:
+            time.sleep(3.0)
+
+
+# ====================== DASHBOARD HTTP LOCAL ULTRA-VISUAL ======================
 class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
     bot_ref: Optional[ScalperBot] = None
 
@@ -417,6 +491,10 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(500)
                 self.end_headers()
                 return
+
+            with b.data_lock:
+                telemetry = list(b.radar_telemetry)
+                logs = list(b.event_log)
 
             equity = b.cash + (b.active_trade.capital if b.active_trade else 0.0)
             win_rate = (b.wins / b.total_trades * 100.0) if b.total_trades > 0 else 100.0
@@ -430,8 +508,12 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
                 "total_trades": b.total_trades,
                 "win_rate": round(win_rate, 1),
                 "status_msg": b.status_msg,
+                "scan_cycle": b.scan_cycle,
                 "active_trade": b.active_trade.to_dict() if b.active_trade else None,
-                "pending_order": b.pending_order.to_dict() if b.pending_order else None
+                "pending_order": b.pending_order.to_dict() if b.pending_order else None,
+                "top_candidate": telemetry[0] if telemetry else None,
+                "radar_telemetry": telemetry,
+                "event_log": logs
             }
             trades_list = []
             if os.path.exists(SCALPER_TRADES_FILE):
@@ -456,80 +538,509 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
         html = """<!DOCTYPE html>
-<html>
+<html lang="es">
 <head>
-    <title>THE 1-DOLLAR SCALPER | Pionex Live Spot Engine</title>
+    <title>THE 1-DOLLAR SCALPER | Pionex Live Spot Telemetry Engine</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { background: #0b0e14; color: #e6edf3; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 25px; margin: 0; }
-        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #21262d; padding-bottom: 15px; margin-bottom: 25px; }
-        .title { font-size: 24px; font-weight: bold; color: #58a6ff; }
-        .badge { background: #238636; color: white; padding: 6px 12px; border-radius: 12px; font-size: 13px; font-weight: bold; animation: pulse 2s infinite; }
-        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.7; } 100% { opacity: 1; } }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 25px; }
-        .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 18px; }
-        .card-label { font-size: 13px; color: #8b949e; text-transform: uppercase; margin-bottom: 6px; }
-        .card-val { font-size: 26px; font-weight: bold; color: #f0f6fc; }
-        .val-green { color: #3fb950; }
-        .val-gold { color: #d29922; }
-        .trade-box { background: #161b22; border: 2px solid #388bfd; border-radius: 8px; padding: 20px; margin-bottom: 25px; }
-        .trade-title { font-size: 18px; font-weight: bold; color: #58a6ff; margin-bottom: 12px; }
-        .table-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; margin-top: 25px; }
-        table { width: 100%; border-collapse: collapse; font-size: 13px; font-family: monospace; }
-        th { text-align: left; padding: 10px; border-bottom: 1px solid #30363d; color: #8b949e; font-size: 11px; text-transform: uppercase; }
-        td { padding: 10px; border-bottom: 1px solid #21262d; }
-        .tag-buy { background: rgba(46,160,67,0.15); color: #3fb950; border: 1px solid rgba(46,160,67,0.3); padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; }
-        .tag-sell { background: rgba(163,113,247,0.15); color: #bc8cff; border: 1px solid rgba(163,113,247,0.3); padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; }
-        .status-line { color: #8b949e; font-size: 14px; margin-top: 15px; }
-        .banner { background: rgba(56, 139, 253, 0.1); border: 1px solid #388bfd; padding: 12px 18px; border-radius: 6px; font-size: 13px; margin-bottom: 20px; color: #58a6ff; }
+        :root {
+            --bg-dark: #080b11;
+            --card-bg: #111622;
+            --border: #1f2738;
+            --blue: #388bfd;
+            --green: #238636;
+            --neon-green: #3fb950;
+            --red: #f85149;
+            --gold: #d29922;
+            --text-main: #f0f6fc;
+            --text-dim: #8b949e;
+        }
+        body {
+            background: var(--bg-dark);
+            color: var(--text-main);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            padding: 20px;
+            margin: 0;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 16px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+        .title-area {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .title {
+            font-size: 22px;
+            font-weight: 900;
+            color: #58a6ff;
+            letter-spacing: -0.5px;
+        }
+        .radar-spinner {
+            width: 24px;
+            height: 24px;
+            border: 3px solid rgba(56, 139, 253, 0.2);
+            border-top: 3px solid #58a6ff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        
+        .badge-live {
+            background: rgba(46, 160, 67, 0.15);
+            color: #3fb950;
+            border: 1px solid rgba(46, 160, 67, 0.4);
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .pulse-dot {
+            width: 8px;
+            height: 8px;
+            background: #3fb950;
+            border-radius: 50%;
+            animation: pulse-ring 1.5s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+        }
+        @keyframes pulse-ring {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.7); }
+            70% { transform: scale(1.1); box-shadow: 0 0 0 8px rgba(63, 185, 80, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(63, 185, 80, 0); }
+        }
+
+        .banner {
+            background: linear-gradient(90deg, rgba(56, 139, 253, 0.08) 0%, rgba(35, 134, 54, 0.08) 100%);
+            border: 1px solid #23344d;
+            border-left: 4px solid #388bfd;
+            padding: 12px 18px;
+            border-radius: 8px;
+            font-size: 13px;
+            margin-bottom: 20px;
+            color: #9ac2f7;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .grid-kpis {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        .card-kpi {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 15px;
+            transition: all 0.2s ease;
+        }
+        .card-kpi:hover {
+            border-color: #388bfd;
+            transform: translateY(-2px);
+        }
+        .kpi-label {
+            font-size: 11px;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            margin-bottom: 6px;
+        }
+        .kpi-val {
+            font-size: 24px;
+            font-weight: 800;
+            font-family: monospace;
+            color: #ffffff;
+        }
+        .val-green { color: var(--neon-green); }
+        .val-gold { color: var(--gold); }
+
+        /* SPOTLIGHT HERO CARD */
+        .spotlight-card {
+            background: linear-gradient(135deg, #121929 0%, #0d121c 100%);
+            border: 2px solid #388bfd;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+            position: relative;
+            overflow: hidden;
+        }
+        .spotlight-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .spotlight-title {
+            font-size: 18px;
+            font-weight: 800;
+            color: #58a6ff;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .duel-bar-wrapper {
+            margin: 12px 0;
+        }
+        .duel-bar-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            font-family: monospace;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+        .duel-bar {
+            height: 12px;
+            border-radius: 6px;
+            overflow: hidden;
+            display: flex;
+            background: #21262d;
+            border: 1px solid #30363d;
+        }
+        .bar-bids {
+            background: linear-gradient(90deg, #238636, #3fb950);
+            height: 100%;
+            transition: width 0.4s ease;
+        }
+        .bar-asks {
+            background: linear-gradient(90deg, #f85149, #da3633);
+            height: 100%;
+            transition: width 0.4s ease;
+        }
+
+        /* RADAR MATRIX TABLE */
+        .radar-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .section-title {
+            font-size: 16px;
+            font-weight: 800;
+            color: #58a6ff;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            font-family: monospace;
+        }
+        th {
+            text-align: left;
+            padding: 10px;
+            border-bottom: 2px solid var(--border);
+            color: var(--text-dim);
+            font-size: 11px;
+            text-transform: uppercase;
+            font-weight: 700;
+        }
+        td {
+            padding: 10px;
+            border-bottom: 1px solid #161c28;
+            vertical-align: middle;
+        }
+        tr:hover {
+            background: rgba(56, 139, 253, 0.04);
+        }
+        .coin-cell {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 800;
+            color: #ffffff;
+            font-size: 14px;
+        }
+        .coin-rank {
+            background: #1f2738;
+            color: #8b949e;
+            width: 20px;
+            height: 20px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            font-weight: bold;
+        }
+        .rank-top {
+            background: rgba(56, 139, 253, 0.25);
+            color: #58a6ff;
+            border: 1px solid rgba(56, 139, 253, 0.5);
+        }
+
+        .score-bar-bg {
+            width: 110px;
+            height: 8px;
+            background: #1f2738;
+            border-radius: 4px;
+            overflow: hidden;
+            position: relative;
+            display: inline-block;
+            vertical-align: middle;
+            margin-right: 6px;
+        }
+        .score-bar-fill {
+            height: 100%;
+            border-radius: 4px;
+            background: linear-gradient(90deg, #388bfd, #3fb950);
+            transition: width 0.3s ease;
+        }
+        .score-target-mark {
+            position: absolute;
+            left: 45%;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: #ffffff;
+            opacity: 0.7;
+        }
+
+        .tag-ready {
+            background: rgba(46, 160, 67, 0.2);
+            color: #3fb950;
+            border: 1px solid rgba(46, 160, 67, 0.4);
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+            display: inline-block;
+        }
+        .tag-warm {
+            background: rgba(210, 153, 34, 0.2);
+            color: #d29922;
+            border: 1px solid rgba(210, 153, 34, 0.4);
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+            display: inline-block;
+        }
+        .tag-neutral {
+            background: rgba(139, 148, 158, 0.15);
+            color: #8b949e;
+            border: 1px solid rgba(139, 148, 158, 0.3);
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            display: inline-block;
+        }
+
+        /* CYBER TERMINAL EVENT STREAM */
+        .terminal-box {
+            background: #05080e;
+            border: 1px solid #1c2333;
+            border-radius: 10px;
+            padding: 15px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 12px;
+            max-height: 160px;
+            overflow-y: auto;
+            margin-bottom: 20px;
+            box-shadow: inset 0 2px 8px rgba(0,0,0,0.6);
+        }
+        .log-row {
+            padding: 3px 0;
+            line-height: 1.4;
+            display: flex;
+            gap: 8px;
+        }
+        .log-time { color: #58a6ff; }
+        .log-text-radar { color: #7ee787; }
+        .log-text-trade { color: #ffa657; font-weight: bold; }
+        .log-text-info { color: #c9d1d9; }
+
+        /* FLASH ANIMATIONS ON PRICE UPDATE */
+        .flash-green {
+            animation: flash-g 0.8s ease;
+        }
+        @keyframes flash-g {
+            0% { background-color: rgba(63, 185, 80, 0.4); color: #ffffff; }
+            100% { background-color: transparent; }
+        }
+        .flash-red {
+            animation: flash-r 0.8s ease;
+        }
+        @keyframes flash-r {
+            0% { background-color: rgba(248, 81, 73, 0.4); color: #ffffff; }
+            100% { background-color: transparent; }
+        }
     </style>
 </head>
 <body>
+    <!-- Top Header -->
     <div class="header">
-        <div class="title">⚡ THE 1-DOLLAR SCALPER <span style="font-size: 14px; color: #8b949e; font-weight: normal;">| Conectado a Pionex Spot</span></div>
-        <div class="badge">🟢 PIONEX CUENTA REAL VIVA</div>
+        <div class="title-area">
+            <div class="radar-spinner"></div>
+            <div>
+                <div class="title">THE 1-DOLLAR SCALPER <span style="font-size: 13px; color: var(--text-dim); font-weight: normal;">| Pionex Spot Live Engine</span></div>
+                <div style="font-size: 11px; color: var(--text-dim); margin-top: 2px;">Vigilancia LOB en Alta Frecuencia • Disparo Maker • Salida +1.70% (+$1.00 USD) • Stop -1.20%</div>
+            </div>
+        </div>
+        <div class="badge-live">
+            <div class="pulse-dot"></div>
+            <span>PIONEX CUENTA REAL VIVA</span>
+        </div>
     </div>
 
+    <!-- Banner Info -->
     <div class="banner">
-        🛡️ <b>MODO DE CAZA REAL SPOT:</b> Disparos únicos de ~$60.00 USDT en micro-retroceso Maker. Salida automática en <b>+$1.00 USD limpios (+1.70%)</b>. Stop Loss estricto en <b>-1.20%</b>. Cero mallas atrapadas. El capital vuelve 100% a caja tras cada trade.
-    </div>
-
-    <div class="grid">
-        <div class="card">
-            <div class="card-label">Saldo Pionex USDT</div>
-            <div class="card-val" id="cash">$70.35</div>
+        <div>
+            🛡️ <b>MOMENTUM SNIPER SPOT:</b> Radar analizando libros de órdenes (LOB Imbalance) de las 13 líderes en tiempo real. Cero mallas atrapadas. El capital entra, cobra el dólar y vuelve 100% a caja líquida.
         </div>
-        <div class="card">
-            <div class="card-label">Equity Total Vivo</div>
-            <div class="card-val" id="equity">$70.35</div>
-        </div>
-        <div class="card">
-            <div class="card-label">Ganancia Realizada (Live)</div>
-            <div class="card-val val-green" id="pnl">+$0.00</div>
-        </div>
-        <div class="card">
-            <div class="card-label">Win Rate</div>
-            <div class="card-val val-green" id="winrate">100%</div>
-        </div>
-        <div class="card">
-            <div class="card-label">Trades Cerrados</div>
-            <div class="card-val val-gold" id="trades">0</div>
+        <div style="font-family: monospace; font-size: 12px; color: #58a6ff;">
+            Barrido #<span id="cycle-count">0</span> • Latencia LOB: &lt;150ms
         </div>
     </div>
 
-    <div class="trade-box" id="trade-container">
-        <div class="trade-title" id="trade-title">Buscando Impulso de Order Flow...</div>
-        <div id="trade-details" style="color: #8b949e; font-size: 15px;">Escaneando las 13 líderes buscando OBI > +0.18 y pared de compra en soporte.</div>
+    <!-- KPIs Bar -->
+    <div class="grid-kpis">
+        <div class="card-kpi" style="border-top: 3px solid #388bfd;">
+            <div class="kpi-label">Saldo Pionex USDT</div>
+            <div class="kpi-val" id="cash">$70.35</div>
+        </div>
+        <div class="card-kpi" style="border-top: 3px solid #238636;">
+            <div class="kpi-label">Equity Total Vivo</div>
+            <div class="kpi-val val-green" id="equity">$70.35</div>
+        </div>
+        <div class="card-kpi" style="border-top: 3px solid #3fb950;">
+            <div class="kpi-label">Ganancia Neta (Live)</div>
+            <div class="kpi-val val-green" id="pnl">+$0.00</div>
+        </div>
+        <div class="card-kpi" style="border-top: 3px solid #d29922;">
+            <div class="kpi-label">Win Rate Francotirador</div>
+            <div class="kpi-val val-gold" id="winrate">100%</div>
+        </div>
+        <div class="card-kpi" style="border-top: 3px solid #a371f7;">
+            <div class="kpi-label">Disparos Cerrados</div>
+            <div class="kpi-val" id="trades">0</div>
+        </div>
     </div>
 
-    <div class="status-line">Estado del Motor: <span id="status-msg" style="color: #f0f6fc;">Iniciando...</span></div>
+    <!-- SPOTLIGHT HERO CARD -->
+    <div class="spotlight-card" id="spotlight-box">
+        <div class="spotlight-header">
+            <div class="spotlight-title" id="spotlight-title">
+                <span>🎯 CANDIDATO LÍDER EN EL RADAR:</span>
+                <span id="spotlight-sym" style="color: #ffffff; background: #1f2738; padding: 2px 10px; border-radius: 6px;">SUI/USDT</span>
+            </div>
+            <div id="spotlight-badge" class="tag-warm">PUNTAJE ELEVADO</div>
+        </div>
 
-    <!-- Tabla de Operaciones Ejecutadas -->
-    <div class="table-card">
-        <div style="font-size: 16px; font-weight: bold; color: #58a6ff; margin-bottom: 12px; display:flex; justify-content:space-between; align-items:center;">
-            <span>📋 Auditoría de Órdenes Reales en Pionex</span>
-            <span style="font-size:12px; color:#8b949e; font-weight:normal;">Historial transparente con Fees Pionex (0.05%) y PnL Neto</span>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; font-family: monospace; font-size: 13px;">
+            <div>
+                <span style="color: var(--text-dim); font-size: 11px; display: block;">PRECIO EN VIVO</span>
+                <span id="spotlight-price" style="font-size: 22px; font-weight: 800; color: #ffffff;">$0.0000</span>
+                <span id="spotlight-chg" style="margin-left: 6px; font-weight: bold;">(+0.00%)</span>
+            </div>
+            <div>
+                <span style="color: var(--text-dim); font-size: 11px; display: block;">ORDEN MAKER LÍMITE PROYECTADA</span>
+                <span id="spotlight-entry" style="font-size: 18px; font-weight: 700; color: #58a6ff;">$0.0000</span>
+                <span style="color: var(--text-dim); font-size: 11px;">(-0.25% en soporte)</span>
+            </div>
+            <div>
+                <span style="color: var(--text-dim); font-size: 11px; display: block;">TARGET DE SALIDA (+1.70%)</span>
+                <span id="spotlight-target" style="font-size: 18px; font-weight: 700; color: #3fb950;">$0.0000</span>
+                <span style="color: #3fb950; font-size: 11px;">(+$1.00 USD Neto)</span>
+            </div>
+            <div>
+                <span style="color: var(--text-dim); font-size: 11px; display: block;">STOP LOSS DEFENSIVO (-1.20%)</span>
+                <span id="spotlight-stop" style="font-size: 18px; font-weight: 700; color: #f85149;">$0.0000</span>
+                <span style="color: #f85149; font-size: 11px;">(-$0.75 USD Máx)</span>
+            </div>
+        </div>
+
+        <!-- DUEL BAR LOB -->
+        <div class="duel-bar-wrapper">
+            <div class="duel-bar-labels">
+                <span style="color: #3fb950;">🟢 COMPRADORES (BIDS): <b id="duel-bids-pct">50.0%</b></span>
+                <span style="color: var(--text-dim);">DESEQUILIBRIO DE LIBRO (OBI): <b id="duel-obi">+0.00</b></span>
+                <span style="color: #f85149;">🔴 VENDEDORES (ASKS): <b id="duel-asks-pct">50.0%</b></span>
+            </div>
+            <div class="duel-bar">
+                <div id="bar-bids" class="bar-bids" style="width: 50%;"></div>
+                <div id="bar-asks" class="bar-asks" style="width: 50%;"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- CYBER TERMINAL EVENT STREAM -->
+    <div style="margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+        <span style="font-size: 13px; font-weight: 700; color: #58a6ff;">⚡ REGISTRO DE PENSAMIENTO & TELEMETRÍA EN VIVO (EVENT STREAM)</span>
+        <span style="font-size: 11px; color: var(--text-dim); font-family: monospace;">Streaming cada 1.5s</span>
+    </div>
+    <div class="terminal-box" id="terminal-feed">
+        <div class="log-row"><span class="log-time">[--:--:--]</span> <span class="log-text-info">Iniciando consola de telemetría en vivo...</span></div>
+    </div>
+
+    <!-- RADAR MATRIX TABLE (13 MONEDAS EN VIVO) -->
+    <div class="radar-card">
+        <div class="section-header">
+            <div class="section-title">
+                <span>📊 RADAR DE ORDER FLOW: 13 MONEDAS LÍDERES EN PIONEX SPOT</span>
+            </div>
+            <span style="font-size: 12px; color: var(--text-dim);">Ordenado en vivo por Puntaje de Convicción Cuantitativa</span>
+        </div>
+        <div style="overflow-x: auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Par</th>
+                        <th>Precio Vivo</th>
+                        <th>24h %</th>
+                        <th>LOB Desequilibrio (Bids vs Asks)</th>
+                        <th>RSI 15m</th>
+                        <th>Volumen Spike</th>
+                        <th>Puntaje de Convicción</th>
+                        <th>Entrada Maker Proyectada</th>
+                        <th>Estado Radar</th>
+                    </tr>
+                </thead>
+                <tbody id="radar-tbody">
+                    <tr><td colspan="10" style="text-align: center; color: var(--text-dim); padding: 25px;">Cargando telemetría de alta frecuencia...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- AUDITORÍA DE ÓRDENES EN PIONEX -->
+    <div class="radar-card">
+        <div class="section-header">
+            <div class="section-title">
+                <span>📋 AUDITORÍA DE ÓRDENES REALES EN PIONEX SPOT</span>
+            </div>
+            <span style="font-size: 12px; color: var(--text-dim);">Historial transparente con Fees Pionex (0.05%) y PnL Neto</span>
         </div>
         <div style="overflow-x: auto;">
             <table>
@@ -542,78 +1053,175 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
                         <th>Cantidad</th>
                         <th>PnL Neto</th>
                         <th>Fee Pionex</th>
-                        <th>Detalle / Motivo</th>
+                        <th>Ticket / Motivo</th>
                     </tr>
                 </thead>
-                <tbody id="trades-body">
-                    <tr><td colspan="8" style="text-align:center; color:#8b949e; padding:15px;">Esperando primera operación en Pionex...</td></tr>
+                <tbody id="trades-tbody">
+                    <tr><td colspan="8" style="text-align: center; color: var(--text-dim); padding: 20px;">Esperando primera operación en Pionex...</td></tr>
                 </tbody>
             </table>
         </div>
     </div>
 
     <script>
-        async function updateData() {
+        let prevPrices = {};
+
+        async function updateDashboard() {
             try {
                 const res = await fetch('/api/status');
                 const d = await res.json();
+
+                // 1. KPIs
+                document.getElementById('cash').innerText = '$' + d.cash.toFixed(2);
                 document.getElementById('equity').innerText = '$' + d.equity.toFixed(2);
                 document.getElementById('pnl').innerText = (d.realized_pnl >= 0 ? '+$' : '-$') + Math.abs(d.realized_pnl).toFixed(4);
                 document.getElementById('winrate').innerText = d.win_rate.toFixed(1) + '%';
                 document.getElementById('trades').innerText = d.total_trades + ' (' + d.wins + 'W / ' + d.losses + 'L)';
-                document.getElementById('cash').innerText = '$' + d.cash.toFixed(2);
-                document.getElementById('status-msg').innerText = d.status_msg;
+                document.getElementById('cycle-count').innerText = d.scan_cycle || 0;
 
-                const box = document.getElementById('trade-container');
-                if (d.active_trade) {
-                    box.style.borderColor = '#3fb950';
-                    document.getElementById('trade-title').innerText = '🎯 EN POSICIÓN REAL: ' + d.active_trade.symbol + ' ($' + d.active_trade.capital.toFixed(2) + ' USDT)';
-                    document.getElementById('trade-details').innerHTML = 
-                        '<b>Entrada:</b> $' + d.active_trade.entry_price.toFixed(4) + 
-                        ' | <b>Target (+1.70%):</b> $' + d.active_trade.target_price.toFixed(4) + ' <span style=\"color:#3fb950;\">(+$1.00 USDT Neto)</span>' +
-                        ' | <b>Stop (-1.20%):</b> $' + d.active_trade.stop_price.toFixed(4) + ' <span style=\"color:#f85149;\">(-$0.75 USDT)</span>' +
-                        (d.active_trade.target_order_id ? ' | <b>Orden Venta Pionex:</b> #' + d.active_trade.target_order_id : '');
-                } else if (d.pending_order) {
-                    box.style.borderColor = '#d29922';
-                    document.getElementById('trade-title').innerText = '⏳ ORDEN MAKER LÍMITE PIONEX #' + d.pending_order.order_id + ' (' + d.pending_order.symbol + ')';
-                    document.getElementById('trade-details').innerText = 'Colocada a $' + d.pending_order.limit_price.toFixed(4) + ' por $' + d.pending_order.capital.toFixed(2) + ' USDT (' + d.pending_order.reason + ')';
-                } else {
-                    box.style.borderColor = '#388bfd';
-                    document.getElementById('trade-title').innerText = '🔍 RADAR ACTIVO: Buscando Siguiente Dólar';
-                    document.getElementById('trade-details').innerText = '100% Líquido en Caja Pionex ($' + d.cash.toFixed(2) + ' USDT). Escaneando libros de órdenes...';
+                // 2. Spotlight Hero Card
+                const top = d.top_candidate;
+                const act = d.active_trade;
+                const pend = d.pending_order;
+
+                if (act) {
+                    document.getElementById('spotlight-box').style.borderColor = '#3fb950';
+                    document.getElementById('spotlight-title').innerHTML = '<span style=\"color:#3fb950;\">🎯 EN POSICIÓN REAL EN PIONEX:</span>';
+                    document.getElementById('spotlight-sym').innerText = act.symbol;
+                    document.getElementById('spotlight-sym').style.background = '#238636';
+                    document.getElementById('spotlight-badge').className = 'tag-ready';
+                    document.getElementById('spotlight-badge').innerText = 'ORDEN VENTA PIONEX #' + (act.target_order_id || 'ACTIVA');
+                    document.getElementById('spotlight-price').innerText = '$' + act.entry_price.toFixed(4);
+                    document.getElementById('spotlight-entry').innerText = '$' + act.entry_price.toFixed(4);
+                    document.getElementById('spotlight-target').innerText = '$' + act.target_price.toFixed(4);
+                    document.getElementById('spotlight-stop').innerText = '$' + act.stop_price.toFixed(4);
+                } else if (pend) {
+                    document.getElementById('spotlight-box').style.borderColor = '#d29922';
+                    document.getElementById('spotlight-title').innerHTML = '<span style=\"color:#d29922;\">⏳ ORDEN MAKER LÍMITE EN PIONEX:</span>';
+                    document.getElementById('spotlight-sym').innerText = pend.symbol;
+                    document.getElementById('spotlight-sym').style.background = '#d29922';
+                    document.getElementById('spotlight-badge').className = 'tag-warm';
+                    document.getElementById('spotlight-badge').innerText = 'ESPERANDO RETROCESO (#' + pend.order_id + ')';
+                    document.getElementById('spotlight-price').innerText = '$' + pend.limit_price.toFixed(4);
+                    document.getElementById('spotlight-entry').innerText = '$' + pend.limit_price.toFixed(4);
+                } else if (top) {
+                    document.getElementById('spotlight-box').style.borderColor = '#388bfd';
+                    document.getElementById('spotlight-title').innerHTML = '<span>🎯 CANDIDATO LÍDER EN EL RADAR:</span>';
+                    document.getElementById('spotlight-sym').innerText = top.ccxt_symbol;
+                    document.getElementById('spotlight-sym').style.background = '#1f2738';
+                    document.getElementById('spotlight-badge').className = top.trigger_ready ? 'tag-ready' : (top.score >= 30 ? 'tag-warm' : 'tag-neutral');
+                    document.getElementById('spotlight-badge').innerText = top.status;
+                    document.getElementById('spotlight-price').innerText = '$' + top.price.toFixed(4);
+                    const chgColor = top.change_24h >= 0 ? '#3fb950' : '#f85149';
+                    document.getElementById('spotlight-chg').innerHTML = '<span style=\"color:' + chgColor + '\">' + (top.change_24h >= 0 ? '+' : '') + top.change_24h.toFixed(2) + '%</span>';
+                    document.getElementById('spotlight-entry').innerText = '$' + top.entry_limit.toFixed(4);
+                    document.getElementById('spotlight-target').innerText = '$' + (top.entry_limit * 1.017).toFixed(4);
+                    document.getElementById('spotlight-stop').innerText = '$' + (top.entry_limit * 0.988).toFixed(4);
+
+                    // Duel Bar
+                    document.getElementById('duel-bids-pct').innerText = top.bid_pct.toFixed(1) + '%';
+                    document.getElementById('duel-asks-pct').innerText = top.ask_pct.toFixed(1) + '%';
+                    document.getElementById('duel-obi').innerText = (top.obi >= 0 ? '+' : '') + top.obi.toFixed(3);
+                    document.getElementById('bar-bids').style.width = top.bid_pct + '%';
+                    document.getElementById('bar-asks').style.width = top.ask_pct + '%';
                 }
 
-                // Render Trades Table
-                const tbody = document.getElementById('trades-body');
+                // 3. Radar Matrix Table (13 Coins)
+                const tbody = document.getElementById('radar-tbody');
+                if (d.radar_telemetry && d.radar_telemetry.length > 0) {
+                    let rows = '';
+                    d.radar_telemetry.forEach((c, idx) => {
+                        const rankClass = idx === 0 ? 'coin-rank rank-top' : 'coin-rank';
+                        const chgSign = c.change_24h >= 0 ? '+' : '';
+                        const chgColor = c.change_24h >= 0 ? '#3fb950' : '#f85149';
+                        
+                        // Price flash
+                        const prev = prevPrices[c.ccxt_symbol];
+                        let flashClass = '';
+                        if (prev !== undefined) {
+                            if (c.price > prev) flashClass = 'flash-green';
+                            else if (c.price < prev) flashClass = 'flash-red';
+                        }
+                        prevPrices[c.ccxt_symbol] = c.price;
+
+                        const tagClass = c.trigger_ready ? 'tag-ready' : (c.score >= 30 ? 'tag-warm' : 'tag-neutral');
+                        const obiColor = c.obi >= 0.18 ? '#3fb950' : (c.obi >= 0 ? '#58a6ff' : '#f85149');
+
+                        rows += `<tr>
+                            <td><span class="${rankClass}">${idx + 1}</span></td>
+                            <td><div class="coin-cell"><span>${c.name}</span><span style="font-size:10px; color:#8b949e; font-weight:normal;">/USDT</span></div></td>
+                            <td class="${flashClass}" style="font-weight: bold; color: #ffffff;">$${c.price.toFixed(4)}</td>
+                            <td style="color: ${chgColor}; font-weight: bold;">${chgSign}${c.change_24h.toFixed(2)}%</td>
+                            <td>
+                                <div style="display: flex; align-items: center; gap: 8px;">
+                                    <span style="color: ${obiColor}; font-weight: bold; width: 55px;">${c.obi >= 0 ? '+' : ''}${c.obi.toFixed(3)}</span>
+                                    <div style="width: 70px; height: 6px; background: #21262d; border-radius: 3px; display: flex; overflow: hidden;">
+                                        <div style="width: ${c.bid_pct}%; background: #3fb950;"></div>
+                                        <div style="width: ${c.ask_pct}%; background: #f85149;"></div>
+                                    </div>
+                                    <span style="font-size: 11px; color: #8b949e;">${c.bid_pct.toFixed(0)}% Bids</span>
+                                </div>
+                            </td>
+                            <td><span style="color: ${c.rsi >= 47 && c.rsi <= 65 ? '#3fb950' : '#d29922'}; font-weight: bold;">${c.rsi.toFixed(1)}</span></td>
+                            <td><span style="color: #c9d1d9;">${c.vol_spike.toFixed(2)}x</span></td>
+                            <td>
+                                <div class="score-bar-bg">
+                                    <div class="score-bar-fill" style="width: ${Math.min(100, c.score)}%;"></div>
+                                    <div class="score-target-mark" title="Objetivo Disparo: 45.0"></div>
+                                </div>
+                                <span style="font-weight: bold; color: ${c.score >= 45 ? '#3fb950' : '#ffffff'};">${c.score.toFixed(1)}</span>
+                            </td>
+                            <td style="color: #58a6ff; font-weight: bold;">$${c.entry_limit.toFixed(4)}</td>
+                            <td><span class="${tagClass}">${c.status}</span></td>
+                        </tr>`;
+                    });
+                    tbody.innerHTML = rows;
+                }
+
+                // 4. Cyber Terminal Event Stream
+                const term = document.getElementById('terminal-feed');
+                if (d.event_log && d.event_log.length > 0) {
+                    let logHtml = '';
+                    d.event_log.forEach(l => {
+                        const typeClass = l.type === 'radar' ? 'log-text-radar' : (l.type === 'trade' ? 'log-text-trade' : 'log-text-info');
+                        logHtml += `<div class="log-row"><span class="log-time">[${l.time}]</span> <span class="${typeClass}">${l.text}</span></div>`;
+                    });
+                    term.innerHTML = logHtml;
+                    term.scrollTop = term.scrollHeight;
+                }
+
+                // 5. Trades Table
+                const tradesBody = document.getElementById('trades-tbody');
                 if (d.trades && d.trades.length > 0) {
-                    let rowsHtml = '';
-                    for (const t of d.trades) {
+                    let tHtml = '';
+                    d.trades.forEach(t => {
                         const isBuy = t.side === 'BUY';
-                        const badge = isBuy ? '<span class=\"tag-buy\">🟢 COMPRA</span>' : '<span class=\"tag-sell\">🔴 VENTA</span>';
+                        const badge = isBuy ? '<span class="tag-ready">🟢 COMPRA</span>' : '<span style="background:rgba(163,113,247,0.2); color:#bc8cff; padding:2px 6px; border-radius:4px; font-weight:bold;">🔴 VENTA</span>';
                         const pnlVal = parseFloat(t.pnl || 0);
                         const pnlColor = pnlVal > 0 ? '#3fb950' : (pnlVal < 0 ? '#f85149' : '#8b949e');
-                        const pnlStr = !isBuy ? ('<span style=\"color:' + pnlColor + '; font-weight:bold;\">' + (pnlVal >= 0 ? '+' : '') + '$' + pnlVal.toFixed(4) + '</span>') : '<span style=\"color:#8b949e;\">-</span>';
+                        const pnlStr = !isBuy ? ('<span style="color:' + pnlColor + '; font-weight:bold;">' + (pnlVal >= 0 ? '+' : '') + '$' + pnlVal.toFixed(4) + '</span>') : '<span style="color:#8b949e;">-</span>';
                         const tTime = t.timestamp ? (t.timestamp.includes('T') ? t.timestamp.split('T')[1].split('.')[0] : t.timestamp) : '--:--';
-                        const feeStr = '$' + parseFloat(t.fee || 0).toFixed(4);
-                        rowsHtml += '<tr>' +
-                            '<td style=\"color:#8b949e;\">' + tTime + '</td>' +
-                            '<td style=\"font-weight:bold; color:#f0f6fc;\">' + t.symbol + '</td>' +
-                            '<td>' + badge + '</td>' +
-                            '<td style=\"color:#f0f6fc;\">$' + parseFloat(t.price || 0).toFixed(4) + '</td>' +
-                            '<td style=\"color:#8b949e;\">' + parseFloat(t.amount || 0).toFixed(2) + '</td>' +
-                            '<td>' + pnlStr + '</td>' +
-                            '<td style=\"color:#8b949e;\">' + feeStr + '</td>' +
-                            '<td style=\"color:#e6edf3; font-family:sans-serif; font-size:12px;\">' + (t.note || '') + '</td>' +
-                        '</tr>';
-                    }
-                    tbody.innerHTML = rowsHtml;
+                        tHtml += `<tr>
+                            <td style="color:#8b949e;">${tTime}</td>
+                            <td style="font-weight:bold; color:#f0f6fc;">${t.symbol}</td>
+                            <td>${badge}</td>
+                            <td style="color:#f0f6fc;">$${parseFloat(t.price || 0).toFixed(4)}</td>
+                            <td style="color:#8b949e;">${parseFloat(t.amount || 0).toFixed(2)}</td>
+                            <td>${pnlStr}</td>
+                            <td style="color:#8b949e;">$${parseFloat(t.fee || 0).toFixed(4)}</td>
+                            <td style="color:#e6edf3; font-family:sans-serif; font-size:12px;">${t.note || ''}</td>
+                        </tr>`;
+                    });
+                    tradesBody.innerHTML = tHtml;
                 } else {
-                    tbody.innerHTML = '<tr><td colspan=\"8\" style=\"text-align:center; color:#8b949e; padding:15px;\">Esperando primera operación en Pionex...</td></tr>';
+                    tradesBody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: var(--text-dim); padding: 20px;">Esperando primera operación en Pionex...</td></tr>';
                 }
-            } catch(e){}
+
+            } catch (err) {}
         }
-        setInterval(updateData, 2000);
-        updateData();
+
+        setInterval(updateDashboard, 1500);
+        updateDashboard();
     </script>
 </body>
 </html>"""
@@ -639,19 +1247,22 @@ def run_dollar_scalper():
     bot = ScalperBot()
     start_scalper_dashboard(bot, SCALPER_HTTP_PORT)
 
+    # Iniciar hilo de telemetría de alta frecuencia
+    telemetry_thread = threading.Thread(target=telemetry_background_thread, args=(bot,), daemon=True)
+    telemetry_thread.start()
+
     # Reglas de símbolos Pionex
     rules = PionexLiveExecutor.get_symbol_rules()
     print("=" * 80, flush=True)
     print("  THE 1-DOLLAR SCALPER - PIONEX LIVE SPOT EXECUTION ENGINE", flush=True)
     print("  • Modo                           -> PIONEX CUENTA REAL SPOT VIVA", flush=True)
-    print("  • Saldo Pionex Detectado         -> $" + f"{bot.cash:.2f} USDT", flush=True)
+    print(f"  • Saldo Pionex Detectado         -> ${bot.cash:.2f} USDT", flush=True)
     print(f"  • Objetivo por Disparo           -> +1.70% (+$1.00 USDT netos)", flush=True)
     print(f"  • Stop Defensivo                 -> -1.20% (-$0.75 USDT) | R:R > 1.3:1", flush=True)
     print(f"  • Dashboard en Vivo              -> http://localhost:{SCALPER_HTTP_PORT}", flush=True)
     print("=" * 80, flush=True)
 
     cycle = 0
-    last_scan_ts = 0
 
     while True:
         try:
@@ -672,7 +1283,7 @@ def run_dollar_scalper():
                     t = exchange.fetch_ticker(ccxt_sym)
                     curr_p = float(t.get("last", 0.0))
                 except Exception:
-                    time.sleep(2.0)
+                    time.sleep(1.5)
                     continue
 
                 # Consultar estado de la orden de venta Target en Pionex
@@ -683,12 +1294,10 @@ def run_dollar_scalper():
                 # A. TARGET ALCANZADO (Orden de venta Pionex cerrada/ejecutada o precio sobre target)
                 is_target_filled = (order_status and order_status.get("status") == "CLOSED") or (curr_p >= trade.target_price)
                 if is_target_filled:
-                    # Si no estaba cerrada la orden pero el precio lo tocó, verificar o cancelar y vender
                     if order_status and order_status.get("status") != "CLOSED":
                         PionexLiveExecutor.cancel_order(pio_sym, trade.target_order_id)
                         PionexLiveExecutor.place_market_sell(pio_sym, trade.amount)
 
-                    # Esperar 2s y sincronizar saldo real desde Pionex
                     time.sleep(2.0)
                     bot.sync_balance()
 
@@ -701,19 +1310,17 @@ def run_dollar_scalper():
                         pio_sym, "SELL", trade.target_price, trade.amount,
                         profit, fees, f"🎯 TARGET +1.70% EN PIONEX COBRADO! Ganancia neta: +${profit:.4f} USDT | 100% Caja Líquida"
                     )
-                    print(f"\n  🎯💵 [1-DOLLAR COBRADO EN PIONEX! {pio_sym}]", flush=True)
-                    print(f"       Salida ejecutada a ${trade.target_price:.4f} (+{TARGET_PROFIT_PCT*100:.2f}%).", flush=True)
-                    print(f"       Ganancia NETA: +${profit:.4f} USDT. Saldo en Pionex: ${bot.cash:.2f} USDT.", flush=True)
-                    print(f"       Cerrando posición y volviendo 100% a caja líquida para el siguiente disparo.\n", flush=True)
+                    bot.add_log(f"🎯💵 ¡TARGET COBRADO! Salida en {pio_sym} a ${trade.target_price:.4f}. Ganancia: +${profit:.4f} USDT.", "trade")
+                    print(f"\n  🎯💵 [1-DOLLAR COBRADO EN PIONEX! {pio_sym}] Ganancia: +${profit:.4f} USDT. Saldo Pionex: ${bot.cash:.2f} USDT.\n", flush=True)
                     bot.active_trade = None
                     bot.status_msg = f"Objetivo cumplido (+${profit:.2f} USDT). 100% líquido en caja Pionex (${bot.cash:.2f} USDT)."
                     bot.save_state()
-                    time.sleep(15)  # Cooldown
+                    time.sleep(10)
                     continue
 
                 # B. STOP LOSS DEFENSIVO (-1.20% = Preservar Capital Inmediato)
                 elif curr_p <= trade.stop_price:
-                    print(f"\n  🛑🛡️ [ACTIVANDO STOP DEFENSIVO EN PIONEX {pio_sym}]", flush=True)
+                    bot.add_log(f"🛑 ACTIVANDO STOP DEFENSIVO en {pio_sym} @ ${curr_p:.4f} para cortar pérdida.", "trade")
                     if trade.target_order_id:
                         PionexLiveExecutor.cancel_order(pio_sym, trade.target_order_id)
                     time.sleep(0.5)
@@ -731,19 +1338,18 @@ def run_dollar_scalper():
                         pio_sym, "SELL", curr_p, trade.amount,
                         loss, fees, f"🛑 STOP DEFENSIVO EN PIONEX EJECUTADO. Pérdida: ${loss:.4f} USDT | Capital protegido"
                     )
-                    print(f"       Pérdida cortada a ${curr_p:.4f} (-{STOP_LOSS_PCT*100:.2f}%).", flush=True)
-                    print(f"       Pérdida limitada: ${loss:.4f} USDT. Saldo Pionex protegido: ${bot.cash:.2f} USDT.\n", flush=True)
+                    bot.add_log(f"🛑 Stop ejecutado en {pio_sym}. Pérdida limitada: ${loss:.4f} USDT. Saldo protegido: ${bot.cash:.2f} USDT.", "trade")
                     bot.active_trade = None
                     bot.status_msg = f"Stop defensivo ejecutado (${loss:.2f} USDT). Saldo en Pionex: ${bot.cash:.2f} USDT."
                     bot.save_state()
-                    time.sleep(15)
+                    time.sleep(10)
                     continue
 
-                # C. TIME-DECAY EXIT: Si pasan 40 min y no despega, salir en Breakeven si hay mínima ganancia
+                # C. TIME-DECAY EXIT (40 min)
                 elapsed_s = now_ts - trade.entry_time
                 if elapsed_s >= MAX_HOLD_TIME_SECS:
                     pct_diff = (curr_p - trade.entry_price) / trade.entry_price
-                    if pct_diff >= 0.002:  # +0.20% cubre comisiones Pionex
+                    if pct_diff >= 0.002:
                         if trade.target_order_id:
                             PionexLiveExecutor.cancel_order(pio_sym, trade.target_order_id)
                         time.sleep(0.5)
@@ -759,16 +1365,15 @@ def run_dollar_scalper():
                             bot.losses += 1
                         bot.total_trades += 1
                         bot.log_trade(pio_sym, "SELL", curr_p, trade.amount, profit, fees, f"Salida por Tiempo (Stall Exit): +${profit:.4f} USDT")
-                        print(f"  ⏱️ [SALIDA DEFENSIVA POR TIEMPO {pio_sym}] Trade estancado >40m. Cerrado a ${curr_p:.4f} (+${profit:.4f} USDT). Capital liberado.", flush=True)
+                        bot.add_log(f"⏱️ Salida por tiempo en {pio_sym} (+${profit:.4f} USDT). Capital liberado.", "trade")
                         bot.active_trade = None
                         bot.status_msg = f"Salida por estancamiento. Saldo en Pionex: ${bot.cash:.2f} USDT."
                         bot.save_state()
                         continue
 
-                # Monitoreo en vivo del trade abierto
                 unrealized_pct = ((curr_p - trade.entry_price) / trade.entry_price) * 100.0
                 bot.status_msg = f"En Trade {pio_sym} @ ${trade.entry_price:.4f} | Actual: ${curr_p:.4f} ({unrealized_pct:+.2f}%) | Target: ${trade.target_price:.4f}"
-                time.sleep(2.0)
+                time.sleep(1.5)
                 continue
 
             # -------------------------------------------------------------
@@ -778,19 +1383,16 @@ def run_dollar_scalper():
                 po = bot.pending_order
                 status_res = PionexLiveExecutor.get_order_status(po.symbol, po.order_id)
 
-                # ¿Se ejecutó la orden de compra en Pionex?
                 if status_res and status_res.get("status") == "CLOSED":
                     filled_size = float(status_res.get("filledSize", po.size) or po.size)
                     filled_amount = float(status_res.get("filledAmount", po.capital) or po.capital)
                     entry_p = filled_amount / filled_size if filled_size > 0 else po.limit_price
 
-                    print(f"\n  🎯🟢 [ORDEN MAKER PIONEX #{po.order_id} EJECUTADA {po.symbol}]", flush=True)
-                    print(f"       Comprados {filled_size:.4f} {po.symbol} @ ${entry_p:.4f} (${filled_amount:.2f} USDT).", flush=True)
+                    bot.add_log(f"🟢 ¡ORDEN MAKER EJECUTADA en Pionex! {filled_size:.4f} {po.symbol} @ ${entry_p:.4f} (${filled_amount:.2f} USDT)", "trade")
 
-                    # Colocar inmediatamente la orden Límite de venta en Target (+1.70%) en Pionex
                     target_p = round(entry_p * (1.0 + TARGET_PROFIT_PCT), rules.get(po.symbol, {}).get("quotePrecision", 4))
                     target_order_id = PionexLiveExecutor.place_limit_sell(po.symbol, target_p, filled_size)
-                    print(f"       🎯 Orden Venta Target colocada en Pionex #{target_order_id} a ${target_p:.4f} (+1.70%).", flush=True)
+                    bot.add_log(f"🎯 Orden de venta colocada en Pionex #{target_order_id} @ ${target_p:.4f} (+1.70%).", "trade")
 
                     trade = ScalperTrade(
                         trade_id=f"pio_{po.order_id}",
@@ -802,7 +1404,6 @@ def run_dollar_scalper():
                     )
                     trade.target_price = target_p
                     trade.stop_price = round(entry_p * (1.0 - STOP_LOSS_PCT), rules.get(po.symbol, {}).get("quotePrecision", 4))
-                    print(f"       🛑 Stop Defensivo vigilado en ${trade.stop_price:.4f} (-1.20%).\n", flush=True)
 
                     bot.active_trade = trade
                     bot.pending_order = None
@@ -812,9 +1413,8 @@ def run_dollar_scalper():
                     bot.save_state()
                     continue
 
-                # ¿Expiró la orden de compra sin ejecutarse? (90s sin retroceso)
                 if now_ts >= po.expires_at:
-                    print(f"  ⏱️ [ORDEN PIONEX CANCELADA #{po.order_id} {po.symbol}] No retrocedió en {ORDER_EXPIRY_SECS}s. Cancelando sin FOMO.", flush=True)
+                    bot.add_log(f"⏱️ Orden #{po.order_id} ({po.symbol}) expiró sin retroceso. Cancelada sin FOMO.", "info")
                     PionexLiveExecutor.cancel_order(po.symbol, po.order_id)
                     bot.pending_order = None
                     bot.sync_balance()
@@ -822,37 +1422,32 @@ def run_dollar_scalper():
                     bot.save_state()
                     continue
 
-                time.sleep(2.0)
+                time.sleep(1.5)
                 continue
 
             # -------------------------------------------------------------
-            # 3. ESCANEO Y DISPARO FRANCOTIRADOR (100% Caja Líquida en Pionex)
+            # 3. VERIFICAR GATILLO DE ENTRADA DESDE LA TELEMETRÍA VIVA
             # -------------------------------------------------------------
-            if now_ts - last_scan_ts >= 25.0:
-                last_scan_ts = now_ts
-                bot.sync_balance()
+            with bot.data_lock:
+                telemetry = list(bot.radar_telemetry)
 
-                opps = scan_order_flow_opportunities()
-                if opps:
-                    best = opps[0]
-                    pio_sym = best["pio_symbol"]
+            if telemetry:
+                top = telemetry[0]
+                if top.get("trigger_ready"):
+                    pio_sym = top["pio_symbol"]
                     sym_rules = rules.get(pio_sym, {"basePrecision": 2, "quotePrecision": 4, "minAmount": 10.0})
 
-                    # Tamaño de disparo: usar 86% del saldo libre de Pionex (máximo $60.00 USDT)
-                    # Deja ~$10.00 USDT de buffer seguro en la cuenta
+                    bot.sync_balance()
                     trade_capital = min(bot.cash * 0.86, 60.00)
 
                     if trade_capital >= sym_rules["minAmount"]:
-                        entry_limit = best["entry_limit"]
+                        entry_limit = top["entry_limit"]
                         raw_size = trade_capital / entry_limit
                         b_prec = sym_rules["basePrecision"]
                         size = round(raw_size, b_prec)
 
                         if size >= sym_rules["minTradeSize"]:
-                            print(f"\n  🔍⚡ [OPORTUNIDAD FRANCOTIRADOR DETECTADA]", flush=True)
-                            print(f"       Moneda: {pio_sym} | Score: {best['score']:.1f} | OBI LOB: {best['obi']:+.2f} | RSI 15m: {best['rsi']:.1f}", flush=True)
-                            print(f"       Precio Actual: ${best['price']:.4f} -> Colocando Orden Maker Límite en Pionex a ${entry_limit:.4f}...", flush=True)
-
+                            bot.add_log(f"⚡ DISPARO FRANCOTIRADOR: {pio_sym} Score {top['score']:.1f} | OBI {top['obi']:+.2f} | Colocando Maker Límite...", "trade")
                             order_id = PionexLiveExecutor.place_limit_buy(pio_sym, entry_limit, size)
                             if order_id:
                                 po = ScalperPendingOrder(
@@ -861,29 +1456,22 @@ def run_dollar_scalper():
                                     limit_price=entry_limit,
                                     size=size,
                                     capital=trade_capital,
-                                    reason=f"OBI={best['obi']:+.2f} | RSI={best['rsi']:.1f} | Score={best['score']:.1f}"
+                                    reason=f"OBI={top['obi']:+.2f} | RSI={top['rsi']:.1f} | Score={top['score']:.1f}"
                                 )
                                 bot.pending_order = po
-                                print(f"       ✅ Orden de Compra Colocada en Pionex #{order_id} ({size} {pio_sym} por ${trade_capital:.2f} USDT). Target proyectado: +$1.00 USDT.\n", flush=True)
-                                bot.status_msg = f"Orden Maker #{order_id} colocada en {pio_sym} @ ${entry_limit:.4f} (Score {best['score']:.1f})"
+                                bot.add_log(f"✅ Orden de Compra Colocada en Pionex #{order_id} ({size} {pio_sym} por ${trade_capital:.2f} USDT)", "trade")
+                                bot.status_msg = f"Orden Maker #{order_id} colocada en {pio_sym} @ ${entry_limit:.4f} (Score {top['score']:.1f})"
                                 bot.save_state()
                                 continue
-                            else:
-                                print(f"  [Aviso Pionex] Falló colocación de orden en {pio_sym}", flush=True)
-                    else:
-                        bot.status_msg = f"Saldo libre en Pionex (${bot.cash:.2f} USDT) por debajo del mínimo ($10.00 USDT)."
                 else:
-                    bot.status_msg = f"Escaneando 13 pares líderes en Pionex... Esperando OBI > +0.18 y soporte LOB."
-
-            if cycle % 15 == 0:
-                print(f"[{now_str}] Tick #{cycle:04d} | Pionex USDT: ${bot.cash:.2f} | PnL: ${bot.realized_pnl:+.4f} | {bot.status_msg}", flush=True)
+                    bot.status_msg = f"Radar activo: Líder {top['name']} (Score {top['score']:.1f}/100 | OBI {top['obi']:+.2f}). Esperando gatillo."
 
             bot.save_state()
-            time.sleep(2.0)
+            time.sleep(1.5)
 
         except Exception as e:
             print(f"  [Error Bucle Scalper] {e}", flush=True)
-            time.sleep(3.0)
+            time.sleep(2.0)
 
 
 if __name__ == "__main__":

@@ -48,6 +48,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       50% { opacity: 0.3; }
     }
     .animate-pulse-fast { animation: pulse-fast 1.2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+    @keyframes flash-g {
+      0% { background-color: rgba(16, 185, 129, 0.4); color: #fff; }
+      100% { background-color: transparent; }
+    }
+    @keyframes flash-r {
+      0% { background-color: rgba(244, 63, 94, 0.4); color: #fff; }
+      100% { background-color: transparent; }
+    }
+    .flash-green { animation: flash-g 0.8s ease; }
+    .flash-red { animation: flash-r 0.8s ease; }
   </style>
 </head>
 <body class="p-3 md:p-6 antialiased">
@@ -756,6 +766,25 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         const capPerLine = Number(g.capital_per_line) || (capTotal / Math.max(1, (g.grid_lines || 9)));
         const statusMsg = g.status_msg || "Cosechando en Rango Dinámico";
         const tickTime = (data && data.timestamp) ? data.timestamp.split('T')[1]?.split('.')[0] : '';
+
+        // Cálculos para Termómetro Gráfico de Niveles & Puntero
+        const lowerP = Number(g.grid_lower);
+        const upperP = Number(g.grid_upper);
+        const currPctClamped = rangeSpread > 0 ? Math.min(98, Math.max(2, ((currentPrice - lowerP) / rangeSpread) * 100)) : 50;
+        const closestBuy = buys.length > 0 ? buys[0] : null;
+        const closestSell = sells.length > 0 ? sells[sells.length - 1] : null;
+        const distBuyPct = closestBuy ? (((Number(closestBuy.price) - currentPrice) / currentPrice) * 100).toFixed(2) : '--';
+        const distSellPct = closestSell ? (((Number(closestSell.price) - currentPrice) / currentPrice) * 100).toFixed(2) : '--';
+
+        let ladderTicksHtml = '';
+        lines.forEach(l => {
+          if (!l.active) return;
+          const lPrice = Number(l.price);
+          const lPct = rangeSpread > 0 ? Math.min(99, Math.max(1, ((lPrice - lowerP) / rangeSpread) * 100)) : 50;
+          const isBuy = l.side === 'buy';
+          const tickColor = isBuy ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-rose-400 shadow-[0_0_8px_rgba(251,113,133,0.8)]';
+          ladderTicksHtml += `<div class="absolute top-0 bottom-0 w-1 ${tickColor} rounded-full" style="left: ${lPct.toFixed(2)}%;" title="${isBuy ? 'Compra' : 'Venta'}: $${lPrice.toFixed(4)}"></div>`;
+        });
         
         // Diagnóstico Inteligente (Solo ante Anomalías)
         const reval = g.reval_diagnosis || {};
@@ -961,6 +990,55 @@ HTML_TEMPLATE = """<!DOCTYPE html>
               <span class="text-[10px] text-gray-500 block uppercase font-bold">⏳ Escalones en Espera</span>
               <span class="text-sky-300 font-bold">${buys.length} Compras abajo</span>
               <span class="text-rose-400 font-bold block mt-0.5">${sells.length} Ventas arriba</span>
+            </div>
+          </div>
+
+          <!-- TERMÓMETRO GRÁFICO DINÁMICO DE NIVELES & APERTURAS/CIERRES -->
+          <div class="card p-4 border border-purple-500/30 bg-gray-950/90 rounded-xl space-y-3 shadow-xl">
+            <div class="flex items-center justify-between text-xs font-mono flex-wrap gap-2">
+              <span class="text-purple-300 font-bold flex items-center gap-1.5">
+                <span>🪜</span> TERMÓMETRO VISUAL DE LA MALLA (Niveles en Tiempo Real)
+              </span>
+              <span class="text-xs bg-purple-950/60 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded font-bold">
+                Oscilación: ${rangePct.toFixed(1)}% del Rango
+              </span>
+            </div>
+
+            <!-- Pista Gráfica de Niveles con Puntero del Precio en Vivo -->
+            <div class="relative w-full h-8 bg-gray-900/90 rounded-lg border border-gray-800 overflow-visible my-3 select-none">
+              <!-- Relleno zona compras (verde) -->
+              <div class="absolute top-0 bottom-0 left-0 bg-emerald-950/30 rounded-l-lg border-r border-dashed border-emerald-500/30 pointer-events-none" style="width: ${currPctClamped.toFixed(2)}%;"></div>
+              <!-- Relleno zona ventas (rojo) -->
+              <div class="absolute top-0 bottom-0 right-0 bg-rose-950/30 rounded-r-lg border-l border-dashed border-rose-500/30 pointer-events-none" style="width: ${(100 - currPctClamped).toFixed(2)}%;"></div>
+
+              <!-- Ticks de órdenes activas -->
+              ${ladderTicksHtml}
+
+              <!-- Beacon Puntero del Precio Actual -->
+              <div class="absolute -top-6 -bottom-1 flex flex-col items-center pointer-events-none transition-all duration-300 z-20" style="left: ${currPctClamped.toFixed(2)}%; transform: translateX(-50%);">
+                <span class="bg-gradient-to-r from-sky-500 to-blue-600 text-white font-black text-[10px] font-mono px-2 py-0.5 rounded shadow-xl border border-sky-300 whitespace-nowrap animate-pulse flex items-center gap-1">
+                  <span>📍</span> $${Number(currentPrice).toFixed(4)}
+                </span>
+                <div class="w-0.5 h-full bg-sky-400 shadow-[0_0_12px_#38bdf8]"></div>
+              </div>
+            </div>
+
+            <!-- Rango Inferior/Superior y Próximos Disparos -->
+            <div class="flex items-center justify-between text-xs font-mono text-gray-400 pt-1 border-t border-gray-800/60 flex-wrap gap-2">
+              <div class="flex items-center gap-1.5">
+                <span class="text-[10px] text-gray-500">PISO:</span>
+                <strong class="text-white">$${lowerP.toFixed(4)}</strong>
+                <span class="text-emerald-400 font-bold ml-2">🟢 Próx Compra:</span>
+                <strong class="text-white">$${closestBuy ? Number(closestBuy.price).toFixed(4) : '--'}</strong>
+                <span class="text-cyan-400">(${distBuyPct}%)</span>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <span class="text-rose-400 font-bold">🔴 Próx Venta:</span>
+                <strong class="text-white">$${closestSell ? Number(closestSell.price).toFixed(4) : '--'}</strong>
+                <span class="text-rose-300">(+${distSellPct}%)</span>
+                <span class="text-[10px] text-gray-500 ml-2">TECHO:</span>
+                <strong class="text-white">$${upperP.toFixed(4)}</strong>
+              </div>
             </div>
           </div>
 
