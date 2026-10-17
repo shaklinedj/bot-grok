@@ -5,11 +5,11 @@
   - Persistencia: SQLite WAL (Cero CSV, Ultra-rápido, Cero Bloqueos)
   - Base de Datos: scalper_logs/scalper_vault.db
   - Saldo Inicial Real: ~$70.35 USDT (Liberados tras liquidación de XLM)
-  - Objetivo: Cazar +$1.00 USDT limpios por trade y volver 100% a caja líquida.
-  - Ejecución: Entrada Maker Límite en micro-retroceso sobre Bid Wall (Cero FOMO).
-  - Salida Objetivo: +1.70% fijo (+$1.00 netos descontando comisión Pionex 0.05%).
-  - Stop Defensivo: -1.20% estricto (arriesga ~$0.75 para ganar ~$1.00 -> Ratio R:R > 1.3:1).
-  - Telemetría en Vivo: 13 pares líderes con radar LOB OBI y almacenamiento SQLite.
+  - Objetivo: Cazar micro-impulsos de alta probabilidad (+0.95% neto) y volver 100% a caja líquida.
+  - Ejecución: Stoikov LOB Level-1 / Bid-Wall Front-running (Maker Límite con prioridad de cola).
+  - Salida Objetivo: +0.95% dinámico (+$0.57 netos descontando comisión Pionex 0.05%).
+  - Stop Defensivo: -0.70% estricto (arriesga ~$0.42 para ganar ~$0.57 -> Ratio R:R > 1.35:1).
+  - Telemetría en Vivo: 11 pares líderes con radar LOB OBI y almacenamiento SQLite.
   - Dashboard reactivo ultra-visual: http://localhost:8899
 ========================================================================================
 """
@@ -46,10 +46,10 @@ SCALPER_STANDALONE_HTML = os.path.join(PORTFOLIO_DIR, "dashboard.html")
 SCALPER_HTTP_PORT = 8899
 
 PIONEX_FEE_RATE = 0.0005    # 0.05% Pionex Spot Maker/Taker estándar
-TARGET_PROFIT_PCT = 0.0170  # +1.70% bruto -> +1.60% neto (~+$1.00 USDT en $60.00)
-STOP_LOSS_PCT = 0.0120      # -1.20% bruto -> -1.30% neto (-$0.78 USDT en $60.00)
-ORDER_EXPIRY_SECS = 480     # 8 minutos de paciencia para pescar el retroceso Maker sin inundar la API
-MAX_HOLD_TIME_SECS = 2400   # 40 minutos máximo por trade (salida defensiva si se estanca)
+TARGET_PROFIT_PCT = 0.0095  # +0.95% bruto -> +0.85% neto (~+$0.55 a $0.60 USDT por ciclo ágil)
+STOP_LOSS_PCT = 0.0070      # -0.70% bruto -> -0.80% neto (-$0.45 USDT) | R:R > 1.35:1
+ORDER_EXPIRY_SECS = 360     # 6 minutos de persistencia en cola Maker LOB
+MAX_HOLD_TIME_SECS = 1800   # 30 minutos máximo por trade (salida si se estanca)
 
 # Whitelist de Altcoins Ágiles de Alta Beta (excluye BTC y ETH por baja velocidad de oscilación)
 INSTITUTIONAL_SCALP_WHITELIST = [
@@ -256,7 +256,7 @@ class PionexLiveExecutor:
 
     @classmethod
     def place_limit_sell(cls, pio_symbol: str, price: float, size: float) -> Optional[str]:
-        """Coloca orden Límite de venta en Target (+1.70%) en Pionex."""
+        """Coloca orden Límite de venta en Target (+0.95%) en Pionex."""
         rules = cls.get_symbol_rules().get(pio_symbol, {"basePrecision": 2, "quotePrecision": 4})
         b_prec = rules["basePrecision"]
         q_prec = rules["quotePrecision"]
@@ -503,13 +503,42 @@ def fetch_full_radar_telemetry(bot: ScalperBot) -> List[Dict]:
 
         try:
             ob = exchange.fetch_order_book(ccxt_sym, limit=15)
-            bids = sum(b[1] for b in ob.get("bids", []))
-            asks = sum(a[1] for a in ob.get("asks", []))
-            tot_depth = bids + asks
+            raw_bids = ob.get("bids", [])
+            raw_asks = ob.get("asks", [])
+            bids_vol = sum(b[1] for b in raw_bids)
+            asks_vol = sum(a[1] for a in raw_asks)
+            tot_depth = bids_vol + asks_vol
             if tot_depth > 0:
-                obi = (bids - asks) / tot_depth
-                bid_pct = (bids / tot_depth) * 100.0
-                ask_pct = (asks / tot_depth) * 100.0
+                obi = (bids_vol - asks_vol) / tot_depth
+                bid_pct = (bids_vol / tot_depth) * 100.0
+                ask_pct = (asks_vol / tot_depth) * 100.0
+
+            # Stoikov Micro-price & Bid Wall Front-Running
+            best_bid = float(raw_bids[0][0]) if raw_bids else curr_p * 0.999
+            best_ask = float(raw_asks[0][0]) if raw_asks else curr_p * 1.001
+            spread = max(0.0, best_ask - best_bid)
+            spread_pct = (spread / curr_p) * 100.0 if curr_p > 0 else 0.0
+
+            # Encontrar el Bid Wall dominante (mayor volumen en los primeros 5 niveles)
+            bid_wall_price = best_bid
+            max_bid_vol = 0.0
+            for b in raw_bids[:5]:
+                if b[1] > max_bid_vol:
+                    max_bid_vol = b[1]
+                    bid_wall_price = float(b[0])
+
+            q_prec = sym_rule.get("quotePrecision", 4)
+            tick_size = 10 ** (-q_prec)
+
+            # Colocación cuantitativa en el libro (Stoikov 2018):
+            # Prioridad de cola en Best Bid si el spread es estrecho (<= 0.08%).
+            # O front-running 1 tick por encima del muro de compradores institucional si está cerca.
+            if spread_pct <= 0.08:
+                entry_limit = round(best_bid, q_prec)
+            elif bid_wall_price >= curr_p * 0.9985:
+                entry_limit = round(min(best_bid, bid_wall_price + tick_size), q_prec)
+            else:
+                entry_limit = round(best_bid, q_prec)
 
             ohlcv = exchange.fetch_ohlcv(ccxt_sym, "15m", limit=20)
             if len(ohlcv) >= 15:
@@ -530,18 +559,18 @@ def fetch_full_radar_telemetry(bot: ScalperBot) -> List[Dict]:
                 avg_vol = sum(volumes[-15:]) / 15.0 if volumes else 1.0
                 vol_spike = (volumes[-1] / avg_vol) if avg_vol > 0 else 1.0
         except Exception:
-            pass
+            q_prec = sym_rule.get("quotePrecision", 4)
+            entry_limit = round(curr_p * 0.999, q_prec)
 
-        is_valid_flow = (obi >= 0.18) and (curr_p >= sma20 * 0.998) and (47.0 <= rsi <= 65.0)
+        # Filtro de Régimen Macro: Evitar comprar rebotes trampa en monedas bajistas de 24h
+        is_macro_aligned = (chg_24h >= -2.5) and (curr_p >= sma20 * 0.998)
+        is_valid_flow = (obi >= 0.16) and is_macro_aligned and (47.0 <= rsi <= 65.0)
 
         score = (obi * 40.0) + (min(2.0, vol_spike) * 20.0) + (25.0 if curr_p > sma20 else 0.0) + ((rsi - 45.0) * 0.75)
         score = max(0.0, min(100.0, score))
 
         trigger_ready = is_valid_flow and (score >= 45.0)
         gap_to_trigger = max(0.0, round(45.0 - score, 1))
-
-        q_prec = sym_rule.get("quotePrecision", 4)
-        entry_limit = round(curr_p * 0.9975, q_prec)
 
         if trigger_ready:
             flow_status = "🟢 DISPARO LISTO"
@@ -1032,7 +1061,7 @@ def get_scalper_dashboard_html() -> str:
             <div class="radar-spinner"></div>
             <div>
                 <div class="title">THE 1-DOLLAR SCALPER <span style="font-size: 13px; color: var(--text-dim); font-weight: normal;">| Pionex Spot Live Engine</span></div>
-                <div style="font-size: 11px; color: var(--text-dim); margin-top: 2px;">Vigilancia LOB en Alta Frecuencia • Persistencia SQLite WAL • Maker Límite • Salida +1.70% (+$1.00 USD) • Stop -1.20%</div>
+                <div style="font-size: 11px; color: var(--text-dim); margin-top: 2px;">Vigilancia LOB en Alta Frecuencia • Persistencia SQLite WAL • Maker Límite Stoikov • Salida +0.95% (~+$0.57 USD) • Stop -0.70%</div>
             </div>
         </div>
         <div class="badge-live">
@@ -1044,7 +1073,7 @@ def get_scalper_dashboard_html() -> str:
     <!-- Banner Info -->
     <div class="banner">
         <div>
-            🛡️ <b>MOMENTUM SNIPER SPOT:</b> Radar analizando libros de órdenes (LOB Imbalance) de Altcoins Ágiles de Alta Beta en tiempo real (excluye BTC/ETH). Cero mallas atrapadas. El capital entra en soporte, cobra el dólar (+1.70%) y vuelve 100% a caja líquida.
+            🛡️ <b>MOMENTUM SNIPER SPOT:</b> Radar analizando libros de órdenes (LOB Imbalance) de Altcoins Ágiles de Alta Beta en tiempo real (excluye BTC/ETH). Cero mallas atrapadas. El capital entra en soporte Stoikov, cobra el impulso (+0.95%) y vuelve 100% a caja líquida.
         </div>
         <div style="font-family: monospace; font-size: 12px; color: #58a6ff;">
             Barrido #<span id="cycle-count">0</span> • Base de Datos: <span style="color:#3fb950; font-weight:bold;">SQLite WAL (scalper_vault.db)</span>
@@ -1096,19 +1125,19 @@ def get_scalper_dashboard_html() -> str:
                 <span id="spotlight-chg" style="margin-left: 6px; font-weight: bold;">(+0.00%)</span>
             </div>
             <div>
-                <span style="color: var(--text-dim); font-size: 11px; display: block;">ORDEN MAKER LÍMITE PROYECTADA</span>
+                <span style="color: var(--text-dim); font-size: 11px; display: block;">ORDEN MAKER LÍMITE (STOIKOV LOB)</span>
                 <span id="spotlight-entry" style="font-size: 18px; font-weight: 700; color: #58a6ff;">$0.0000</span>
-                <span style="color: var(--text-dim); font-size: 11px;">(-0.25% en soporte)</span>
+                <span style="color: var(--text-dim); font-size: 11px;">(Best Bid / Soporte Muro)</span>
             </div>
             <div>
-                <span style="color: var(--text-dim); font-size: 11px; display: block;">TARGET DE SALIDA (+1.70%)</span>
+                <span style="color: var(--text-dim); font-size: 11px; display: block;">TARGET DE SALIDA (+0.95%)</span>
                 <span id="spotlight-target" style="font-size: 18px; font-weight: 700; color: #3fb950;">$0.0000</span>
-                <span style="color: #3fb950; font-size: 11px;">(+$1.00 USD Neto)</span>
+                <span style="color: #3fb950; font-size: 11px;">(+$0.55 - $0.60 USD Neto)</span>
             </div>
             <div>
-                <span style="color: var(--text-dim); font-size: 11px; display: block;">STOP LOSS DEFENSIVO (-1.20%)</span>
+                <span style="color: var(--text-dim); font-size: 11px; display: block;">STOP LOSS DEFENSIVO (-0.70%)</span>
                 <span id="spotlight-stop" style="font-size: 18px; font-weight: 700; color: #f85149;">$0.0000</span>
-                <span style="color: #f85149; font-size: 11px;">(-$0.75 USD Máx)</span>
+                <span style="color: #f85149; font-size: 11px;">(-$0.45 USD Máx)</span>
             </div>
         </div>
 
@@ -1261,8 +1290,8 @@ def get_scalper_dashboard_html() -> str:
                     if (badge) { badge.className = 'tag-warm'; badge.innerText = 'ESPERANDO RETROCESO (#' + pend.order_id + ')'; }
                     setTxt('spotlight-price', '$' + Number(pend.limit_price).toFixed(4));
                     setTxt('spotlight-entry', '$' + Number(pend.limit_price).toFixed(4));
-                    setTxt('spotlight-target', '$' + (Number(pend.limit_price) * 1.017).toFixed(4));
-                    setTxt('spotlight-stop', '$' + (Number(pend.limit_price) * 0.988).toFixed(4));
+                    setTxt('spotlight-target', '$' + (Number(pend.limit_price) * 1.0095).toFixed(4));
+                    setTxt('spotlight-stop', '$' + (Number(pend.limit_price) * 0.9930).toFixed(4));
                     if (top) {
                         setTxt('duel-bids-pct', Number(top.bid_pct || 50).toFixed(1) + '%');
                         setTxt('duel-asks-pct', Number(top.ask_pct || 50).toFixed(1) + '%');
@@ -1287,8 +1316,8 @@ def get_scalper_dashboard_html() -> str:
                     const chgColor = chg >= 0 ? '#3fb950' : '#f85149';
                     setHtml('spotlight-chg', '<span style="color:' + chgColor + '">' + (chg >= 0 ? '+' : '') + chg.toFixed(2) + '%</span>');
                     setTxt('spotlight-entry', '$' + Number(top.entry_limit).toFixed(4));
-                    setTxt('spotlight-target', '$' + (Number(top.entry_limit) * 1.017).toFixed(4));
-                    setTxt('spotlight-stop', '$' + (Number(top.entry_limit) * 0.988).toFixed(4));
+                    setTxt('spotlight-target', '$' + (Number(top.entry_limit) * 1.0095).toFixed(4));
+                    setTxt('spotlight-stop', '$' + (Number(top.entry_limit) * 0.9930).toFixed(4));
 
                     // Duel Bar
                     setTxt('duel-bids-pct', Number(top.bid_pct).toFixed(1) + '%');
@@ -1439,8 +1468,8 @@ def run_dollar_scalper():
     print("  • Modo                           -> PIONEX CUENTA REAL SPOT VIVA", flush=True)
     print("  • Persistencia Transaccional     -> SQLite WAL (scalper_vault.db)", flush=True)
     print(f"  • Saldo Pionex Detectado         -> ${bot.cash:.2f} USDT (Libre: ${bot.cash:.2f} | Frozen: ${bot.frozen:.2f})", flush=True)
-    print(f"  • Objetivo por Disparo           -> +1.70% (+$1.00 USDT netos)", flush=True)
-    print(f"  • Stop Defensivo                 -> -1.20% (-$0.75 USDT) | R:R > 1.3:1", flush=True)
+    print(f"  • Objetivo por Disparo           -> +0.95% (~+$0.57 USDT netos)", flush=True)
+    print(f"  • Stop Defensivo                 -> -0.70% (-$0.42 USDT) | R:R > 1.35:1", flush=True)
     print(f"  • Dashboard en Vivo              -> http://localhost:{SCALPER_HTTP_PORT}", flush=True)
     print("=" * 80, flush=True)
 
@@ -1493,7 +1522,7 @@ def run_dollar_scalper():
                         amount=trade.amount,
                         pnl=profit,
                         fee=fees,
-                        note=f"🎯 TARGET +1.70% EN PIONEX COBRADO! Ganancia: +${profit:.4f} USDT",
+                        note=f"🎯 TARGET +0.95% EN PIONEX COBRADO! Ganancia: +${profit:.4f} USDT",
                         target_order_id=trade.target_order_id
                     )
                     bot.add_log(f"🎯💵 ¡TARGET COBRADO! Salida en {pio_sym} a ${trade.target_price:.4f}. Ganancia: +${profit:.4f} USDT.", "trade")
@@ -1591,7 +1620,7 @@ def run_dollar_scalper():
 
                         target_p = round(entry_p * (1.0 + TARGET_PROFIT_PCT), rules.get(po.symbol, {}).get("quotePrecision", 4))
                         target_order_id = PionexLiveExecutor.place_limit_sell(po.symbol, target_p, filled_size)
-                        bot.add_log(f"🎯 Orden de venta colocada en Pionex #{target_order_id} @ ${target_p:.4f} (+1.70%).", "trade")
+                        bot.add_log(f"🎯 Orden de venta colocada en Pionex #{target_order_id} @ ${target_p:.4f} (+0.95%).", "trade")
 
                         trade = ScalperTrade(
                             trade_id=f"pio_{po.order_id}",
@@ -1619,7 +1648,7 @@ def run_dollar_scalper():
                             order_id=po.order_id,
                             target_order_id=target_order_id or ""
                         )
-                        bot.status_msg = f"Posición abierta en {po.symbol} @ ${entry_p:.4f}. Esperando Target +1.70% (Venta #{target_order_id})."
+                        bot.status_msg = f"Posición abierta en {po.symbol} @ ${entry_p:.4f}. Esperando Target +0.95% (Venta #{target_order_id})."
                         bot.save_state()
                         continue
                     else:
