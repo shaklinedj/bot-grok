@@ -1066,6 +1066,10 @@ def get_scalper_dashboard_html() -> str:
             <div class="kpi-label">Ganancia Neta (Live)</div>
             <div class="kpi-val val-green" id="pnl">+$0.00</div>
         </div>
+        <div class="card-kpi" style="border-top: 3px solid #f25555;">
+            <div class="kpi-label">Win Rate Real</div>
+            <div class="kpi-val val-green" id="winrate">100.0%</div>
+        </div>
         <div class="card-kpi" style="border-top: 3px solid #a371f7;">
             <div class="kpi-label">Disparos Cerrados</div>
             <div class="kpi-val" id="trades">0</div>
@@ -1206,76 +1210,97 @@ def get_scalper_dashboard_html() -> str:
                 } catch(e) {}
             }
 
+            const setTxt = (id, val) => { const el = document.getElementById(id); if (el) el.innerText = val; };
+            const setHtml = (id, val) => { const el = document.getElementById(id); if (el) el.innerHTML = val; };
+
             try {
                 if (!res || !res.ok) {
-                    document.getElementById('conn-badge').innerText = 'CONECTANDO A :8899...';
+                    setTxt('conn-badge', 'CONECTANDO A :8899...');
                     return;
                 }
                 const d = await res.json();
-                document.getElementById('conn-badge').innerText = 'PIONEX CUENTA REAL VIVA (SQLite)';
+                setTxt('conn-badge', 'PIONEX CUENTA REAL VIVA (SQLite)');
 
                 // 1. KPIs
-                document.getElementById('cash').innerText = '$' + Number(d.cash || 0).toFixed(2);
-                document.getElementById('frozen').innerText = '$' + Number(d.frozen || 0).toFixed(2);
-                document.getElementById('equity').innerText = '$' + Number(d.equity || 0).toFixed(2);
+                setTxt('cash', '$' + Number(d.cash || 0).toFixed(2));
+                setTxt('frozen', '$' + Number(d.frozen || 0).toFixed(2));
+                setTxt('equity', '$' + Number(d.equity || 0).toFixed(2));
                 const pnlVal = Number(d.realized_pnl || 0);
-                document.getElementById('pnl').innerText = (pnlVal >= 0 ? '+$' : '-$') + Math.abs(pnlVal).toFixed(4);
-                document.getElementById('winrate').innerText = Number(d.win_rate || 100).toFixed(1) + '%';
-                document.getElementById('trades').innerText = (d.total_trades || 0) + ' (' + (d.wins || 0) + 'W / ' + (d.losses || 0) + 'L)';
-                document.getElementById('cycle-count').innerText = d.scan_cycle || 0;
+                setTxt('pnl', (pnlVal >= 0 ? '+$' : '-$') + Math.abs(pnlVal).toFixed(4));
+                setTxt('winrate', Number(d.win_rate || 100).toFixed(1) + '%');
+                setTxt('trades', (d.total_trades || 0) + ' (' + (d.wins || 0) + 'W / ' + (d.losses || 0) + 'L)');
+                setTxt('cycle-count', d.scan_cycle || 0);
 
                 // 2. Spotlight Hero Card
                 const top = d.top_candidate;
                 const act = d.active_trade;
                 const pend = d.pending_order;
 
+                const box = document.getElementById('spotlight-box');
+                const badge = document.getElementById('spotlight-badge');
+                const sym = document.getElementById('spotlight-sym');
+
                 if (act) {
-                    document.getElementById('spotlight-box').style.borderColor = '#3fb950';
-                    document.getElementById('spotlight-title').innerHTML = '<span style=\"color:#3fb950;\">🎯 EN POSICIÓN REAL EN PIONEX:</span>';
-                    document.getElementById('spotlight-sym').innerText = act.symbol;
-                    document.getElementById('spotlight-sym').style.background = '#238636';
-                    document.getElementById('spotlight-badge').className = 'tag-ready';
-                    document.getElementById('spotlight-badge').innerText = 'ORDEN VENTA PIONEX #' + (act.target_order_id || 'ACTIVA');
-                    document.getElementById('spotlight-price').innerText = '$' + Number(act.entry_price).toFixed(4);
-                    document.getElementById('spotlight-entry').innerText = '$' + Number(act.entry_price).toFixed(4);
-                    document.getElementById('spotlight-target').innerText = '$' + Number(act.target_price).toFixed(4);
-                    document.getElementById('spotlight-stop').innerText = '$' + Number(act.stop_price).toFixed(4);
+                    if (box) box.style.borderColor = '#3fb950';
+                    setHtml('spotlight-title', '<span style="color:#3fb950;">🎯 EN POSICIÓN REAL EN PIONEX:</span>');
+                    setTxt('spotlight-sym', act.symbol);
+                    if (sym) sym.style.background = '#238636';
+                    if (badge) { badge.className = 'tag-ready'; badge.innerText = 'ORDEN VENTA PIONEX #' + (act.target_order_id || 'ACTIVA'); }
+                    setTxt('spotlight-price', '$' + Number(act.entry_price).toFixed(4));
+                    setTxt('spotlight-entry', '$' + Number(act.entry_price).toFixed(4));
+                    setTxt('spotlight-target', '$' + Number(act.target_price).toFixed(4));
+                    setTxt('spotlight-stop', '$' + Number(act.stop_price).toFixed(4));
                 } else if (pend) {
-                    document.getElementById('spotlight-box').style.borderColor = '#d29922';
-                    document.getElementById('spotlight-title').innerHTML = '<span style=\"color:#d29922;\">⏳ ORDEN MAKER LÍMITE EN PIONEX:</span>';
-                    document.getElementById('spotlight-sym').innerText = pend.symbol;
-                    document.getElementById('spotlight-sym').style.background = '#d29922';
-                    document.getElementById('spotlight-badge').className = 'tag-warm';
-                    document.getElementById('spotlight-badge').innerText = 'ESPERANDO RETROCESO (#' + pend.order_id + ')';
-                    document.getElementById('spotlight-price').innerText = '$' + Number(pend.limit_price).toFixed(4);
-                    document.getElementById('spotlight-entry').innerText = '$' + Number(pend.limit_price).toFixed(4);
+                    if (box) box.style.borderColor = '#d29922';
+                    setHtml('spotlight-title', '<span style="color:#d29922;">⏳ ORDEN MAKER LÍMITE EN PIONEX:</span>');
+                    setTxt('spotlight-sym', pend.symbol);
+                    if (sym) sym.style.background = '#d29922';
+                    if (badge) { badge.className = 'tag-warm'; badge.innerText = 'ESPERANDO RETROCESO (#' + pend.order_id + ')'; }
+                    setTxt('spotlight-price', '$' + Number(pend.limit_price).toFixed(4));
+                    setTxt('spotlight-entry', '$' + Number(pend.limit_price).toFixed(4));
+                    setTxt('spotlight-target', '$' + (Number(pend.limit_price) * 1.017).toFixed(4));
+                    setTxt('spotlight-stop', '$' + (Number(pend.limit_price) * 0.988).toFixed(4));
+                    if (top) {
+                        setTxt('duel-bids-pct', Number(top.bid_pct || 50).toFixed(1) + '%');
+                        setTxt('duel-asks-pct', Number(top.ask_pct || 50).toFixed(1) + '%');
+                        const obi = Number(top.obi || 0);
+                        setTxt('duel-obi', (obi >= 0 ? '+' : '') + obi.toFixed(3));
+                        const bBids = document.getElementById('bar-bids');
+                        const bAsks = document.getElementById('bar-asks');
+                        if (bBids) bBids.style.width = (top.bid_pct || 50) + '%';
+                        if (bAsks) bAsks.style.width = (top.ask_pct || 50) + '%';
+                    }
                 } else if (top) {
-                    document.getElementById('spotlight-box').style.borderColor = '#388bfd';
-                    document.getElementById('spotlight-title').innerHTML = '<span>🎯 CANDIDATO LÍDER EN EL RADAR:</span>';
-                    document.getElementById('spotlight-sym').innerText = top.ccxt_symbol;
-                    document.getElementById('spotlight-sym').style.background = '#1f2738';
-                    document.getElementById('spotlight-badge').className = top.trigger_ready ? 'tag-ready' : (top.score >= 30 ? 'tag-warm' : 'tag-neutral');
-                    document.getElementById('spotlight-badge').innerText = top.status;
-                    document.getElementById('spotlight-price').innerText = '$' + Number(top.price).toFixed(4);
+                    if (box) box.style.borderColor = '#388bfd';
+                    setHtml('spotlight-title', '<span>🎯 CANDIDATO LÍDER EN EL RADAR:</span>');
+                    setTxt('spotlight-sym', top.ccxt_symbol);
+                    if (sym) sym.style.background = '#1f2738';
+                    if (badge) {
+                        badge.className = top.trigger_ready ? 'tag-ready' : (top.score >= 30 ? 'tag-warm' : 'tag-neutral');
+                        badge.innerText = top.status;
+                    }
+                    setTxt('spotlight-price', '$' + Number(top.price).toFixed(4));
                     const chg = Number(top.change_24h || 0);
                     const chgColor = chg >= 0 ? '#3fb950' : '#f85149';
-                    document.getElementById('spotlight-chg').innerHTML = '<span style=\"color:' + chgColor + '\">' + (chg >= 0 ? '+' : '') + chg.toFixed(2) + '%</span>';
-                    document.getElementById('spotlight-entry').innerText = '$' + Number(top.entry_limit).toFixed(4);
-                    document.getElementById('spotlight-target').innerText = '$' + (Number(top.entry_limit) * 1.017).toFixed(4);
-                    document.getElementById('spotlight-stop').innerText = '$' + (Number(top.entry_limit) * 0.988).toFixed(4);
+                    setHtml('spotlight-chg', '<span style="color:' + chgColor + '">' + (chg >= 0 ? '+' : '') + chg.toFixed(2) + '%</span>');
+                    setTxt('spotlight-entry', '$' + Number(top.entry_limit).toFixed(4));
+                    setTxt('spotlight-target', '$' + (Number(top.entry_limit) * 1.017).toFixed(4));
+                    setTxt('spotlight-stop', '$' + (Number(top.entry_limit) * 0.988).toFixed(4));
 
                     // Duel Bar
-                    document.getElementById('duel-bids-pct').innerText = Number(top.bid_pct).toFixed(1) + '%';
-                    document.getElementById('duel-asks-pct').innerText = Number(top.ask_pct).toFixed(1) + '%';
+                    setTxt('duel-bids-pct', Number(top.bid_pct).toFixed(1) + '%');
+                    setTxt('duel-asks-pct', Number(top.ask_pct).toFixed(1) + '%');
                     const obi = Number(top.obi || 0);
-                    document.getElementById('duel-obi').innerText = (obi >= 0 ? '+' : '') + obi.toFixed(3);
-                    document.getElementById('bar-bids').style.width = top.bid_pct + '%';
-                    document.getElementById('bar-asks').style.width = top.ask_pct + '%';
+                    setTxt('duel-obi', (obi >= 0 ? '+' : '') + obi.toFixed(3));
+                    const bBids = document.getElementById('bar-bids');
+                    const bAsks = document.getElementById('bar-asks');
+                    if (bBids) bBids.style.width = top.bid_pct + '%';
+                    if (bAsks) bAsks.style.width = top.ask_pct + '%';
                 }
 
                 // 3. Radar Matrix Table (13 Coins)
                 const tbody = document.getElementById('radar-tbody');
-                if (d.radar_telemetry && d.radar_telemetry.length > 0) {
+                if (tbody && d.radar_telemetry && d.radar_telemetry.length > 0) {
                     let rows = '';
                     d.radar_telemetry.forEach((c, idx) => {
                         const rankClass = idx === 0 ? 'coin-rank rank-top' : 'coin-rank';
@@ -1329,7 +1354,7 @@ def get_scalper_dashboard_html() -> str:
 
                 // 4. Cyber Terminal Event Stream
                 const term = document.getElementById('terminal-feed');
-                if (d.event_log && d.event_log.length > 0) {
+                if (term && d.event_log && d.event_log.length > 0) {
                     let logHtml = '';
                     d.event_log.forEach(l => {
                         const typeClass = l.type === 'radar' ? 'log-text-radar' : (l.type === 'trade' ? 'log-text-trade' : 'log-text-info');
@@ -1341,7 +1366,7 @@ def get_scalper_dashboard_html() -> str:
 
                 // 5. Trades Table (SQLite)
                 const tradesBody = document.getElementById('trades-tbody');
-                if (d.trades && d.trades.length > 0) {
+                if (tradesBody && d.trades && d.trades.length > 0) {
                     let tHtml = '';
                     d.trades.forEach(t => {
                         const isBuy = t.side === 'BUY';
@@ -1363,7 +1388,7 @@ def get_scalper_dashboard_html() -> str:
                         </tr>`;
                     });
                     tradesBody.innerHTML = tHtml;
-                } else {
+                } else if (tradesBody) {
                     tradesBody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: var(--text-dim); padding: 20px;">Esperando primera operación en Pionex...</td></tr>';
                 }
 
