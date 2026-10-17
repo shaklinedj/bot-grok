@@ -155,6 +155,23 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- 1.1 HISTORIAL DE MALLAS TOTALES COSECHADAS (Ciclos Completos de Apertura a Cierre) -->
+    <div class="card p-5 space-y-4 border-l-4 border-l-purple-500 bg-[#0d1117] shadow-xl">
+      <div class="flex items-center justify-between flex-wrap gap-2">
+        <div class="flex items-center gap-2.5">
+          <span class="text-xl">🏁</span>
+          <div>
+            <h3 class="text-xs uppercase font-black tracking-wider text-purple-300">Historial de Mallas Totales Cosechadas (Ciclos Completos)</h3>
+            <p class="text-[11px] text-gray-400 font-mono">Desglose integral de cada malla finalizada: Apertura, Cierre, Ganancia Cosechada y Escalones</p>
+          </div>
+        </div>
+        <span class="text-xs font-mono text-emerald-400 bg-emerald-950/60 border border-emerald-500/30 px-2.5 py-1 rounded font-bold" id="closed-grids-count-badge">0 Mallas Cerradas</span>
+      </div>
+      <div id="closed-grids-container" class="space-y-3">
+        <!-- Inyectado dinámicamente por JS -->
+      </div>
+    </div>
+
     <!-- 2. AUDITORÍA PnL POR TRADE / MALLA (Ciclos Completos) -->
     <div class="card p-5 space-y-3 border-l-4 border-l-emerald-500">
       <div class="flex items-center justify-between flex-wrap gap-2">
@@ -629,8 +646,73 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
       // Trades
       renderTrades(data.recent_trades || []);
+
+      // Historial de Mallas Totales Cosechadas (Ciclos Completos)
+      renderClosedGrids(data.closed_grids_history || []);
     }
 
+    function renderClosedGrids(closedGrids) {
+      const container = document.getElementById('closed-grids-container');
+      const badge = document.getElementById('closed-grids-count-badge');
+      if (!container) return;
+      if (!closedGrids || closedGrids.length === 0) {
+        if (badge) badge.innerText = '0 Mallas Cerradas';
+        container.innerHTML = '<div class="py-4 text-center text-gray-500 font-mono text-xs">Sin mallas cerradas registradas aún</div>';
+        return;
+      }
+
+      if (badge) badge.innerText = `${closedGrids.length} Mallas Cosechadas`;
+      let html = '';
+      for (const cg of closedGrids) {
+        const isWin = Number(cg.total_pnl) >= 0;
+        const pnlColor = isWin ? 'text-emerald-400' : 'text-rose-400';
+        const pnlSign = isWin ? '+' : '';
+        const badgeColor = isWin ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-rose-500/20 text-rose-300 border-rose-500/30';
+        const statusBadge = cg.is_manual ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' : (isWin ? 'bg-purple-500/20 text-purple-300 border-purple-500/30' : 'bg-rose-500/20 text-rose-300 border-rose-500/30');
+        
+        const startTimeStr = cg.start_time ? (cg.start_time.includes('T') ? cg.start_time.split('T')[1].split('.')[0] : cg.start_time) : '--:--';
+        const endTimeStr = cg.end_time ? (cg.end_time.includes('T') ? cg.end_time.split('T')[1].split('.')[0] : cg.end_time) : '--:--';
+        const startDateStr = cg.start_time ? cg.start_time.split('T')[0] : '';
+        
+        let durationMin = 0;
+        if (cg.start_time && cg.end_time) {
+          try {
+            const t0 = new Date(cg.start_time).getTime();
+            const t1 = new Date(cg.end_time).getTime();
+            durationMin = Math.max(0, Math.round((t1 - t0) / 60000));
+          } catch(e){}
+        }
+        const durStr = durationMin >= 60 ? `${Math.floor(durationMin/60)}h ${durationMin%60}m` : `${durationMin}m`;
+
+        html += `
+          <div class="card p-4 border border-gray-800/80 bg-gray-950/60 rounded-xl space-y-3 hover:border-purple-500/40 transition-colors">
+            <div class="flex items-center justify-between flex-wrap gap-2">
+              <div class="flex items-center gap-2.5 flex-wrap">
+                <span class="text-xl font-black text-white">${cg.symbol}</span>
+                <span class="px-2.5 py-0.5 rounded text-xs font-bold border ${badgeColor}">
+                  MALLA TOTAL: ${pnlSign}$${Number(cg.total_pnl).toFixed(4)} USDT
+                </span>
+                <span class="px-2 py-0.5 rounded text-[11px] font-mono font-bold border ${statusBadge}">
+                  ${cg.status}
+                </span>
+              </div>
+              <div class="text-xs font-mono text-gray-400 flex items-center gap-3">
+                <span>⚡ <strong class="text-cyan-300">${cg.sell_fills} cosechas</strong> (${cg.total_fills} ops ejecutadas)</span>
+                <span>⏱️ Duración: <strong class="text-gray-300">${durStr}</strong></span>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono pt-2 border-t border-gray-800/60 text-gray-400">
+              <div><span class="text-[10px] text-gray-500 block font-bold">🚀 APERTURA</span> <strong class="text-white">${startDateStr} ${startTimeStr}</strong> @ $${Number(cg.entry_price).toFixed(4)}</div>
+              <div><span class="text-[10px] text-gray-500 block font-bold">🏁 CIERRE</span> <strong class="text-white">${endTimeStr}</strong> @ $${Number(cg.exit_price).toFixed(4)}</div>
+              <div><span class="text-[10px] text-gray-500 block font-bold">💸 COMISIÓN BINANCE</span> <strong class="text-gray-400">$${Number(cg.total_fees).toFixed(4)} USDT</strong></div>
+              <div><span class="text-[10px] text-gray-500 block font-bold">💰 GANANCIA LIMPIA</span> <strong class="${pnlColor} font-bold text-sm">${pnlSign}$${Number(cg.total_pnl).toFixed(4)} USDT</strong></div>
+            </div>
+          </div>
+        `;
+      }
+      container.innerHTML = html;
+    }
     
     function renderGrids(grids, data = {}) {
       const container = document.getElementById('grids-container');
@@ -851,6 +933,34 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <span>🛑</span>
                 <span>CERRAR A MERCADO</span>
               </button>
+            </div>
+          </div>
+
+          <!-- Resumen Destacado de Apertura y Cosecha Acumulada de Esta Malla -->
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-gray-950/80 p-3.5 rounded-xl border border-gray-800 font-mono text-xs">
+            <div>
+              <span class="text-[10px] text-gray-500 block uppercase font-bold">🚀 Rango de Apertura</span>
+              <span class="text-white font-bold">$${Number(g.grid_lower).toFixed(4)} - $${Number(g.grid_upper).toFixed(4)}</span>
+              <span class="text-[10px] text-gray-400 block mt-0.5">Capital: $${capTotal.toFixed(2)} USDT</span>
+            </div>
+            <div>
+              <span class="text-[10px] text-gray-500 block uppercase font-bold">🎯 Cosechado en Esta Malla</span>
+              <span class="${gridProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'} font-bold text-sm">
+                ${gridProfit >= 0 ? '+' : ''}$${gridProfit.toFixed(4)} USDT
+              </span>
+              <span class="text-[10px] text-purple-300 block mt-0.5">${closedCycles.length} Cosechas Cobradas</span>
+            </div>
+            <div>
+              <span class="text-[10px] text-gray-500 block uppercase font-bold">📊 PnL Flotante Vivo</span>
+              <span class="${gridFloating >= 0 ? 'text-emerald-400' : 'text-rose-400'} font-bold">
+                ${gridFloating >= 0 ? '+' : ''}$${gridFloating.toFixed(4)} USDT (${gridRoiPct >= 0 ? '+' : ''}${gridRoiPct.toFixed(2)}%)
+              </span>
+              <span class="text-[10px] text-gray-400 block mt-0.5">${Number(g.tokens_held || 0).toFixed(2)} tokens retenidos</span>
+            </div>
+            <div>
+              <span class="text-[10px] text-gray-500 block uppercase font-bold">⏳ Escalones en Espera</span>
+              <span class="text-sky-300 font-bold">${buys.length} Compras abajo</span>
+              <span class="text-rose-400 font-bold block mt-0.5">${sells.length} Ventas arriba</span>
             </div>
           </div>
 
@@ -1425,8 +1535,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         const timePart = t.timestamp ? t.timestamp.split('T')[1]?.split('.')[0] : '--:--:--';
         const isBuy = t.side === 'buy';
         let actionBadge = '';
-        if (isBuy) {
-          actionBadge = '<span class="text-[10px] bg-emerald-500/20 text-emerald-300 font-bold px-2 py-0.5 rounded border border-emerald-500/30">🟢 APERTURA</span>';
+        if (t.strategy === 'grid_init' || t.side === 'setup') {
+          actionBadge = '<span class="text-[10px] bg-purple-500/20 text-purple-300 font-bold px-2 py-0.5 rounded border border-purple-500/30">🕸️ INICIO MALLA</span>';
+        } else if (t.strategy === 'grid_manual_market_exit') {
+          actionBadge = '<span class="text-[10px] bg-rose-500/20 text-rose-300 font-bold px-2 py-0.5 rounded border border-rose-500/30">🛑 SALIDA MERCADO</span>';
+        } else if (t.strategy === 'grid_buy' || isBuy) {
+          actionBadge = '<span class="text-[10px] bg-emerald-500/20 text-emerald-300 font-bold px-2 py-0.5 rounded border border-emerald-500/30">🟢 COMPRA ESCALÓN</span>';
+        } else if (t.strategy === 'grid_sell') {
+          actionBadge = '<span class="text-[10px] bg-cyan-500/20 text-cyan-300 font-bold px-2 py-0.5 rounded border border-cyan-500/30">🔴 VENTA COSECHADA</span>';
         } else if (t.strategy && t.strategy.includes('tp1') || t.status === 'PARTIAL_CLOSED') {
           actionBadge = '<span class="text-[10px] bg-blue-500/20 text-blue-300 font-bold px-2 py-0.5 rounded border border-blue-500/30">🎯 COBRO TP1</span>';
         } else {
@@ -1501,20 +1617,20 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         sumFees += fee;
 
         let actionBadge = '';
-        if (isBuy) {
-          actionBadge = '<span class="text-[10px] bg-emerald-500/20 text-emerald-300 font-bold px-2 py-0.5 rounded border border-emerald-500/30">🟢 COMPRA</span>';
+        if (t.strategy === 'grid_init' || t.side === 'setup') {
+          actionBadge = '<span class="text-[10px] bg-purple-500/20 text-purple-300 font-bold px-2 py-0.5 rounded border border-purple-500/30">🕸️ INICIO MALLA</span>';
+        } else if (t.strategy === 'grid_manual_market_exit') {
+          actionBadge = '<span class="text-[10px] bg-rose-500/20 text-rose-300 font-bold px-2 py-0.5 rounded border border-rose-500/30">🛑 SALIDA MERCADO</span>';
+        } else if (t.strategy === 'grid_buy' || isBuy) {
+          actionBadge = '<span class="text-[10px] bg-emerald-500/20 text-emerald-300 font-bold px-2 py-0.5 rounded border border-emerald-500/30">🟢 COMPRA ESCALÓN</span>';
+        } else if (t.strategy === 'grid_sell' || pnl > 0) {
+          actionBadge = '<span class="text-[10px] bg-cyan-500/20 text-cyan-300 font-bold px-2 py-0.5 rounded border border-cyan-500/30">🔴 VENTA COSECHADA</span>';
+          sumWins += pnl;
+          countWins++;
         } else {
-          if (pnl > 0) {
-            actionBadge = '<span class="text-[10px] bg-emerald-500/30 text-emerald-300 font-bold px-2 py-0.5 rounded border border-emerald-500/50">🎯 VENTA GANANCIA</span>';
-            sumWins += pnl;
-            countWins++;
-          } else if (pnl < 0) {
-            actionBadge = '<span class="text-[10px] bg-rose-500/30 text-rose-300 font-bold px-2 py-0.5 rounded border border-rose-500/50">🛑 VENTA PÉRDIDA</span>';
-            sumLosses += Math.abs(pnl);
-            countLosses++;
-          } else {
-            actionBadge = '<span class="text-[10px] bg-gray-800 text-gray-400 font-bold px-2 py-0.5 rounded">⚪ VENTA NEUTRA</span>';
-          }
+          actionBadge = '<span class="text-[10px] bg-rose-500/30 text-rose-300 font-bold px-2 py-0.5 rounded border border-rose-500/50">🛑 VENTA PÉRDIDA</span>';
+          sumLosses += Math.abs(pnl);
+          countLosses++;
         }
 
         let pnlDisplay = '<span class="text-gray-500">-</span>';

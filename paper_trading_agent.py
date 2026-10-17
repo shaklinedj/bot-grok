@@ -2216,6 +2216,51 @@ def update_live_state(bot: PaperBot, prices: Dict[str, float],
         unrealized_pct = (unrealized_pnl / holdings_val * 100) if holdings_val > 0 else 0.0
 
     recent_trades = vault.get_recent_trades(limit=250)
+    
+    # Agrupación Cuantitativa de Mallas Totales Cerradas (Historial de Ciclos Completos)
+    active_grid_ids = {g.grid_id for g in bot.grids.values() if g.active}
+    closed_grids_history = []
+    grid_groups: Dict[str, list] = {}
+    for t in recent_trades:
+        pos_id = t.get("position_id")
+        if not pos_id or pos_id in active_grid_ids or not str(pos_id).startswith("grid_"):
+            continue
+        if pos_id not in grid_groups:
+            grid_groups[pos_id] = []
+        grid_groups[pos_id].append(t)
+
+    for pos_id, g_trades in grid_groups.items():
+        g_trades_sorted = sorted(g_trades, key=lambda x: x.get("timestamp", ""))
+        sym = g_trades[0].get("symbol", "N/A")
+        total_pnl = sum(float(x.get("pnl") or 0.0) for x in g_trades)
+        total_fees = sum(float(x.get("fee") or 0.0) for x in g_trades)
+        sell_fills = [x for x in g_trades if x.get("side") == "sell" and x.get("strategy") != "grid_manual_market_exit"]
+        buy_fills = [x for x in g_trades if x.get("side") == "buy"]
+        is_manual_exit = any(x.get("strategy") == "grid_manual_market_exit" for x in g_trades)
+        start_time = g_trades_sorted[0].get("timestamp", "")
+        end_time = g_trades_sorted[-1].get("timestamp", "")
+        entry_price = float(g_trades_sorted[0].get("price", 0.0))
+        exit_price = float(g_trades_sorted[-1].get("price", 0.0))
+        
+        status_label = "Cierre Manual" if is_manual_exit else ("Objetivo Cumplido" if total_pnl > 0 else "Cerrada")
+        
+        closed_grids_history.append({
+            "grid_id": pos_id,
+            "symbol": sym,
+            "total_pnl": round(total_pnl, 4),
+            "total_fees": round(total_fees, 4),
+            "sell_fills": len(sell_fills),
+            "buy_fills": len(buy_fills),
+            "total_fills": len(g_trades),
+            "start_time": start_time,
+            "end_time": end_time,
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "status": status_label,
+            "is_manual": is_manual_exit
+        })
+    closed_grids_history.sort(key=lambda x: x.get("end_time", ""), reverse=True)
+
     equity_hist = vault.get_equity_history(sample_limit=300)
     if not equity_hist:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -2375,6 +2420,7 @@ def update_live_state(bot: PaperBot, prices: Dict[str, float],
             "tp1_pct": brain.tp1_gain_pct
         },
         "recent_trades": recent_trades,
+        "closed_grids_history": closed_grids_history,
         "equity_history": equity_hist,
         "last_agent_pct": LAST_AGENT_PCT
     }
@@ -2939,20 +2985,7 @@ def run_paper_trading(reset_all: bool = False):
                     elif curr_p < grid.grid_upper * 0.995:
                         grid.breakout_ticks = 0
 
-                    # 2. Si la malla ya acumuló >= $2.00 USDT de ganancia pura (Objetivo 2:1 cumplido en rango lateral / oscilación):
-                    if getattr(grid, "realized_pnl", 0.0) >= 2.00:
-                        recovered_cash = sum((l["price"] * l["amount"]) for l in grid.lines if l.get("active") and l.get("side") == "buy")
-                        for l in grid.lines:
-                            l["active"] = False
-                        bot.cash += recovered_cash
-                        grid.active = False
-                        grid_pnl_val = getattr(grid, "realized_pnl", 0.0)
-                        grid.status_msg = f"Objetivo de Ciclo Cumplido (+{grid_pnl_val:+.2f} USDT). Capital liberado a caja."
-                        bot.save_portfolio_state()
-                        print(f"  🏆💰 [OBJETIVO DE CICLO CUMPLIDO {sym}] +${grid_pnl_val:.4f} USDT cosechados (Ratio 2:1). Liberados ${recovered_cash:.2f} a caja líquida para nuevo ciclo compuesto.", flush=True)
-                        continue
-
-                    # 3. Si superó el techo pero la tendencia se agotó y no quedan compras activas:
+                    # 2. Si superó el techo pero la tendencia se agotó y no quedan compras activas:
                     if curr_p > grid.grid_upper * 1.008 and len(active_buys) == 0:
                         recovered_cash = sum((l["price"] * l["amount"]) for l in grid.lines if l.get("active") and l.get("side") == "buy")
                         for l in grid.lines:

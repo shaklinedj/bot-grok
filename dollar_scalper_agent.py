@@ -21,6 +21,7 @@ import urllib.request
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
+import csv
 import ccxt
 import pandas as pd
 
@@ -33,7 +34,8 @@ if hasattr(sys.stdout, "reconfigure"):
 
 # ====================== CONFIGURACIÓN GENERAL ======================
 INITIAL_CAPITAL = 80.00
-PORTFOLIO_DIR = "scalper_logs"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PORTFOLIO_DIR = os.path.join(BASE_DIR, "scalper_logs")
 SCALPER_STATE_FILE = os.path.join(PORTFOLIO_DIR, "scalper_state.json")
 SCALPER_TRADES_FILE = os.path.join(PORTFOLIO_DIR, "scalper_trades.csv")
 SCALPER_HISTORY_FILE = os.path.join(PORTFOLIO_DIR, "scalper_equity_history.csv")
@@ -273,6 +275,20 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
                 "active_trade": b.active_trade.to_dict() if b.active_trade else None,
                 "pending_order": b.pending_order.to_dict() if b.pending_order else None
             }
+            trades_list = []
+            if os.path.exists(SCALPER_TRADES_FILE):
+                try:
+                    with open(SCALPER_TRADES_FILE, "r", encoding="utf-8") as f:
+                        reader = csv.DictReader(f)
+                        rows = list(reader)
+                        for r in rows[-25:]:
+                            trades_list.append(r)
+                        trades_list.reverse()
+                except Exception as e:
+                    print(f"  [Dashboard Error Trades] {e}", flush=True)
+            else:
+                print(f"  [Dashboard Trades File Not Found] {SCALPER_TRADES_FILE}", flush=True)
+            data["trades"] = trades_list
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -302,8 +318,12 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
         .val-gold { color: #d29922; }
         .trade-box { background: #161b22; border: 1px solid #388bfd; border-radius: 8px; padding: 20px; margin-bottom: 25px; }
         .trade-title { font-size: 18px; font-weight: bold; color: #58a6ff; margin-bottom: 12px; }
-        .target-bar { background: #21262d; border-radius: 4px; height: 10px; overflow: hidden; margin: 15px 0; }
-        .target-fill { background: #2ea043; height: 100%; width: 50%; }
+        .table-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; margin-top: 25px; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; font-family: monospace; }
+        th { text-align: left; padding: 10px; border-bottom: 1px solid #30363d; color: #8b949e; font-size: 11px; text-transform: uppercase; }
+        td { padding: 10px; border-bottom: 1px solid #21262d; }
+        .tag-buy { background: rgba(46,160,67,0.15); color: #3fb950; border: 1px solid rgba(46,160,67,0.3); padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; }
+        .tag-sell { background: rgba(163,113,247,0.15); color: #bc8cff; border: 1px solid rgba(163,113,247,0.3); padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; }
         .status-line { color: #8b949e; font-size: 14px; margin-top: 15px; }
     </style>
 </head>
@@ -343,6 +363,33 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
 
     <div class="status-line">Estado del Motor: <span id="status-msg" style="color: #f0f6fc;">Iniciando...</span></div>
 
+    <!-- Tabla de Operaciones Ejecutadas -->
+    <div class="table-card">
+        <div style="font-size: 16px; font-weight: bold; color: #58a6ff; margin-bottom: 12px; display:flex; justify-content:space-between; align-items:center;">
+            <span>📋 Libro de Órdenes & Auditoría de Operaciones Realizadas</span>
+            <span style="font-size:12px; color:#8b949e; font-weight:normal;">Historial transparente con Fees y PnL Neto</span>
+        </div>
+        <div style="overflow-x: auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Hora</th>
+                        <th>Par</th>
+                        <th>Acción</th>
+                        <th>Precio</th>
+                        <th>Cantidad</th>
+                        <th>PnL Neto</th>
+                        <th>Fee Binance</th>
+                        <th>Detalle / Motivo</th>
+                    </tr>
+                </thead>
+                <tbody id="trades-body">
+                    <tr><td colspan="8" style="text-align:center; color:#8b949e; padding:15px;">Cargando operaciones...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
     <script>
         async function updateData() {
             try {
@@ -371,6 +418,34 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
                     box.style.borderColor = '#388bfd';
                     document.getElementById('trade-title').innerText = '🔍 RADAR ACTIVO: Buscando Siguiente Dólar';
                     document.getElementById('trade-details').innerText = '100% Líquido en Caja ($' + d.cash.toFixed(2) + '). Escaneando libro de órdenes...';
+                }
+
+                // Render Trades Table
+                const tbody = document.getElementById('trades-body');
+                if (d.trades && d.trades.length > 0) {
+                    let rowsHtml = '';
+                    for (const t of d.trades) {
+                        const isBuy = t.side === 'BUY';
+                        const badge = isBuy ? '<span class=\"tag-buy\">🟢 COMPRA</span>' : '<span class=\"tag-sell\">🔴 VENTA</span>';
+                        const pnlVal = parseFloat(t.pnl || 0);
+                        const pnlColor = pnlVal > 0 ? '#3fb950' : (pnlVal < 0 ? '#f85149' : '#8b949e');
+                        const pnlStr = !isBuy ? ('<span style=\"color:' + pnlColor + '; font-weight:bold;\">' + (pnlVal >= 0 ? '+' : '') + '$' + pnlVal.toFixed(4) + '</span>') : '<span style=\"color:#8b949e;\">-</span>';
+                        const tTime = t.timestamp ? (t.timestamp.includes('T') ? t.timestamp.split('T')[1].split('.')[0] : t.timestamp) : '--:--';
+                        const feeStr = '$' + parseFloat(t.fee || 0).toFixed(4);
+                        rowsHtml += '<tr>' +
+                            '<td style=\"color:#8b949e;\">' + tTime + '</td>' +
+                            '<td style=\"font-weight:bold; color:#f0f6fc;\">' + t.symbol + '</td>' +
+                            '<td>' + badge + '</td>' +
+                            '<td style=\"color:#f0f6fc;\">$' + parseFloat(t.price || 0).toFixed(4) + '</td>' +
+                            '<td style=\"color:#8b949e;\">' + parseFloat(t.amount || 0).toFixed(2) + '</td>' +
+                            '<td>' + pnlStr + '</td>' +
+                            '<td style=\"color:#8b949e;\">' + feeStr + '</td>' +
+                            '<td style=\"color:#e6edf3; font-family:sans-serif; font-size:12px;\">' + (t.note || '') + '</td>' +
+                        '</tr>';
+                    }
+                    tbody.innerHTML = rowsHtml;
+                } else {
+                    tbody.innerHTML = '<tr><td colspan=\"8\" style=\"text-align:center; color:#8b949e; padding:15px;\">No hay operaciones registradas aún</td></tr>';
                 }
             } catch(e){}
         }
