@@ -202,6 +202,20 @@ class PionexLiveExecutor:
         return free_usdt, frozen_usdt
 
     @classmethod
+    def get_coin_balance(cls, coin: str) -> float:
+        """Obtiene el saldo libre real de cualquier criptomoneda en Pionex."""
+        res = cls.run_cmd(["account", "balance"])
+        if not res.get("result"):
+            return 0.0
+        for b in res.get("data", {}).get("balances", []):
+            if b.get("coin") == coin:
+                try:
+                    return float(b.get("free", 0.0))
+                except Exception:
+                    return 0.0
+        return 0.0
+
+    @classmethod
     def get_symbol_rules(cls) -> Dict:
         """Cachea y retorna reglas de precisión de Pionex."""
         now = time.time()
@@ -256,13 +270,19 @@ class PionexLiveExecutor:
 
     @classmethod
     def place_limit_sell(cls, pio_symbol: str, price: float, size: float) -> Optional[str]:
-        """Coloca orden Límite de venta en Target (+0.95%) en Pionex."""
+        """Coloca orden Límite de venta en Target (+0.95%) ajustada al saldo libre real."""
         rules = cls.get_symbol_rules().get(pio_symbol, {"basePrecision": 2, "quotePrecision": 4})
         b_prec = rules["basePrecision"]
         q_prec = rules["quotePrecision"]
 
+        base_coin = pio_symbol.split("_")[0]
+        actual_free = cls.get_coin_balance(base_coin)
+        target_size = min(size, actual_free) if actual_free > 0 else size
+        factor = 10 ** b_prec
+        floored_size = math.floor(target_size * factor) / factor
+
         price_str = f"{price:.{q_prec}f}"
-        size_str = f"{size:.{b_prec}f}"
+        size_str = f"{floored_size:.{b_prec}f}"
 
         res = cls.run_cmd([
             "orders", "new",
@@ -279,10 +299,17 @@ class PionexLiveExecutor:
 
     @classmethod
     def place_market_sell(cls, pio_symbol: str, size: float) -> Optional[Dict]:
-        """Ejecuta una venta a mercado inmediata (Stop Loss Defensivo)."""
+        """Ejecuta una venta a mercado inmediata (Stop Loss Defensivo) ajustada al saldo libre real."""
         rules = cls.get_symbol_rules().get(pio_symbol, {"basePrecision": 2, "quotePrecision": 4})
         b_prec = rules["basePrecision"]
-        size_str = f"{size:.{b_prec}f}"
+
+        base_coin = pio_symbol.split("_")[0]
+        actual_free = cls.get_coin_balance(base_coin)
+        target_size = min(size, actual_free) if actual_free > 0 else size
+        factor = 10 ** b_prec
+        floored_size = math.floor(target_size * factor) / factor
+
+        size_str = f"{floored_size:.{b_prec}f}"
 
         res = cls.run_cmd([
             "orders", "new",
@@ -647,7 +674,7 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
             active_cap = b.active_trade.capital if b.active_trade else 0.0
             equity = free_cash + frozen_cash + active_cap
 
-            win_rate = (b.wins / b.total_trades * 100.0) if b.total_trades > 0 else 100.0
+            win_rate = (b.wins / b.total_trades * 100.0) if b.total_trades > 0 else 0.0
 
             trades_list = b.db.get_recent_trades(50)
             events_list = b.db.get_recent_events(40)
@@ -1082,27 +1109,27 @@ def get_scalper_dashboard_html() -> str:
 
     <!-- KPIs Bar -->
     <div class="grid-kpis">
-        <div class="card-kpi" style="border-top: 3px solid #388bfd;">
+        <div class="card-kpi" id="card-cash" style="border-top: 3px solid #388bfd;">
             <div class="kpi-label">Saldo Pionex USDT (Libre)</div>
-            <div class="kpi-val" id="cash">$70.35</div>
+            <div class="kpi-val" id="cash">$0.00</div>
         </div>
-        <div class="card-kpi" style="border-top: 3px solid #d29922;">
+        <div class="card-kpi" id="card-frozen" style="border-top: 3px solid #d29922;">
             <div class="kpi-label">En Orden Maker (Frozen)</div>
             <div class="kpi-val val-gold" id="frozen">$0.00</div>
         </div>
-        <div class="card-kpi" style="border-top: 3px solid #238636;">
+        <div class="card-kpi" id="card-equity" style="border-top: 3px solid #8b949e;">
             <div class="kpi-label">Equity Total Vivo</div>
-            <div class="kpi-val val-green" id="equity">$70.35</div>
+            <div class="kpi-val" id="equity">$0.00</div>
         </div>
-        <div class="card-kpi" style="border-top: 3px solid #3fb950;">
+        <div class="card-kpi" id="card-pnl" style="border-top: 3px solid #8b949e;">
             <div class="kpi-label">Ganancia Neta (Live)</div>
-            <div class="kpi-val val-green" id="pnl">+$0.00</div>
+            <div class="kpi-val" id="pnl">$0.00</div>
         </div>
-        <div class="card-kpi" style="border-top: 3px solid #f25555;">
+        <div class="card-kpi" id="card-winrate" style="border-top: 3px solid #8b949e;">
             <div class="kpi-label">Win Rate Real</div>
-            <div class="kpi-val val-green" id="winrate">100.0%</div>
+            <div class="kpi-val" id="winrate">0.0%</div>
         </div>
-        <div class="card-kpi" style="border-top: 3px solid #a371f7;">
+        <div class="card-kpi" id="card-trades" style="border-top: 3px solid #a371f7;">
             <div class="kpi-label">Disparos Cerrados</div>
             <div class="kpi-val" id="trades">0</div>
         </div>
@@ -1253,14 +1280,51 @@ def get_scalper_dashboard_html() -> str:
                 const d = await res.json();
                 setTxt('conn-badge', 'PIONEX CUENTA REAL VIVA (SQLite)');
 
-                // 1. KPIs
+                // 1. KPIs Dinámicos con Colores Reales (Verde solo si hay ganancia)
                 setTxt('cash', '$' + Number(d.cash || 0).toFixed(2));
                 setTxt('frozen', '$' + Number(d.frozen || 0).toFixed(2));
-                setTxt('equity', '$' + Number(d.equity || 0).toFixed(2));
+
+                // Equity Dinámico
+                const eqVal = Number(d.equity || 0);
+                const initCap = 70.35;
+                const eqDiff = eqVal - initCap;
+                const eqEl = document.getElementById('equity');
+                const eqCard = document.getElementById('card-equity');
+                if (eqEl) {
+                    eqEl.innerText = '$' + eqVal.toFixed(2);
+                    eqEl.style.color = eqDiff >= 0.05 ? '#3fb950' : (eqDiff <= -0.20 ? '#f85149' : '#d29922');
+                }
+                if (eqCard) {
+                    eqCard.style.borderTopColor = eqDiff >= 0.05 ? '#3fb950' : (eqDiff <= -0.20 ? '#f85149' : '#d29922');
+                }
+
+                // Ganancia Neta (PnL) Dinámica
                 const pnlVal = Number(d.realized_pnl || 0);
-                setTxt('pnl', (pnlVal >= 0 ? '+$' : '-$') + Math.abs(pnlVal).toFixed(4));
-                setTxt('winrate', Number(d.win_rate || 100).toFixed(1) + '%');
-                setTxt('trades', (d.total_trades || 0) + ' (' + (d.wins || 0) + 'W / ' + (d.losses || 0) + 'L)');
+                const pnlEl = document.getElementById('pnl');
+                const pnlCard = document.getElementById('card-pnl');
+                if (pnlEl) {
+                    pnlEl.innerText = (pnlVal > 0 ? '+$' : (pnlVal < 0 ? '-$' : '$')) + Math.abs(pnlVal).toFixed(4);
+                    pnlEl.style.color = pnlVal > 0.0001 ? '#3fb950' : (pnlVal < -0.0001 ? '#f85149' : '#8b949e');
+                }
+                if (pnlCard) {
+                    pnlCard.style.borderTopColor = pnlVal > 0.0001 ? '#3fb950' : (pnlVal < -0.0001 ? '#f85149' : '#8b949e');
+                }
+
+                // Win Rate Dinámico (Matemático Real)
+                const totTrades = Number(d.total_trades || 0);
+                const wins = Number(d.wins || 0);
+                const wrVal = totTrades > 0 ? (wins / totTrades * 100.0) : 0.0;
+                const wrEl = document.getElementById('winrate');
+                const wrCard = document.getElementById('card-winrate');
+                if (wrEl) {
+                    wrEl.innerText = totTrades > 0 ? wrVal.toFixed(1) + '%' : '0.0%';
+                    wrEl.style.color = totTrades === 0 ? '#8b949e' : (wrVal >= 50.0 ? '#3fb950' : '#f85149');
+                }
+                if (wrCard) {
+                    wrCard.style.borderTopColor = totTrades === 0 ? '#8b949e' : (wrVal >= 50.0 ? '#3fb950' : '#f85149');
+                }
+
+                setTxt('trades', totTrades + ' (' + wins + 'W / ' + Number(d.losses || 0) + 'L)');
                 setTxt('cycle-count', d.scan_cycle || 0);
 
                 // 2. Spotlight Hero Card
@@ -1538,6 +1602,10 @@ def run_dollar_scalper():
                     PionexLiveExecutor.cancel_all_orders(pio_sym)
                     time.sleep(0.5)
                     sell_res = PionexLiveExecutor.place_market_sell(pio_sym, trade.amount)
+                    if not sell_res:
+                        bot.add_log(f"⚠️ Error al ejecutar market sell en {pio_sym}. Reintentando...", "trade")
+                        time.sleep(2.0)
+                        continue
 
                     time.sleep(2.0)
                     bot.sync_balance()
@@ -1711,6 +1779,9 @@ def run_dollar_scalper():
                                 continue
                 else:
                     bot.status_msg = f"Radar activo: Líder {top['name']} (Score {top['score']:.1f}/100 | OBI {top['obi']:+.2f}). Esperando gatillo."
+
+            if cycle % 8 == 0:
+                bot.sync_balance()
 
             bot.save_state()
             time.sleep(3.0)
