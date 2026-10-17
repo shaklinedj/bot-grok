@@ -51,11 +51,10 @@ STOP_LOSS_PCT = 0.0120      # -1.20% bruto -> -1.30% neto (-$0.78 USDT en $60.00
 ORDER_EXPIRY_SECS = 480     # 8 minutos de paciencia para pescar el retroceso Maker sin inundar la API
 MAX_HOLD_TIME_SECS = 2400   # 40 minutos máximo por trade (salida defensiva si se estanca)
 
-# Whitelist de 13 monedas de altísima liquidez verificadas en Pionex Spot
+# Whitelist de Altcoins Ágiles de Alta Beta (excluye BTC y ETH por baja velocidad de oscilación)
 INSTITUTIONAL_SCALP_WHITELIST = [
-    "SUI/USDT", "NEAR/USDT", "SOL/USDT", "ETH/USDT", "BTC/USDT",
-    "LINK/USDT", "AVAX/USDT", "UNI/USDT", "ADA/USDT", "INJ/USDT",
-    "DOT/USDT", "DOGE/USDT", "XRP/USDT"
+    "SOL/USDT", "SUI/USDT", "NEAR/USDT", "INJ/USDT", "AVAX/USDT",
+    "LINK/USDT", "UNI/USDT", "DOGE/USDT", "ADA/USDT", "DOT/USDT", "XRP/USDT"
 ]
 
 os.makedirs(PORTFOLIO_DIR, exist_ok=True)
@@ -1045,7 +1044,7 @@ def get_scalper_dashboard_html() -> str:
     <!-- Banner Info -->
     <div class="banner">
         <div>
-            🛡️ <b>MOMENTUM SNIPER SPOT:</b> Radar analizando libros de órdenes (LOB Imbalance) de las 13 líderes en tiempo real. Cero mallas atrapadas. El capital entra, cobra el dólar y vuelve 100% a caja líquida.
+            🛡️ <b>MOMENTUM SNIPER SPOT:</b> Radar analizando libros de órdenes (LOB Imbalance) de Altcoins Ágiles de Alta Beta en tiempo real (excluye BTC/ETH). Cero mallas atrapadas. El capital entra en soporte, cobra el dólar (+1.70%) y vuelve 100% a caja líquida.
         </div>
         <div style="font-family: monospace; font-size: 12px; color: #58a6ff;">
             Barrido #<span id="cycle-count">0</span> • Base de Datos: <span style="color:#3fb950; font-weight:bold;">SQLite WAL (scalper_vault.db)</span>
@@ -1140,7 +1139,7 @@ def get_scalper_dashboard_html() -> str:
     <div class="radar-card">
         <div class="section-header">
             <div class="section-title">
-                <span>📊 RADAR DE ORDER FLOW: 13 MONEDAS LÍDERES EN PIONEX SPOT</span>
+                <span>📊 RADAR DE ORDER FLOW: ALTCOINS ÁGILES EN PIONEX SPOT</span>
             </div>
             <span style="font-size: 12px; color: var(--text-dim);">Ordenado en vivo por Puntaje de Convicción Cuantitativa</span>
         </div>
