@@ -246,6 +246,14 @@ class PionexLiveExecutor:
         return []
 
     @classmethod
+    def get_market_depth(cls, pio_symbol: str, limit: int = 5) -> Dict:
+        """Obtiene la profundidad nativa del libro de órdenes directamente de Pionex."""
+        res = cls.run_cmd(["market", "depth", pio_symbol, "--limit", str(limit)])
+        if res.get("result"):
+            return res.get("data", {})
+        return {}
+
+    @classmethod
     def place_limit_buy(cls, pio_symbol: str, price: float, size: float) -> Optional[str]:
         """Coloca una orden Maker Límite de compra en Pionex."""
         rules = cls.get_symbol_rules().get(pio_symbol, {"basePrecision": 2, "quotePrecision": 4})
@@ -408,6 +416,7 @@ class ScalperBot:
         self.scan_cycle = 0
         self.radar_telemetry: List[Dict] = []
         self.event_log = deque(maxlen=40)
+        self.consecutive_triggers: Dict[str, int] = {}
         self.data_lock = threading.Lock()
         self.sync_balance()
         self.load_state()
@@ -589,15 +598,19 @@ def fetch_full_radar_telemetry(bot: ScalperBot) -> List[Dict]:
             q_prec = sym_rule.get("quotePrecision", 4)
             entry_limit = round(curr_p * 0.999, q_prec)
 
-        # Filtro de Régimen Macro: Evitar comprar rebotes trampa en monedas bajistas de 24h
-        is_macro_aligned = (chg_24h >= -2.5) and (curr_p >= sma20 * 0.998)
-        is_valid_flow = (obi >= 0.16) and is_macro_aligned and (47.0 <= rsi <= 65.0)
+        # Filtro de Régimen Macro y Microestructura Estricta (Pro-Tendencia, Cero Cuchillos Cayendo):
+        # 1. 24h Change: Estrictamente positivo o neutral (>= -0.20%). Prohibido comprar monedas en markdown.
+        # 2. SMA20 (15m): Precio cotizando por encima de la media móvil promediada (curr_p >= sma20).
+        # 3. OBI Institucional: Desbalance comprador robusto (obi >= 0.18 y bid_pct >= 58.0%).
+        # 4. Momentum RSI Saludable: 49.0 <= rsi <= 68.0 (evita activos en colapso o sobrecomprados al límite).
+        is_macro_aligned = (chg_24h >= -0.20) and (curr_p >= sma20)
+        is_valid_flow = (obi >= 0.18) and (bid_pct >= 58.0) and is_macro_aligned and (49.0 <= rsi <= 68.0)
 
-        score = (obi * 40.0) + (min(2.0, vol_spike) * 20.0) + (25.0 if curr_p > sma20 else 0.0) + ((rsi - 45.0) * 0.75)
+        score = (obi * 35.0) + (min(2.0, vol_spike) * 20.0) + (25.0 if curr_p > sma20 else 0.0) + (15.0 if chg_24h > 0 else 0.0) + ((rsi - 45.0) * 0.5)
         score = max(0.0, min(100.0, score))
 
-        trigger_ready = is_valid_flow and (score >= 45.0)
-        gap_to_trigger = max(0.0, round(45.0 - score, 1))
+        trigger_ready = is_valid_flow and (score >= 48.0)
+        gap_to_trigger = max(0.0, round(48.0 - score, 1))
 
         if trigger_ready:
             flow_status = "🟢 DISPARO LISTO"
@@ -1748,19 +1761,53 @@ def run_dollar_scalper():
                 top = telemetry[0]
                 if top.get("trigger_ready"):
                     pio_sym = top["pio_symbol"]
+
+                    # 1. Filtro Anti-Spoofing: Confirmar persistencia del flujo durante al menos 2 ciclos (~8s)
+                    bot.consecutive_triggers[pio_sym] = bot.consecutive_triggers.get(pio_sym, 0) + 1
+                    for s in list(bot.consecutive_triggers.keys()):
+                        if s != pio_sym:
+                            bot.consecutive_triggers[s] = 0
+
+                    if bot.consecutive_triggers[pio_sym] < 2:
+                        bot.status_msg = f"Validando persistencia de flujo en {pio_sym} ({bot.consecutive_triggers[pio_sym]}/2 ciclos)..."
+                        time.sleep(3.0)
+                        continue
+
+                    # 2. Verificación NATIVA directa en el libro de órdenes de Pionex
+                    pio_depth = PionexLiveExecutor.get_market_depth(pio_sym, limit=5)
+                    p_bid_pct = 50.0
+                    p_ask_pct = 50.0
+                    if pio_depth and pio_depth.get("bids") and pio_depth.get("asks"):
+                        p_bids_vol = sum(float(b[1]) for b in pio_depth["bids"])
+                        p_asks_vol = sum(float(a[1]) for a in pio_depth["asks"])
+                        p_tot = p_bids_vol + p_asks_vol
+                        p_bid_pct = (p_bids_vol / p_tot * 100.0) if p_tot > 0 else 50.0
+                        p_ask_pct = (p_asks_vol / p_tot * 100.0) if p_tot > 0 else 50.0
+
+                        if p_ask_pct >= 50.0 or p_bid_pct < 52.0:
+                            bot.add_log(f"🛑 RECHAZO NATIVO PIONEX: {pio_sym} tiene vendedores dominando en Pionex ({p_ask_pct:.1f}% Asks vs {p_bid_pct:.1f}% Bids). Abortando disparo.", "trade")
+                            bot.consecutive_triggers[pio_sym] = 0
+                            time.sleep(3.5)
+                            continue
+
+                        # Calibrar precio límite con el Best Bid nativo de Pionex
+                        p_best_bid = float(pio_depth["bids"][0][0])
+                        entry_limit = min(top["entry_limit"], p_best_bid)
+                    else:
+                        entry_limit = top["entry_limit"]
+
                     sym_rules = rules.get(pio_sym, {"basePrecision": 2, "quotePrecision": 4, "minAmount": 10.0})
 
                     bot.sync_balance()
                     trade_capital = min(bot.cash * 0.86, 60.00)
 
                     if trade_capital >= sym_rules["minAmount"]:
-                        entry_limit = top["entry_limit"]
                         raw_size = trade_capital / entry_limit
                         b_prec = sym_rules["basePrecision"]
                         size = round(raw_size, b_prec)
 
                         if size >= sym_rules["minTradeSize"]:
-                            bot.add_log(f"⚡ DISPARO FRANCOTIRADOR: {pio_sym} Score {top['score']:.1f} | OBI {top['obi']:+.2f} | Colocando Maker Límite...", "trade")
+                            bot.add_log(f"⚡ DISPARO FRANCOTIRADOR: {pio_sym} Score {top['score']:.1f} | OBI {top['obi']:+.2f} | Libro Pionex {p_bid_pct:.1f}% Compras | Colocando Maker...", "trade")
                             order_id = PionexLiveExecutor.place_limit_buy(pio_sym, entry_limit, size)
                             if order_id:
                                 po = ScalperPendingOrder(
@@ -1769,7 +1816,7 @@ def run_dollar_scalper():
                                     limit_price=entry_limit,
                                     size=size,
                                     capital=trade_capital,
-                                    reason=f"OBI={top['obi']:+.2f} | RSI={top['rsi']:.1f} | Score={top['score']:.1f}"
+                                    reason=f"OBI={top['obi']:+.2f} | RSI={top['rsi']:.1f} | PionexBids={p_bid_pct:.1f}%"
                                 )
                                 bot.pending_order = po
                                 bot.sync_balance()
@@ -1778,6 +1825,8 @@ def run_dollar_scalper():
                                 bot.save_state()
                                 continue
                 else:
+                    for s in list(bot.consecutive_triggers.keys()):
+                        bot.consecutive_triggers[s] = 0
                     bot.status_msg = f"Radar activo: Líder {top['name']} (Score {top['score']:.1f}/100 | OBI {top['obi']:+.2f}). Esperando gatillo."
 
             if cycle % 8 == 0:
