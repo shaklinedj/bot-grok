@@ -48,7 +48,7 @@ SCALPER_HTTP_PORT = 8899
 PIONEX_FEE_RATE = 0.0005    # 0.05% Pionex Spot Maker/Taker estándar
 TARGET_PROFIT_PCT = 0.0170  # +1.70% bruto -> +1.60% neto (~+$1.00 USDT en $60.00)
 STOP_LOSS_PCT = 0.0120      # -1.20% bruto -> -1.30% neto (-$0.78 USDT en $60.00)
-ORDER_EXPIRY_SECS = 90      # Cancelar orden de entrada si no retrocede en 90s
+ORDER_EXPIRY_SECS = 480     # 8 minutos de paciencia para pescar el retroceso Maker sin inundar la API
 MAX_HOLD_TIME_SECS = 2400   # 40 minutos máximo por trade (salida defensiva si se estanca)
 
 # Whitelist de 13 monedas de altísima liquidez verificadas en Pionex Spot
@@ -593,9 +593,9 @@ def telemetry_background_thread(bot: ScalperBot):
                         f"📡 Radar sweep #{bot.scan_cycle}: Top {top['name']} (Score {top['score']:.1f} | OBI {top['obi']:+.2f} | RSI {top['rsi']:.1f})",
                         "radar"
                     )
-            time.sleep(2.5)
+            time.sleep(4.0)
         except Exception:
-            time.sleep(3.0)
+            time.sleep(4.0)
 
 
 # ====================== DASHBOARD HTTP LOCAL ULTRA-VISUAL ======================
@@ -645,22 +645,26 @@ class ScalperDashboardHandler(http.server.BaseHTTPRequestHandler):
                 "trades": trades_list
             }
 
+            encoded = json.dumps(data).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
             self.end_headers()
-            self.wfile.write(json.dumps(data).encode("utf-8"))
+            self.wfile.write(encoded)
             return
 
         # HTML Dashboard en vivo
+        html = get_scalper_dashboard_html()
+        encoded_html = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded_html)))
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.end_headers()
-        html = get_scalper_dashboard_html()
-        self.wfile.write(html.encode("utf-8"))
+        self.wfile.write(encoded_html)
 
     def log_message(self, format, *args):
         pass
@@ -1397,7 +1401,7 @@ def get_scalper_dashboard_html() -> str:
             }
         }
 
-        setInterval(updateDashboard, 1500);
+        setInterval(updateDashboard, 2500);
         updateDashboard();
     </script>
 </body>
@@ -1566,7 +1570,7 @@ def run_dollar_scalper():
 
                 unrealized_pct = ((curr_p - trade.entry_price) / trade.entry_price) * 100.0
                 bot.status_msg = f"En Trade {pio_sym} @ ${trade.entry_price:.4f} | Actual: ${curr_p:.4f} ({unrealized_pct:+.2f}%) | Target: ${trade.target_price:.4f}"
-                time.sleep(1.5)
+                time.sleep(3.0)
                 continue
 
             # -------------------------------------------------------------
@@ -1635,7 +1639,7 @@ def run_dollar_scalper():
                     bot.save_state()
                     continue
 
-                time.sleep(1.5)
+                time.sleep(5.0)
                 continue
 
             # -------------------------------------------------------------
@@ -1681,11 +1685,11 @@ def run_dollar_scalper():
                     bot.status_msg = f"Radar activo: Líder {top['name']} (Score {top['score']:.1f}/100 | OBI {top['obi']:+.2f}). Esperando gatillo."
 
             bot.save_state()
-            time.sleep(1.5)
+            time.sleep(3.0)
 
         except Exception as e:
             print(f"  [Error Bucle Scalper] {e}", flush=True)
-            time.sleep(2.0)
+            time.sleep(3.0)
 
 
 if __name__ == "__main__":
