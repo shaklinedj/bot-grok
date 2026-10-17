@@ -1,0 +1,12 @@
+{
+  "cash": 70.3477,
+  "realized_pnl": 0.0,
+  "wins": 0,
+  "losses": 0,
+  "total_trades": 0,
+  "status_msg": "Escaneando 13 pares l\u00edderes en Pionex... Esperando OBI > +0.18 y soporte LOB.",
+  "active_trade": null,
+  "pending_order": null,
+  "updated_at": "2026-10-17T11:31:17.271576",
+  "mode": "PIONEX_LIVE_SPOT"
+}
