@@ -2261,7 +2261,7 @@ def run_dollar_scalper():
     rules = PionexLiveExecutor.get_symbol_rules()
     print("=" * 80, flush=True)
     print("  THE 1-DOLLAR SCALPER - PIONEX SPOT", flush=True)
-    print(f"  • Modo                           -> {'SOLO LECTURA (sin órdenes)' if DASHBOARD_ONLY else 'CUENTA REAL SPOT VIVA'}", flush=True)
+    print(f"  • Modo                           -> {'SOLO LECTURA (sin órdenes)' if DASHBOARD_ONLY else ('PAPER TRADING (órdenes simuladas, datos Pionex)' if PAPER_MODE else 'CUENTA REAL SPOT VIVA')}", flush=True)
     print("  • Persistencia Transaccional     -> SQLite WAL (scalper_vault.db)", flush=True)
     print(f"  • Saldo Pionex Detectado         -> ${bot.cash:.2f} USDT (Libre: ${bot.cash:.2f} | Frozen: ${bot.frozen:.2f})", flush=True)
     print(f"  • Objetivo por Disparo           -> +{TARGET_PROFIT_PCT*100:.2f}%", flush=True)
