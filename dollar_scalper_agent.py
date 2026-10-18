@@ -1802,12 +1802,19 @@ def _dashboard_html_raw() -> str:
                 const sym = document.getElementById('spotlight-sym');
 
                 if (act) {
+                    const activeCoinData = (d.radar_telemetry || []).find(c => c.pio_symbol === act.symbol || c.ccxt_symbol === act.symbol) || top;
                     if (box) box.style.borderColor = '#3fb950';
                     setHtml('spotlight-title', '<span style="color:#3fb950;">🎯 EN POSICIÓN REAL EN PIONEX:</span>');
                     setTxt('spotlight-sym', act.symbol);
                     if (sym) sym.style.background = '#238636';
                     if (badge) { badge.className = 'tag-ready'; badge.innerText = 'ORDEN VENTA PIONEX #' + (act.target_order_id || 'ACTIVA'); }
-                    setTxt('spotlight-price', '$' + Number(act.entry_price).toFixed(4));
+                    
+                    const liveP = activeCoinData ? Number(activeCoinData.price) : Number(act.entry_price);
+                    setTxt('spotlight-price', '$' + liveP.toFixed(4));
+                    const pnlPct = ((liveP - act.entry_price) / act.entry_price) * 100;
+                    const pnlColor = pnlPct >= 0 ? '#3fb950' : '#f85149';
+                    setHtml('spotlight-chg', '<span style="color:' + pnlColor + '; font-weight:bold;">(' + (pnlPct >= 0 ? '+' : '') + pnlPct.toFixed(2) + '%)</span>');
+
                     setTxt('spotlight-entry', '$' + Number(act.entry_price).toFixed(4));
                     const actTgtPct = (act.target_pct || 0.0075) * 100;
                     const actStpPct = (act.stop_pct || 0.0220) * 100;
@@ -1815,29 +1822,48 @@ def _dashboard_html_raw() -> str:
                     setHtml('label-stop', `STOP DEFENSIVO ATR (-${actStpPct.toFixed(2)}%)`);
                     setTxt('spotlight-target', '$' + Number(act.target_price).toFixed(4));
                     setTxt('spotlight-stop', '$' + Number(act.stop_price).toFixed(4));
+
+                    // Duel Bar viva de la posición activa
+                    if (activeCoinData) {
+                        setTxt('duel-bids-pct', Number(activeCoinData.bid_pct || 50).toFixed(1) + '%');
+                        setTxt('duel-asks-pct', Number(activeCoinData.ask_pct || 50).toFixed(1) + '%');
+                        const obi = Number(activeCoinData.obi || 0);
+                        setTxt('duel-obi', (obi >= 0 ? '+' : '') + obi.toFixed(3));
+                        const bBids = document.getElementById('bar-bids');
+                        const bAsks = document.getElementById('bar-asks');
+                        if (bBids) bBids.style.width = (activeCoinData.bid_pct || 50) + '%';
+                        if (bAsks) bAsks.style.width = (activeCoinData.ask_pct || 50) + '%';
+                    }
                 } else if (pend) {
+                    const pendCoinData = (d.radar_telemetry || []).find(c => c.pio_symbol === pend.symbol || c.ccxt_symbol === pend.symbol) || top;
                     if (box) box.style.borderColor = '#d29922';
                     setHtml('spotlight-title', '<span style="color:#d29922;">⏳ ORDEN MAKER LÍMITE EN PIONEX:</span>');
                     setTxt('spotlight-sym', pend.symbol);
                     if (sym) sym.style.background = '#d29922';
                     if (badge) { badge.className = 'tag-warm'; badge.innerText = 'ESPERANDO RETROCESO (#' + pend.order_id + ')'; }
-                    setTxt('spotlight-price', '$' + Number(pend.limit_price).toFixed(4));
+                    const liveP = pendCoinData ? Number(pendCoinData.price) : Number(pend.limit_price);
+                    setTxt('spotlight-price', '$' + liveP.toFixed(4));
+                    if (pendCoinData) {
+                        const chg = Number(pendCoinData.change_24h || 0);
+                        const chgColor = chg >= 0 ? '#3fb950' : '#f85149';
+                        setHtml('spotlight-chg', '<span style="color:' + chgColor + '">' + (chg >= 0 ? '+' : '') + chg.toFixed(2) + '%</span>');
+                    }
                     setTxt('spotlight-entry', '$' + Number(pend.limit_price).toFixed(4));
-                    const pTgtPct = (pend.target_pct || (top ? top.dyn_target_pct : 0.0075)) * 100;
-                    const pStpPct = (pend.stop_pct || (top ? top.dyn_stop_pct : 0.0220)) * 100;
+                    const pTgtPct = (pend.target_pct || (pendCoinData ? pendCoinData.dyn_target_pct : 0.0075)) * 100;
+                    const pStpPct = (pend.stop_pct || (pendCoinData ? pendCoinData.dyn_stop_pct : 0.0220)) * 100;
                     setHtml('label-target', `TARGET DINÁMICO ATR (+${pTgtPct.toFixed(2)}%)`);
                     setHtml('label-stop', `STOP DEFENSIVO ATR (-${pStpPct.toFixed(2)}%)`);
                     setTxt('spotlight-target', '$' + (Number(pend.limit_price) * (1 + pTgtPct / 100)).toFixed(4));
                     setTxt('spotlight-stop', '$' + (Number(pend.limit_price) * (1 - pStpPct / 100)).toFixed(4));
-                    if (top) {
-                        setTxt('duel-bids-pct', Number(top.bid_pct || 50).toFixed(1) + '%');
-                        setTxt('duel-asks-pct', Number(top.ask_pct || 50).toFixed(1) + '%');
-                        const obi = Number(top.obi || 0);
+                    if (pendCoinData) {
+                        setTxt('duel-bids-pct', Number(pendCoinData.bid_pct || 50).toFixed(1) + '%');
+                        setTxt('duel-asks-pct', Number(pendCoinData.ask_pct || 50).toFixed(1) + '%');
+                        const obi = Number(pendCoinData.obi || 0);
                         setTxt('duel-obi', (obi >= 0 ? '+' : '') + obi.toFixed(3));
                         const bBids = document.getElementById('bar-bids');
                         const bAsks = document.getElementById('bar-asks');
-                        if (bBids) bBids.style.width = (top.bid_pct || 50) + '%';
-                        if (bAsks) bAsks.style.width = (top.ask_pct || 50) + '%';
+                        if (bBids) bBids.style.width = (pendCoinData.bid_pct || 50) + '%';
+                        if (bAsks) bAsks.style.width = (pendCoinData.ask_pct || 50) + '%';
                     }
                 } else if (top) {
                     if (box) box.style.borderColor = '#388bfd';
