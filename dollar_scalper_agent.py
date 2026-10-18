@@ -68,12 +68,12 @@ if FAST_MODE:
     TARGET_PROFIT_PCT = 0.0050     # Base fallback dinámico (~0.70x ATR)
     STOP_LOSS_PCT = 0.0180         # Piso de seguridad catastrófico (~2.2x ATR, nunca cazado por ruido)
     ORDER_EXPIRY_SECS = 90
-    MAX_HOLD_TIME_SECS = 900       # 15 minutos de ventana de impulso
+    MAX_HOLD_TIME_SECS = 2700      # 45 minutos para evaluar stall exit con ganancia (+0.20% o más)
     MIN_RANGE15_PCT = 0.30
     STOP_COOLDOWN_SECS = 300
     FAST_MAX_SPREAD_PCT = 0.08
     FAST_MIN_PROFIT_EXIT = 0.0020  # salida si supera +0.20% (ganancia neta tras 0.10% fees)
-    FAST_FORCE_EXIT_SECS = 1500    # 25 min máximo absoluto
+    FAST_FORCE_EXIT_SECS = 14400   # 4 horas de margen máximo por estancamiento absoluto (sin salidas ciegas a los 25m)
     FAST_TRIGGERS_REQUIRED = 1
 else:
     FAST_MAX_SPREAD_PCT = 0.08
@@ -2091,12 +2091,37 @@ def manage_active_trade(bot: ScalperBot, now_ts: float):
 
     held = now_ts - trade.entry_time
     gain = (curr_p - trade.entry_price) / trade.entry_price
-    if held >= FAST_FORCE_EXIT_SECS:
-        if market_exit(bot, trade, curr_p, "⏱️ Salida forzada por tiempo", is_stop=gain < 0):
+
+    # 1. Salida defensiva por degradación estructural del flujo LOB (Order Book Invalidation):
+    # Solo si el trade va en pérdida (<= -0.40%) y el libro nativo de Pionex colapsa
+    # con más del 68% de presión vendedora (Asks) y OBI fuertemente negativo (<= -0.28).
+    if gain <= -0.0040:
+        try:
+            depth = PionexLiveExecutor.get_market_depth(pio_sym, limit=5)
+            if depth and depth.get("bids") and depth.get("asks"):
+                bids_vol = sum(float(b[1]) for b in depth["bids"])
+                asks_vol = sum(float(a[1]) for a in depth["asks"])
+                tot = bids_vol + asks_vol
+                if tot > 0:
+                    lob_obi = (bids_vol - asks_vol) / tot
+                    lob_asks_pct = (asks_vol / tot) * 100.0
+                    if lob_obi <= -0.28 and lob_asks_pct >= 68.0:
+                        bot.add_log(f"⚠️ COLAPSO DE FLUJO: Vendedores dominando ({lob_asks_pct:.1f}% Asks | OBI {lob_obi:+.2f}). Salida defensiva.", "trade")
+                        if market_exit(bot, trade, curr_p, "⚠️ Salida defensiva por degradación de flujo LOB", is_stop=True):
+                            time.sleep(2)
+                        return
+        except Exception:
+            pass
+
+    # 2. Stall Exit inteligente: ÚNICAMENTE cuando hay ganancia neta consolidada tras 45 minutos:
+    if held >= MAX_HOLD_TIME_SECS and gain >= FAST_MIN_PROFIT_EXIT:
+        if market_exit(bot, trade, curr_p, "⏱️ Salida por tiempo con ganancia (stall exit)", is_stop=False):
             time.sleep(2)
         return
-    if held >= MAX_HOLD_TIME_SECS and gain >= FAST_MIN_PROFIT_EXIT:
-        if market_exit(bot, trade, curr_p, "⏱️ Salida por tiempo (stall exit)", is_stop=False):
+
+    # 3. Límite máximo absoluto por estancamiento extremo (>4 horas sin resolución):
+    if held >= FAST_FORCE_EXIT_SECS:
+        if market_exit(bot, trade, curr_p, "⏱️ Salida por estancamiento extremo (>4h)", is_stop=gain < 0):
             time.sleep(2)
         return
 
