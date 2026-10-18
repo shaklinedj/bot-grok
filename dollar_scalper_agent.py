@@ -1030,32 +1030,42 @@ def fetch_full_radar_telemetry(bot: ScalperBot) -> List[Dict]:
             q_prec = sym_rule.get("quotePrecision", 4)
             entry_limit = round(curr_p * 0.999, q_prec)
 
-        # Filtro de Régimen Macro y Microestructura Estricta (Pro-Tendencia, Cero Cuchillos Cayendo):
-        # 1. 24h Change: Estrictamente positivo o neutral (>= -0.20%). Prohibido comprar monedas en markdown.
-        # 2. SMA20 (15m): Precio cotizando por encima de la media móvil promediada (curr_p >= sma20).
-        # 3. OBI Institucional: Desbalance comprador robusto (obi >= 0.18 y bid_pct >= 58.0%).
-        # 4. Momentum RSI Saludable: 49.0 <= rsi <= 68.0 (evita activos en colapso o sobrecomprados al límite).
-        if FAST_MODE:
-            # Sin sesgo de régimen: basta presión compradora inmediata, spread barato y volatilidad suficiente.
-            # RSI < 80 evita comprar techos; en caída se compran rebotes (RSI bajo permitido).
-            is_macro_aligned = True
-            is_valid_flow = (obi >= 0.08) and (bid_pct >= 53.0) and (spread_pct <= FAST_MAX_SPREAD_PCT) \
-                and (rsi <= 80.0) and (range_pct >= MIN_RANGE15_PCT)
-            entry_limit = round(best_ask, q_prec)  # cruza el ask: fill inmediato (comisión maker = taker en Pionex)
-        else:
-            is_macro_aligned = (chg_24h >= -0.20) and (curr_p >= sma20)
-            is_valid_flow = (obi >= 0.18) and (bid_pct >= 58.0) and is_macro_aligned and (49.0 <= rsi <= 68.0) and (range_pct >= MIN_RANGE15_PCT)
+        # Filtro Cuantitativo de Reversión a la Media + Order Flow (Comprar en Descuento con Absorción):
+        # 1. Desviación porcentual respecto a la media móvil (15m SMA20):
+        dev_pct = ((curr_p - sma20) / sma20 * 100.0) if sma20 > 0 else 0.0
 
-        score = (obi * 35.0) + (min(2.0, vol_spike) * 20.0) + (25.0 if curr_p > sma20 else 0.0) + (15.0 if chg_24h > 0 else 0.0) + ((rsi - 45.0) * 0.5)
-        score = max(0.0, min(100.0, score))
+        # 2. Cero techos / Cero euforia:
+        # Prohibido comprar si RSI > 56.0 o si el precio está sobre-extendido en la parte alta (dev_pct > +0.25%).
+        # Buscamos activos en retroceso / sobreventa saludable (28.0 <= RSI <= 56.0) cerca o debajo de la media.
+        is_discount_zone = (rsi <= 56.0) and (dev_pct <= 0.25) and (rsi >= 28.0)
 
-        trigger_ready = is_valid_flow and (score >= 48.0)
-        gap_to_trigger = max(0.0, round(48.0 - score, 1))
+        # 3. Confirmación de Order Flow (Cero cuchillos cayendo):
+        # No entramos a ciegas: exigimos que los compradores estén absorbiendo activamente en el libro de órdenes
+        # (OBI >= +0.08 y al menos 53.0% de Bids con spread estrecho).
+        is_order_flow_confirmed = (obi >= 0.08) and (bid_pct >= 53.0) and (spread_pct <= FAST_MAX_SPREAD_PCT)
+        is_valid_flow = is_discount_zone and is_order_flow_confirmed and (range_pct >= MIN_RANGE15_PCT)
+
+        # 4. Entrada Maker Límite en Best Bid (entrar en retroceso, capturando el spread):
+        entry_limit = round(best_bid, q_prec)
+
+        # 5. Scoring Cuantitativo de Reversión a la Media (0 a 100):
+        # - Desbalance Comprador en Soporte (hasta 40 pts)
+        score_flow = (obi * 35.0) + (10.0 if bid_pct >= 55.0 else 0.0)
+        # - Magnitud del Descuento / Sobreventa (hasta 30 pts): más puntos a mejor descuento
+        score_discount = max(0.0, min(30.0, (-dev_pct * 15.0) + ((55.0 - rsi) * 0.7)))
+        # - Absorción de Volumen en Soporte (hasta 20 pts)
+        score_vol = min(2.0, vol_spike) * 10.0
+        # - Volatilidad ATR (hasta 10 pts)
+        score_atr = min(10.0, range_pct * 10.0)
+
+        score = max(0.0, min(100.0, score_flow + score_discount + score_vol + score_atr))
+        trigger_ready = is_valid_flow and (score >= 42.0)
+        gap_to_trigger = max(0.0, round(42.0 - score, 1))
 
         if trigger_ready:
             flow_status = "🟢 DISPARO LISTO"
-        elif score >= 30.0:
-            flow_status = "🟡 ACUMULANDO"
+        elif score >= 28.0:
+            flow_status = "🟡 RETROCESO / SOPORTE"
         else:
             flow_status = "⚪ NEUTRAL"
 
@@ -1071,6 +1081,7 @@ def fetch_full_radar_telemetry(bot: ScalperBot) -> List[Dict]:
             "bid_pct": round(bid_pct, 1),
             "ask_pct": round(ask_pct, 1),
             "rsi": round(rsi, 1),
+            "dev_pct": round(dev_pct, 2),
             "vol_spike": round(vol_spike, 2),
             "range_pct": round(range_pct, 2),
             "atr_pct": round(atr_pct, 2),
@@ -1674,6 +1685,7 @@ def _dashboard_html_raw() -> str:
                         <th>LOB Desequilibrio (Bids vs Asks)</th>
                         <th>RSI 15m</th>
                         <th>ATR 15m</th>
+                        <th>Dev Media</th>
                         <th>Volumen Spike</th>
                         <th>Puntaje de Convicción</th>
                         <th>Entrada Maker Proyectada</th>
@@ -1681,7 +1693,7 @@ def _dashboard_html_raw() -> str:
                     </tr>
                 </thead>
                 <tbody id="radar-tbody">
-                    <tr><td colspan="11" style="text-align: center; color: var(--text-dim); padding: 25px;">Cargando telemetría de alta frecuencia...</td></tr>
+                    <tr><td colspan="12" style="text-align: center; color: var(--text-dim); padding: 25px;">Cargando telemetría de alta frecuencia...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -1935,8 +1947,9 @@ def _dashboard_html_raw() -> str:
                                     <span style="font-size: 11px; color: #8b949e;">${Number(c.bid_pct).toFixed(0)}% Bids</span>
                                 </div>
                             </td>
-                            <td><span style="color: ${c.rsi >= 47 && c.rsi <= 65 ? '#3fb950' : '#d29922'}; font-weight: bold;">${Number(c.rsi).toFixed(1)}</span></td>
+                            <td><span style="color: ${c.rsi <= 52 ? '#3fb950' : (c.rsi <= 65 ? '#d29922' : '#f85149')}; font-weight: bold;">${Number(c.rsi).toFixed(1)}</span></td>
                             <td><span style="color: #58a6ff; font-weight: bold;">${Number(c.atr_pct || 0).toFixed(2)}%</span></td>
+                            <td><span style="color: ${(c.dev_pct || 0) <= 0 ? '#3fb950' : '#d29922'}; font-weight: bold;">${(c.dev_pct || 0) > 0 ? '+' : ''}${Number(c.dev_pct || 0).toFixed(2)}%</span></td>
                             <td><span style="color: #c9d1d9;">${Number(c.vol_spike).toFixed(2)}x</span></td>
                             <td>
                                 <div class="score-bar-bg">
@@ -2265,13 +2278,11 @@ def try_entry(bot: ScalperBot, rules: Dict, now_ts: float):
             bot.consecutive_triggers[pio_sym] = 0
             return
         best_bid_p, best_ask_p = float(pio_depth["bids"][0][0]), float(pio_depth["asks"][0][0])
-        if FAST_MODE:
-            if (best_ask_p - best_bid_p) / best_ask_p * 100.0 > FAST_MAX_SPREAD_PCT:
-                bot.status_msg = f"Spread Pionex amplio en {pio_sym}; esperando."
-                return
-            entry_limit = best_ask_p  # fill inmediato
-        else:
-            entry_limit = min(entry_limit, best_bid_p)
+        if (best_ask_p - best_bid_p) / best_ask_p * 100.0 > FAST_MAX_SPREAD_PCT:
+            bot.status_msg = f"Spread Pionex amplio en {pio_sym}; esperando."
+            return
+        # En Reversión a la Media: entrada Maker Límite en Best Bid para entrar con descuento y cobrar prioridad
+        entry_limit = min(entry_limit, best_bid_p)
 
     sym_rules = rules.get(pio_sym, {"basePrecision": 2, "quotePrecision": 4, "minAmount": 10.0, "minTradeSize": 0.01})
     bot.sync_balance()
