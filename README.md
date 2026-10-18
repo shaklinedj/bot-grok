@@ -191,3 +191,13 @@ Ingresa en tu navegador a:
 ```
 http://localhost:8888
 ```
+
+### Agente de reversión (solo paper)
+`reversion_agent.py` busca retrocesos moderados en una lista acotada de monedas líquidas. Una señal requiere caída de 3-8% en 24h, debilidad moderada frente a BTC y al menos $10M de volumen cotizado estimado en 24h; BTC no debe caer más de 4%. Además, la última vela horaria cerrada debe marcar mínimo creciente, cerrar hasta 1.5% por encima del máximo previo y tener entre 1.2x y 3x el volumen medio de las 20 velas anteriores. No compra únicamente porque una moneda haya caído, ni garantiza un rebote.
+
+```bash
+py -3.12 reversion_agent.py --once
+py -3.12 tools/backtest_reversal.py
+```
+
+El agente sigue siendo exclusivamente de simulación (`PAPER`); el backtest usa las mismas reglas de señal.

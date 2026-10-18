@@ -1229,15 +1229,9 @@ class PaperBot:
         total_recovered = recovered_buy_cash + sell_proceeds
 
         grid.realized_pnl += liquidation_pnl
-        self.total_realized_pnl_acc += liquidation_pnl
         self.cash += total_recovered
-
-        if liquidation_pnl >= 0:
-            self.wins += 1
-        else:
-            self.losses += 1
-        self.total_trades += 1
-
+        self.total_fees_paid += taker_fee
+        # log_trade acumula PnL/wins/losses/total_trades en cierres CLOSED
         self.log_trade(
             symbol=grid.symbol,
             strategy="grid_circuit_breaker" if "CATASTRÓFICO" in reason or "TIME-STOP" in reason else "grid_manual_market_exit",
@@ -2701,6 +2695,7 @@ def run_paper_trading(reset_all: bool = False):
                         grid.last_fill_ts = time.time()
                         grid.fills_count = getattr(grid, "fills_count", 0) + 1
                         grid.buy_fills_count = getattr(grid, "buy_fills_count", 0) + 1
+                        bot.total_fees_paid += fees
                         
                         # Crear orden de venta en el siguiente escalón simétrico
                         if step_sz > 0:
@@ -2741,10 +2736,8 @@ def run_paper_trading(reset_all: bool = False):
                         buy_cost = line["amount"] * real_buy_price
                         profit = net_usdt - buy_cost
                         grid.realized_pnl += profit
-                        bot.total_realized_pnl_acc += profit
                         bot.cash += net_usdt
-                        bot.wins += 1
-                        bot.total_trades += 1
+                        bot.total_fees_paid += fees
                         
                         # RE-EVALUACIÓN CUANTITATIVA: ESCUDO ANTI-MECHAZOS (Anti-Wick Shield)
                         regime_sell = get_symbol_1h_regime(sym)
@@ -3047,13 +3040,7 @@ def run_paper_trading(reset_all: bool = False):
                                 l["active"] = False
                             
                             grid.realized_pnl += rel_pnl
-                            bot.total_realized_pnl_acc += rel_pnl
                             bot.cash += rel_val
-                            if rel_pnl >= 0:
-                                bot.wins += 1
-                            else:
-                                bot.losses += 1
-                            bot.total_trades += 1
                             
                             bot.log_trade(
                                 symbol=sym, strategy="grid_relief_exit", side="sell", price=curr_p, amount=rel_tokens,
@@ -3087,13 +3074,7 @@ def run_paper_trading(reset_all: bool = False):
 
                         liquidation_loss = total_sell_val - total_buy_cost
                         grid.realized_pnl += liquidation_loss
-                        bot.total_realized_pnl_acc += liquidation_loss
                         bot.cash += recovered_cash
-                        if liquidation_loss < 0:
-                            bot.losses += 1
-                        else:
-                            bot.wins += 1
-                        bot.total_trades += 1
                         bot.log_trade(
                             symbol=sym, strategy="grid_structural_stop", side="sell", price=curr_p, amount=sold_tokens,
                             pnl=round(liquidation_loss, 4), fee=round(total_sell_val * FEE_RATE, 4), slippage=0.0,
@@ -3142,12 +3123,6 @@ def run_paper_trading(reset_all: bool = False):
 
                         bot.cash += total_recovered
                         grid.realized_pnl += trailing_profit
-                        bot.total_realized_pnl_acc += trailing_profit
-                        if trailing_profit >= 0:
-                            bot.wins += 1
-                        else:
-                            bot.losses += 1
-                        bot.total_trades += 1
 
                         if sold_tokens > 0:
                             bot.log_trade(
