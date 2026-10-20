@@ -194,7 +194,12 @@ class SwingTrade:
         self.rr_ratio = rr_ratio
         self.entry_time = entry_time
         self.entry_fee = entry_fee
-        self.is_be_active = False  # Break-Even Shield activado
+        self.is_be_active = False        # Break-Even Shield activado (+0.20%)
+        self.is_trailing_active = False  # Trailing Stop ATR activado
+        self.highest_price = entry_price
+        self.current_price = entry_price
+        self.unrealized_pnl = 0.0
+        self.unrealized_pnl_pct = 0.0
         self.status = "OPEN"
 
     def to_dict(self) -> Dict:
@@ -214,6 +219,11 @@ class SwingTrade:
             "entry_time": self.entry_time,
             "entry_fee": self.entry_fee,
             "is_be_active": self.is_be_active,
+            "is_trailing_active": self.is_trailing_active,
+            "highest_price": self.highest_price,
+            "current_price": self.current_price,
+            "unrealized_pnl": self.unrealized_pnl,
+            "unrealized_pnl_pct": self.unrealized_pnl_pct,
             "status": self.status
         }
 
@@ -236,6 +246,11 @@ class SwingTrade:
             entry_fee=d.get("entry_fee", 0.0)
         )
         st.is_be_active = d.get("is_be_active", False)
+        st.is_trailing_active = d.get("is_trailing_active", False)
+        st.highest_price = d.get("highest_price", st.entry_price)
+        st.current_price = d.get("current_price", st.entry_price)
+        st.unrealized_pnl = d.get("unrealized_pnl", 0.0)
+        st.unrealized_pnl_pct = d.get("unrealized_pnl_pct", 0.0)
         st.status = d.get("status", "OPEN")
         return st
 
@@ -409,17 +424,17 @@ def analyze_hourly_swing_structure(symbol: str) -> Optional[Dict]:
     avg_vol = sum(vols_1h[-20:]) / 20.0 if vols_1h else 1.0
     vol_spike = (vols_1h[-1] / avg_vol) if avg_vol > 0 else 1.0
 
-    # 3. Parámetros Asimétricos Proyectados (R:R >= 3:1)
-    # Stop Loss colocado 1.0x ATR debajo del soporte (o swing low reciente):
-    swing_low_1h = min(lows_1h[-10:])
-    stop_distance = max(curr_p * 0.012, max(curr_p - swing_low_1h, curr_p * (atr_pct / 100.0)))
-    stop_pct = min(0.020, max(0.012, stop_distance / curr_p))  # entre 1.2% y 2.0%
-    stop_price = round(curr_p * (1.0 - stop_pct), 4)
+    # 3. Parámetros Cuantitativos 100% Dinámicos por ATR 1H (Cero Hardcoding):
+    # Stop Loss Dinámico: 1.50x ATR 1H (espacio natural de oscilación de la moneda)
+    stop_distance = 1.50 * atr_1h
+    stop_pct = round(stop_distance / curr_p, 4)
+    stop_price = round(curr_p - stop_distance, 4)
 
-    # Target Asimétrico (3.0x a 3.5x el Stop):
-    target_pct = min(0.080, max(0.040, stop_pct * 3.2))  # entre +4.0% y +8.0%
-    target_price = round(curr_p * (1.0 + target_pct), 4)
-    rr_ratio = round(target_pct / stop_pct, 2)
+    # Target Asimétrico Dinámico: 4.50x ATR 1H (Garantiza R:R de 3.0:1 exacto)
+    target_distance = 4.50 * atr_1h
+    target_pct = round(target_distance / curr_p, 4)
+    target_price = round(curr_p + target_distance, 4)
+    rr_ratio = round(target_pct / (stop_pct if stop_pct > 0 else 0.001), 2)
 
     # 4. Filtro Anti-Cuchillo (Anti-Knife Shield):
     # Prohibido comprar si las últimas 3 velas de 1H son rojas consecutivas con cuerpo expansivo
@@ -540,15 +555,36 @@ def manage_active_swing_trade(bot: SwingBot):
 
     gain_pct = (curr_p - tr.entry_price) / tr.entry_price
 
-    # 1. Escudo Break-Even: Si el trade alcanza +1.20%, subir el Stop a +0.20% (riesgo cero)
-    if not tr.is_be_active and gain_pct >= BREAK_EVEN_TRIGGER_PCT:
+    tr.current_price = curr_p
+    tr.highest_price = max(getattr(tr, "highest_price", tr.entry_price), curr_p)
+    tr.unrealized_pnl = (curr_p - tr.entry_price) * tr.amount
+    tr.unrealized_pnl_pct = gain_pct * 100.0
+
+    atr_val_abs = tr.entry_price * (tr.atr_pct / 100.0)
+
+    # 1. Escudo Break-Even: Si el trade alcanza +1.0x ATR (o mínimo +1.20%), subir el Stop a +0.20% (riesgo cero)
+    be_threshold = max(0.0120, (tr.atr_pct / 100.0) * 0.8)
+    if not tr.is_be_active and gain_pct >= be_threshold:
         tr.is_be_active = True
         new_stop = round(tr.entry_price * (1.0 + BREAK_EVEN_STOP_PCT), 4)
-        tr.stop_price = new_stop
-        bot.add_log(f"🛡️ ESCUDO BREAK-EVEN ACTIVADO en {sym}: Ganancia superó +{gain_pct*100:.2f}%. Stop movido a ${new_stop:.4f} (+0.20% asegurado). Trade 100% libre de riesgo.", "trade")
-        bot.save_state()
+        if new_stop > tr.stop_price:
+            tr.stop_price = new_stop
+            bot.add_log(f"🛡️ ESCUDO BREAK-EVEN ACTIVADO en {sym}: Ganancia +{gain_pct*100:.2f}%. Stop sube a ${new_stop:.4f} (+0.20% asegurado). Trade 100% libre de riesgo.", "trade")
+            bot.save_state()
 
-    # 2. Cierre por Target (+4.0% a +6.5% neto):
+    # 2. Trailing Profit Dinámico por ATR (Chandelier Exit):
+    # Si la ganancia supera +1.5x ATR, el Stop persigue el máximo histórico menos 1.5x ATR, bloqueando beneficios:
+    trailing_trigger = (tr.atr_pct / 100.0) * 1.5
+    if gain_pct >= trailing_trigger:
+        trail_stop = round(tr.highest_price - (1.50 * atr_val_abs), 4)
+        if trail_stop > tr.stop_price:
+            old_stop = tr.stop_price
+            tr.stop_price = trail_stop
+            tr.is_trailing_active = True
+            bot.add_log(f"📈 TRAILING ATR ELEVADO en {sym}: Máximo ${tr.highest_price:.4f}. Stop sube de ${old_stop:.4f} a ${trail_stop:.4f} asegurando beneficios crecientes.", "trade")
+            bot.save_state()
+
+    # 3. Cierre por Target (+4.5x ATR neto):
     if curr_p >= tr.target_price:
         gross_pnl = (tr.target_price - tr.entry_price) * tr.amount
         exit_fee = (tr.target_price * tr.amount) * FEE_RATE
@@ -772,24 +808,32 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 </div>
                 <div class="metric-box">
                     <div class="metric">
-                        <div class="metric-label">Caja Simulada</div>
+                        <div class="metric-label">Patrimonio Total (Equity)</div>
+                        <div class="metric-value" id="swing-equity" style="color: #58a6ff;">$70.00</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Caja Disponible</div>
                         <div class="metric-value" id="swing-cash">$70.00</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">En Posición (Invertido)</div>
+                        <div class="metric-value" id="swing-invested">$0.00</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">PnL Flotante (En Vivo)</div>
+                        <div class="metric-value" id="swing-unrealized">$0.00 (0.00%)</div>
                     </div>
                     <div class="metric">
                         <div class="metric-label">PnL Realizado</div>
                         <div class="metric-value" id="swing-pnl">$0.00</div>
                     </div>
                     <div class="metric">
-                        <div class="metric-label">Ratio R:R Objetivo</div>
-                        <div class="metric-value" style="color: var(--green);">3.0 : 1</div>
-                    </div>
-                    <div class="metric">
-                        <div class="metric-label">Trades (W / L)</div>
+                        <div class="metric-label">Trades Cerrados</div>
                         <div class="metric-value" id="swing-stats">0 (0W / 0L)</div>
                     </div>
                 </div>
                 <!-- POSICIÓN SWING ACTIVA -->
-                <div id="active-box" style="background: #0d1117; border: 1px dashed var(--border); border-radius: 8px; padding: 12px; font-family: monospace; font-size: 12px;">
+                <div id="active-box" style="background: #0d1117; border: 1px dashed var(--border); border-radius: 8px; padding: 14px; font-family: monospace; font-size: 12px;">
                     <div id="active-status" style="color: var(--text-dim);">Sin posición Swing activa. Escaneando retrocesos con descuento en 1H...</div>
                 </div>
             </div>
@@ -857,23 +901,64 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 }
 
                 // 2. Swing Paper
-                document.getElementById('swing-cash').innerText = '$' + Number(d.cash || 70.00).toFixed(2);
-                const pnl = Number(d.stats?.pnl || 0);
+                const cash = Number(d.cash || 0);
+                const equity = Number(d.equity || cash);
+                const invested = Number(d.invested || 0);
+                const unPnl = Number(d.unrealized_pnl || 0);
+                const unPnlPct = Number(d.unrealized_pnl_pct || 0);
+                const realPnl = Number(d.stats?.pnl || 0);
+
+                document.getElementById('swing-equity').innerText = '$' + equity.toFixed(2);
+                document.getElementById('swing-cash').innerText = '$' + cash.toFixed(2);
+                document.getElementById('swing-invested').innerText = '$' + invested.toFixed(2);
+                
+                const unEl = document.getElementById('swing-unrealized');
+                const unSign = unPnl >= 0 ? '+' : '';
+                unEl.innerText = `${unSign}$${unPnl.toFixed(2)} (${unSign}${unPnlPct.toFixed(2)}%)`;
+                unEl.style.color = unPnl >= 0 ? '#3fb950' : '#f85149';
+
                 const pnlEl = document.getElementById('swing-pnl');
-                pnlEl.innerText = (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + ' USDT';
-                pnlEl.style.color = pnl >= 0 ? '#3fb950' : '#f85149';
+                pnlEl.innerText = (realPnl >= 0 ? '+' : '') + realPnl.toFixed(2) + ' USDT';
+                pnlEl.style.color = realPnl >= 0 ? '#3fb950' : '#f85149';
                 document.getElementById('swing-stats').innerText = `${d.stats?.total || 0} (${d.stats?.wins || 0}W / ${d.stats?.losses || 0}L)`;
 
                 // Posición Activa
                 const actEl = document.getElementById('active-status');
                 if (d.active_trade) {
                     const tr = d.active_trade;
-                    const beBadge = tr.is_be_active ? '<span class="tag tag-green">🛡️ BREAK-EVEN ACTIVO</span>' : '<span class="tag tag-yellow">RIESGO INICIAL</span>';
-                    actEl.innerHTML = `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-                        <span style="font-weight:bold; color:#58a6ff;">🦅 POSICIÓN ABIERTA: ${tr.symbol}</span>
-                        ${beBadge}
+                    let badge = '<span class="tag tag-yellow">🟡 RIESGO INICIAL CONTROLADO</span>';
+                    if (tr.is_trailing_active) {
+                        badge = '<span class="tag tag-green">📈 TRAILING PROFIT ACTIVO (ATR Chandelier)</span>';
+                    } else if (tr.is_be_active) {
+                        badge = '<span class="tag tag-green">🛡️ BREAK-EVEN ACTIVO (Riesgo Cero)</span>';
+                    }
+                    const liveP = Number(tr.current_price || tr.entry_price).toFixed(4);
+                    const entP = Number(tr.entry_price).toFixed(4);
+                    const tgtP = Number(tr.target_price).toFixed(4);
+                    const stpP = Number(tr.stop_price).toFixed(4);
+                    const highP = Number(tr.highest_price || tr.entry_price).toFixed(4);
+                    const unPnlStr = (unPnl >= 0 ? '+' : '') + unPnl.toFixed(4) + ' USDT (' + (unPnlPct >= 0 ? '+' : '') + unPnlPct.toFixed(2) + '%)';
+                    const unPnlColor = unPnl >= 0 ? '#3fb950' : '#f85149';
+                    const stopDiffPct = ((Number(tr.stop_price) - Number(tr.entry_price)) / Number(tr.entry_price) * 100).toFixed(2);
+                    const stopDiffSign = Number(stopDiffPct) >= 0 ? '+' : '';
+
+                    actEl.innerHTML = `
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; border-bottom:1px solid #21262d; padding-bottom:8px;">
+                        <span style="font-weight:bold; color:#58a6ff; font-size:14px;">🦅 POSICIÓN EN CURSO: ${tr.symbol}</span>
+                        ${badge}
                     </div>
-                    <div>Entrada: <b>$${Number(tr.entry_price).toFixed(4)}</b> | Target: <b style="color:#3fb950;">$${Number(tr.target_price).toFixed(4)} (+${(tr.target_pct*100).toFixed(2)}%)</b> | Stop: <b style="color:#f85149;">$${Number(tr.stop_price).toFixed(4)} (-${(tr.stop_pct*100).toFixed(2)}%)</b></div>`;
+                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap:10px; margin-bottom:10px;">
+                        <div><span style="color:var(--text-dim); font-size:10px;">PORTE (TAMAÑO):</span><br><b>${tr.amount} ${tr.symbol.split('/')[0]}</b> <span style="color:var(--text-dim); font-size:11px;">($${Number(tr.capital).toFixed(2)})</span></div>
+                        <div><span style="color:var(--text-dim); font-size:10px;">PRECIO ENTRADA:</span><br><b>$${entP}</b></div>
+                        <div><span style="color:var(--text-dim); font-size:10px;">PRECIO ACTUAL:</span><br><b style="color:#58a6ff;">$${liveP}</b> <span style="color:var(--text-dim); font-size:11px;">(Max: $${highP})</span></div>
+                        <div><span style="color:var(--text-dim); font-size:10px;">PNL FLOTANTE:</span><br><b style="color:${unPnlColor};">${unPnlStr}</b></div>
+                    </div>
+                    <div style="background:#161b22; border-radius:6px; padding:10px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px; font-size:11px; border:1px solid #21262d;">
+                        <div>🎯 <b>Target Dinámico:</b> <span style="color:#3fb950; font-weight:bold;">$${tgtP} (+${(tr.target_pct*100).toFixed(2)}%)</span></div>
+                        <div>🛡️ <b>Stop Dinámico ATR:</b> <span style="color:${Number(stopDiffPct) >= 0 ? '#3fb950' : '#f85149'}; font-weight:bold;">$${stpP} (${stopDiffSign}${stopDiffPct}%)</span></div>
+                        <div>📐 <b>R:R:</b> <span style="color:#3fb950; font-weight:bold;">${tr.rr_ratio}:1</span></div>
+                        <div>🌊 <b>ATR 1H:</b> <span style="color:var(--text-main); font-weight:bold;">${tr.atr_pct}%</span></div>
+                    </div>`;
                 } else {
                     actEl.innerHTML = `<span style="color:var(--text-dim);">${d.status_msg || 'Sin posición activa. Buscando retrocesos de alta probabilidad...'}</span>`;
                 }
@@ -953,11 +1038,22 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 stats = bot.db.get_stats()
                 events = bot.db.get_recent_events(30)
                 grid_stats = dict(bot.real_grid_stats)
+                tr = bot.active_trade
+
+            invested = tr.capital if tr else 0.0
+            live_val = (tr.amount * getattr(tr, "current_price", tr.entry_price)) if tr else 0.0
+            equity = bot.cash + (live_val if tr else 0.0)
+            unrealized_pnl = (live_val - invested) if tr else 0.0
+            unrealized_pnl_pct = ((live_val - invested) / invested * 100.0) if tr and invested > 0 else 0.0
 
             payload = {
-                "cash": bot.cash,
+                "cash": round(bot.cash, 2),
+                "equity": round(equity, 2),
+                "invested": round(invested, 2),
+                "unrealized_pnl": round(unrealized_pnl, 4),
+                "unrealized_pnl_pct": round(unrealized_pnl_pct, 2),
                 "status_msg": bot.status_msg,
-                "active_trade": bot.active_trade.to_dict() if bot.active_trade else None,
+                "active_trade": tr.to_dict() if tr else None,
                 "stats": stats,
                 "radar_telemetry": telemetry,
                 "real_grid": grid_stats,

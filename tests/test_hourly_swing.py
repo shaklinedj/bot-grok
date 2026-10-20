@@ -112,3 +112,53 @@ def test_swing_trade_stop_loss(test_bot, monkeypatch):
     assert stats["total"] == 1
     assert stats["losses"] == 1
     assert stats["pnl"] < 0
+
+
+def test_swing_trade_trailing_profit(test_bot, monkeypatch):
+    # Trade con ATR 2.0% ($2.00 por token). Stop inicial $97.00 (-3.00%), Target $109.00 (+9.00%)
+    trade = SwingTrade(
+        trade_id="SWING_TEST_4",
+        symbol="SOL/USDT",
+        entry_price=100.0,
+        amount=0.5,
+        capital=50.0,
+        target_price=109.0,
+        stop_price=97.00,
+        initial_stop=97.00,
+        target_pct=0.09,
+        stop_pct=0.03,
+        atr_pct=2.0,
+        rr_ratio=3.0,
+        entry_time=1000.0,
+        entry_fee=0.025
+    )
+    test_bot.active_trade = trade
+
+    # 1. El precio sube a $104.00 (+4.0% > trailing trigger 3.0%)
+    monkeypatch.setattr("hourly_swing_agent.exchange.fetch_ticker", lambda s: {"last": 104.00})
+    manage_active_swing_trade(test_bot)
+
+    # Trailing Stop Chandelier: Highest ($104.00) - 1.5x ATR ($3.00) = $101.00 (+1.0% asegurado)
+    assert trade.is_trailing_active is True
+    assert trade.stop_price == pytest.approx(101.00)
+    assert trade.highest_price == pytest.approx(104.00)
+
+    # 2. El precio sube aún más a $106.00
+    monkeypatch.setattr("hourly_swing_agent.exchange.fetch_ticker", lambda s: {"last": 106.00})
+    manage_active_swing_trade(test_bot)
+
+    # Stop debe subir a Highest ($106.00) - 1.5x ATR ($3.00) = $103.00
+    assert trade.stop_price == pytest.approx(103.00)
+    assert trade.highest_price == pytest.approx(106.00)
+
+    # 3. El precio retrocede a $102.80 (choca contra el trailing stop de $103.00)
+    monkeypatch.setattr("hourly_swing_agent.exchange.fetch_ticker", lambda s: {"last": 102.80})
+    manage_active_swing_trade(test_bot)
+
+    # El trade debe cerrarse con ganancia asegurada por el trailing stop
+    assert test_bot.active_trade is None
+    stats = test_bot.db.get_stats()
+    assert stats["total"] == 1
+    assert stats["wins"] == 1
+    assert stats["pnl"] > 1.0  # Ganancia positiva asegurada por Trailing Stop
+
