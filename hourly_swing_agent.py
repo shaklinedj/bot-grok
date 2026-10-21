@@ -497,7 +497,15 @@ def execute_swing_paper_entry(bot: SwingBot, opp: Dict):
     if trade_capital < 15.0 or curr_p <= 0:
         return
 
-    amount = round(trade_capital / curr_p, 4)
+    # Precision de tamaño adaptada al valor del activo (BTC requiere 6 decimales)
+    if curr_p >= 1000:
+        amount = round(trade_capital / curr_p, 6)
+    elif curr_p >= 1:
+        amount = round(trade_capital / curr_p, 4)
+    else:
+        amount = round(trade_capital / curr_p, 2)
+    trade_capital = round(amount * curr_p, 2)
+
     target_p = opp["target_price"]
     stop_p = opp["stop_price"]
     target_pct = opp["target_pct"] / 100.0
@@ -1040,11 +1048,11 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 grid_stats = dict(bot.real_grid_stats)
                 tr = bot.active_trade
 
-            invested = tr.capital if tr else 0.0
-            live_val = (tr.amount * getattr(tr, "current_price", tr.entry_price)) if tr else 0.0
-            equity = bot.cash + (live_val if tr else 0.0)
-            unrealized_pnl = (live_val - invested) if tr else 0.0
-            unrealized_pnl_pct = ((live_val - invested) / invested * 100.0) if tr and invested > 0 else 0.0
+            invested = round(tr.amount * tr.entry_price, 2) if tr else 0.0
+            live_val = round(tr.amount * getattr(tr, "current_price", tr.entry_price), 2) if tr else 0.0
+            unrealized_pnl = getattr(tr, "unrealized_pnl", live_val - invested) if tr else 0.0
+            unrealized_pnl_pct = getattr(tr, "unrealized_pnl_pct", ((live_val - invested) / invested * 100.0 if invested > 0 else 0.0)) if tr else 0.0
+            equity = bot.cash + (invested + unrealized_pnl if tr else 0.0)
 
             payload = {
                 "cash": round(bot.cash, 2),
