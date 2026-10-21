@@ -162,3 +162,27 @@ def test_swing_trade_trailing_profit(test_bot, monkeypatch):
     assert stats["wins"] == 1
     assert stats["pnl"] > 1.0  # Ganancia positiva asegurada por Trailing Stop
 
+
+def test_swing_compound_and_multi_trade_tiering(test_bot):
+    # 1. Nivel inicial (< $120): 1 trade simultáneo, asigna ~80% de la caja libre
+    test_bot.cash = 70.00
+    assert test_bot.get_max_concurrent_trades() == 1
+    assert "Mono-Sniper" in test_bot.get_tier_name()
+    cap1 = test_bot.calculate_trade_capital()
+    assert cap1 == pytest.approx(56.00)  # 70 * 0.80
+
+    # 2. Cuenta crece a $150 (Tier Dual: $120 a $200)
+    test_bot.cash = 150.00
+    assert test_bot.get_max_concurrent_trades() == 2
+    assert "Dual-Sniper" in test_bot.get_tier_name()
+    cap2 = test_bot.calculate_trade_capital()
+    assert cap2 == pytest.approx(67.50)  # 150 * 0.45
+
+    # 3. Cuenta alcanza $200 (Tier Multi-Sniper diversificado al unísono)
+    test_bot.cash = 210.00
+    assert test_bot.get_max_concurrent_trades() == 3
+    assert "Multi-Sniper Diversificado" in test_bot.get_tier_name()
+    cap3 = test_bot.calculate_trade_capital()
+    assert cap3 == pytest.approx(63.00)  # 210 * 0.30 por trade al unísono
+
+

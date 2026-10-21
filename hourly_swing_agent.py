@@ -260,7 +260,7 @@ class SwingBot:
     def __init__(self):
         self.db = SwingDatabase()
         self.cash = PAPER_INITIAL_CAPITAL
-        self.active_trade: Optional[SwingTrade] = None
+        self.active_trades: Dict[str, SwingTrade] = {}
         self.radar_telemetry: List[Dict] = []
         self.real_grid_stats: Dict = {}
         self.cooldowns: Dict[str, float] = {}
@@ -269,6 +269,55 @@ class SwingBot:
         self.scan_cycle = 0
         self.sim_order_seq = 1000
         self.load_state()
+
+    @property
+    def active_trade(self) -> Optional[SwingTrade]:
+        """Propiedad retrocompatible: primer trade activo o None."""
+        return next(iter(self.active_trades.values()), None)
+
+    @active_trade.setter
+    def active_trade(self, val: Optional[SwingTrade]):
+        if val is None:
+            self.active_trades.clear()
+        else:
+            self.active_trades[val.symbol] = val
+
+    def total_equity(self) -> float:
+        """Calcula el patrimonio total en vivo: Caja disponible + Posiciones valoradas."""
+        pos_val = sum(tr.amount * getattr(tr, "current_price", tr.entry_price) for tr in self.active_trades.values())
+        return self.cash + pos_val
+
+    def get_max_concurrent_trades(self) -> int:
+        """Escalabilidad de diversificación multi-trade según nivel de capital."""
+        eq = self.total_equity()
+        if eq >= 200.0:
+            return 3  # A partir de $200 USDT: Diversificación multi-trade al unísono (hasta 3 simultáneos)
+        elif eq >= 120.0:
+            return 2  # De $120 a $200 USDT: Hasta 2 trades simultáneos
+        return 1      # Menor a $120 USDT: 1 trade concentrado para acelerar el interés compuesto
+
+    def get_tier_name(self) -> str:
+        eq = self.total_equity()
+        if eq >= 200.0:
+            return "Multi-Sniper Diversificado (≥$200: 3 trades al unísono)"
+        elif eq >= 120.0:
+            return "Dual-Sniper ($120-$200: 2 trades simultáneos)"
+        return "Mono-Sniper (<$120: Interés Compuesto Concentrado)"
+
+    def calculate_trade_capital(self) -> float:
+        """Calcula el tamaño del trade con interés compuesto dinámico (sin topes fijos)."""
+        eq = self.total_equity()
+        max_trades = self.get_max_concurrent_trades()
+        if max_trades == 1:
+            # Concentrado: 80% de la caja libre disponible
+            target_cap = self.cash * 0.80
+        elif max_trades == 2:
+            # Dual: 45% del equity total por trade
+            target_cap = eq * 0.45
+        else:
+            # Multi-Trade (≥ $200): 30% del equity total por trade (diversificado al unísono)
+            target_cap = eq * 0.30
+        return max(0.0, min(self.cash * 0.95, target_cap))
 
     def add_log(self, msg: str, event_type: str = "info"):
         print(f"[{datetime.now().strftime('%H:%M:%S')}] [{event_type.upper()}] {msg}", flush=True)
@@ -280,9 +329,17 @@ class SwingBot:
                 with open(SWING_STATE_FILE, "r", encoding="utf-8") as f:
                     d = json.load(f)
                     self.cash = float(d.get("cash", PAPER_INITIAL_CAPITAL))
-                    tr = d.get("active_trade")
-                    if tr:
-                        self.active_trade = SwingTrade.from_dict(tr)
+                    self.active_trades.clear()
+                    raw_trades = d.get("active_trades")
+                    if raw_trades and isinstance(raw_trades, list):
+                        for raw_t in raw_trades:
+                            st = SwingTrade.from_dict(raw_t)
+                            self.active_trades[st.symbol] = st
+                    else:
+                        tr = d.get("active_trade")
+                        if tr:
+                            st = SwingTrade.from_dict(tr)
+                            self.active_trades[st.symbol] = st
                     self.cooldowns = d.get("cooldowns", {})
                     self.sim_order_seq = int(d.get("sim_order_seq", 1000))
             except Exception as e:
@@ -292,6 +349,9 @@ class SwingBot:
         d = {
             "cash": self.cash,
             "active_trade": self.active_trade.to_dict() if self.active_trade else None,
+            "active_trades": [t.to_dict() for t in self.active_trades.values()],
+            "tier_mode": self.get_tier_name(),
+            "max_concurrent_trades": self.get_max_concurrent_trades(),
             "cooldowns": self.cooldowns,
             "sim_order_seq": self.sim_order_seq,
             "updated_at": time.time()
@@ -487,14 +547,16 @@ def analyze_hourly_swing_structure(symbol: str) -> Optional[Dict]:
 
 # ====================== GESTOR DE EJECUCIÓN SWING PAPER ======================
 def execute_swing_paper_entry(bot: SwingBot, opp: Dict):
-    """Abre una posición Swing simulada con tamaño proporcional y ratio R:R >= 3:1."""
-    if bot.active_trade is not None:
+    """Abre una posición Swing simulada con tamaño proporcional y ratio R:R >= 3:1 con Interés Compuesto."""
+    sym = opp["symbol"]
+    if sym in bot.active_trades:
+        return
+    if len(bot.active_trades) >= bot.get_max_concurrent_trades():
         return
 
-    sym = opp["symbol"]
     curr_p = opp["price"]
-    trade_capital = min(bot.cash * SWING_CAPITAL_ALLOCATION, 60.00)
-    if trade_capital < 15.0 or curr_p <= 0:
+    trade_capital = bot.calculate_trade_capital()
+    if trade_capital < 15.0 or curr_p <= 0 or bot.cash < trade_capital:
         return
 
     # Precision de tamaño adaptada al valor del activo (BTC requiere 6 decimales)
@@ -535,8 +597,9 @@ def execute_swing_paper_entry(bot: SwingBot, opp: Dict):
         entry_time=time.time(),
         entry_fee=entry_fee
     )
-    bot.active_trade = trade
-    bot.add_log(f"🎯 DISPARO SWING 1H #{order_id}: {sym} @ ${curr_p:.4f} | Target: ${target_p:.4f} (+{target_pct*100:.2f}%) | Stop: ${stop_p:.4f} (-{stop_pct*100:.2f}%) | R:R {rr}:1", "trade")
+    bot.active_trades[sym] = trade
+    tier = bot.get_tier_name()
+    bot.add_log(f"🎯 DISPARO SWING 1H #{order_id}: {sym} @ ${curr_p:.4f} | Asignado: ${trade_capital:.2f} (Interés Compuesto) | Tier: {tier} | Target: ${target_p:.4f} (+{target_pct*100:.2f}%) | Stop: ${stop_p:.4f} (-{stop_pct*100:.2f}%) | R:R {rr}:1", "trade")
     bot.db.log_trade(
         symbol=sym, side="BUY", price=curr_p, amount=amount, capital=trade_capital,
         pnl=0.0, fee=entry_fee, order_id=order_id, target_price=target_p, stop_price=stop_p,
@@ -546,90 +609,91 @@ def execute_swing_paper_entry(bot: SwingBot, opp: Dict):
 
 
 def manage_active_swing_trade(bot: SwingBot):
-    """Monitorea el trade activo: activa Break-Even al +1.20% y gestiona Target y Stop."""
-    tr = bot.active_trade
-    if not tr:
+    """Monitorea todas las posiciones activas: Break-Even, Trailing ATR, Target y Stop."""
+    if not bot.active_trades:
+        bot.status_msg = "Sin posiciones activas. Escaneando retrocesos con EV > 0..."
         return
 
-    sym = tr.symbol
-    try:
-        ticker = exchange.fetch_ticker(sym)
-        curr_p = float(ticker.get("last", 0.0) or 0.0)
-    except Exception:
-        return
+    for tr in list(bot.active_trades.values()):
+        sym = tr.symbol
+        try:
+            ticker = exchange.fetch_ticker(sym)
+            curr_p = float(ticker.get("last", 0.0) or 0.0)
+        except Exception:
+            continue
 
-    if curr_p <= 0:
-        return
+        if curr_p <= 0:
+            continue
 
-    gain_pct = (curr_p - tr.entry_price) / tr.entry_price
+        gain_pct = (curr_p - tr.entry_price) / tr.entry_price
 
-    tr.current_price = curr_p
-    tr.highest_price = max(getattr(tr, "highest_price", tr.entry_price), curr_p)
-    tr.unrealized_pnl = (curr_p - tr.entry_price) * tr.amount
-    tr.unrealized_pnl_pct = gain_pct * 100.0
+        tr.current_price = curr_p
+        tr.highest_price = max(getattr(tr, "highest_price", tr.entry_price), curr_p)
+        tr.unrealized_pnl = (curr_p - tr.entry_price) * tr.amount
+        tr.unrealized_pnl_pct = gain_pct * 100.0
 
-    atr_val_abs = tr.entry_price * (tr.atr_pct / 100.0)
+        atr_val_abs = tr.entry_price * (tr.atr_pct / 100.0)
 
-    # 1. Escudo Break-Even: Si el trade alcanza +1.0x ATR (o mínimo +1.20%), subir el Stop a +0.20% (riesgo cero)
-    be_threshold = max(0.0120, (tr.atr_pct / 100.0) * 0.8)
-    if not tr.is_be_active and gain_pct >= be_threshold:
-        tr.is_be_active = True
-        new_stop = round(tr.entry_price * (1.0 + BREAK_EVEN_STOP_PCT), 4)
-        if new_stop > tr.stop_price:
-            tr.stop_price = new_stop
-            bot.add_log(f"🛡️ ESCUDO BREAK-EVEN ACTIVADO en {sym}: Ganancia +{gain_pct*100:.2f}%. Stop sube a ${new_stop:.4f} (+0.20% asegurado). Trade 100% libre de riesgo.", "trade")
+        # 1. Escudo Break-Even: Si el trade alcanza +1.0x ATR (o mínimo +1.20%), subir el Stop a +0.20% (riesgo cero)
+        be_threshold = max(0.0120, (tr.atr_pct / 100.0) * 0.8)
+        if not tr.is_be_active and gain_pct >= be_threshold:
+            tr.is_be_active = True
+            new_stop = round(tr.entry_price * (1.0 + BREAK_EVEN_STOP_PCT), 4)
+            if new_stop > tr.stop_price:
+                tr.stop_price = new_stop
+                bot.add_log(f"🛡️ ESCUDO BREAK-EVEN ACTIVADO en {sym}: Ganancia +{gain_pct*100:.2f}%. Stop sube a ${new_stop:.4f} (+0.20% asegurado). Trade 100% libre de riesgo.", "trade")
+                bot.save_state()
+
+        # 2. Trailing Profit Dinámico por ATR (Chandelier Exit):
+        # Si la ganancia supera +1.5x ATR, el Stop persigue el máximo histórico menos 1.5x ATR, bloqueando beneficios:
+        trailing_trigger = (tr.atr_pct / 100.0) * 1.5
+        if gain_pct >= trailing_trigger:
+            trail_stop = round(tr.highest_price - (1.50 * atr_val_abs), 4)
+            if trail_stop > tr.stop_price:
+                old_stop = tr.stop_price
+                tr.stop_price = trail_stop
+                tr.is_trailing_active = True
+                bot.add_log(f"📈 TRAILING ATR ELEVADO en {sym}: Máximo ${tr.highest_price:.4f}. Stop sube de ${old_stop:.4f} a ${trail_stop:.4f} asegurando beneficios crecientes.", "trade")
+                bot.save_state()
+
+        # 3. Cierre por Target (+4.5x ATR neto):
+        if curr_p >= tr.target_price:
+            gross_pnl = (tr.target_price - tr.entry_price) * tr.amount
+            exit_fee = (tr.target_price * tr.amount) * FEE_RATE
+            net_pnl = gross_pnl - tr.entry_fee - exit_fee
+            bot.cash += (tr.capital + net_pnl)
+            bot.add_log(f"🏆 VICTORIA TOTAL SWING en {sym}: Target ${tr.target_price:.4f} alcanzado | PnL neto: +${net_pnl:.4f} USDT (+{tr.target_pct*100:.2f}%)", "trade")
+            bot.db.log_trade(
+                symbol=sym, side="SELL", price=tr.target_price, amount=tr.amount, capital=tr.capital,
+                pnl=net_pnl, fee=exit_fee, order_id=tr.trade_id, target_price=tr.target_price, stop_price=tr.stop_price,
+                note=f"🏆 TARGET ALCANZADO (+{tr.target_pct*100:.2f}%)"
+            )
+            bot.cooldowns[sym] = time.time() + 1800  # 30 min cooldown
+            bot.active_trades.pop(sym, None)
             bot.save_state()
+            continue
 
-    # 2. Trailing Profit Dinámico por ATR (Chandelier Exit):
-    # Si la ganancia supera +1.5x ATR, el Stop persigue el máximo histórico menos 1.5x ATR, bloqueando beneficios:
-    trailing_trigger = (tr.atr_pct / 100.0) * 1.5
-    if gain_pct >= trailing_trigger:
-        trail_stop = round(tr.highest_price - (1.50 * atr_val_abs), 4)
-        if trail_stop > tr.stop_price:
-            old_stop = tr.stop_price
-            tr.stop_price = trail_stop
-            tr.is_trailing_active = True
-            bot.add_log(f"📈 TRAILING ATR ELEVADO en {sym}: Máximo ${tr.highest_price:.4f}. Stop sube de ${old_stop:.4f} a ${trail_stop:.4f} asegurando beneficios crecientes.", "trade")
+        # 4. Cierre por Stop Loss (o Stop Break-Even):
+        if curr_p <= tr.stop_price:
+            gross_pnl = (tr.stop_price - tr.entry_price) * tr.amount
+            exit_fee = (tr.stop_price * tr.amount) * FEE_RATE
+            net_pnl = gross_pnl - tr.entry_fee - exit_fee
+            bot.cash += (tr.capital + net_pnl)
+            reason = "🛡️ SALIDA BREAK-EVEN (Coste Cero)" if tr.is_be_active else f"🛑 STOP LOSS DEFENSIVO (-{tr.stop_pct*100:.2f}%)"
+            bot.add_log(f"{reason} en {sym} @ ${tr.stop_price:.4f} | PnL neto: {net_pnl:+.4f} USDT", "trade")
+            bot.db.log_trade(
+                symbol=sym, side="SELL", price=tr.stop_price, amount=tr.amount, capital=tr.capital,
+                pnl=net_pnl, fee=exit_fee, order_id=tr.trade_id, target_price=tr.target_price, stop_price=tr.stop_price,
+                note=reason
+            )
+            bot.cooldowns[sym] = time.time() + 3600  # 1 hora de cooldown tras stop
+            bot.active_trades.pop(sym, None)
             bot.save_state()
+            continue
 
-    # 3. Cierre por Target (+4.5x ATR neto):
-    if curr_p >= tr.target_price:
-        gross_pnl = (tr.target_price - tr.entry_price) * tr.amount
-        exit_fee = (tr.target_price * tr.amount) * FEE_RATE
-        net_pnl = gross_pnl - tr.entry_fee - exit_fee
-        bot.cash += (tr.capital + net_pnl)
-        bot.add_log(f"🏆 VICTORIA TOTAL SWING en {sym}: Target ${tr.target_price:.4f} alcanzado | PnL neto: +${net_pnl:.4f} USDT (+{tr.target_pct*100:.2f}%)", "trade")
-        bot.db.log_trade(
-            symbol=sym, side="SELL", price=tr.target_price, amount=tr.amount, capital=tr.capital,
-            pnl=net_pnl, fee=exit_fee, order_id=tr.trade_id, target_price=tr.target_price, stop_price=tr.stop_price,
-            note=f"🏆 TARGET ALCANZADO (+{tr.target_pct*100:.2f}%)"
-        )
-        bot.cooldowns[sym] = time.time() + 1800  # 30 min cooldown
-        bot.active_trade = None
-        bot.save_state()
-        return
-
-    # 3. Cierre por Stop Loss (o Stop Break-Even):
-    if curr_p <= tr.stop_price:
-        gross_pnl = (tr.stop_price - tr.entry_price) * tr.amount
-        exit_fee = (tr.stop_price * tr.amount) * FEE_RATE
-        net_pnl = gross_pnl - tr.entry_fee - exit_fee
-        bot.cash += (tr.capital + net_pnl)
-        reason = "🛡️ SALIDA BREAK-EVEN (Coste Cero)" if tr.is_be_active else f"🛑 STOP LOSS DEFENSIVO (-{tr.stop_pct*100:.2f}%)"
-        bot.add_log(f"{reason} en {sym} @ ${tr.stop_price:.4f} | PnL neto: {net_pnl:+.4f} USDT", "trade")
-        bot.db.log_trade(
-            symbol=sym, side="SELL", price=tr.stop_price, amount=tr.amount, capital=tr.capital,
-            pnl=net_pnl, fee=exit_fee, order_id=tr.trade_id, target_price=tr.target_price, stop_price=tr.stop_price,
-            note=reason
-        )
-        bot.cooldowns[sym] = time.time() + 3600  # 1 hora de cooldown tras stop
-        bot.active_trade = None
-        bot.save_state()
-        return
-
-    pct_now = gain_pct * 100.0
-    bot.status_msg = (f"En Trade Swing {sym} @ ${tr.entry_price:.4f} | Actual: ${curr_p:.4f} ({pct_now:+.2f}%) | "
-                      f"Target: ${tr.target_price:.4f} | Stop: ${tr.stop_price:.4f} {'[BE Activo]' if tr.is_be_active else ''}")
+    if bot.active_trades:
+        summaries = [f"{t.symbol} ({t.unrealized_pnl_pct:+.2f}%)" for t in bot.active_trades.values()]
+        bot.status_msg = f"Posiciones Activas ({len(bot.active_trades)}/{bot.get_max_concurrent_trades()}): " + ", ".join(summaries)
 
 
 # ====================== SERVIDOR DASHBOARD REACTIVO (PUERTO 8900) ======================
@@ -812,7 +876,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     <div class="card-title" style="color: var(--accent);">
                         <span>🎯 PILAR 2: SWING SNIPER 1H/4H (PAPER TRADING)</span>
                     </div>
-                    <span class="tag tag-yellow">MODO SIMULADO EV &gt; 0</span>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <span class="tag tag-yellow" id="tier-badge">Mono-Sniper (&lt;$120)</span>
+                        <span class="tag tag-green">INTERÉS COMPUESTO ACTIVO</span>
+                    </div>
                 </div>
                 <div class="metric-box">
                     <div class="metric">
@@ -930,43 +997,60 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 pnlEl.style.color = realPnl >= 0 ? '#3fb950' : '#f85149';
                 document.getElementById('swing-stats').innerText = `${d.stats?.total || 0} (${d.stats?.wins || 0}W / ${d.stats?.losses || 0}L)`;
 
-                // Posición Activa
-                const actEl = document.getElementById('active-status');
-                if (d.active_trade) {
-                    const tr = d.active_trade;
-                    let badge = '<span class="tag tag-yellow">🟡 RIESGO INICIAL CONTROLADO</span>';
-                    if (tr.is_trailing_active) {
-                        badge = '<span class="tag tag-green">📈 TRAILING PROFIT ACTIVO (ATR Chandelier)</span>';
-                    } else if (tr.is_be_active) {
-                        badge = '<span class="tag tag-green">🛡️ BREAK-EVEN ACTIVO (Riesgo Cero)</span>';
+                // Tier de Capital y Diversificación
+                if (d.tier_mode) {
+                    const tb = document.getElementById('tier-badge');
+                    if (tb) {
+                        tb.innerText = d.tier_mode;
+                        tb.className = 'tag ' + (d.max_concurrent_trades >= 3 ? 'tag-green' : (d.max_concurrent_trades >= 2 ? 'tag-green' : 'tag-yellow'));
                     }
-                    const liveP = Number(tr.current_price || tr.entry_price).toFixed(4);
-                    const entP = Number(tr.entry_price).toFixed(4);
-                    const tgtP = Number(tr.target_price).toFixed(4);
-                    const stpP = Number(tr.stop_price).toFixed(4);
-                    const highP = Number(tr.highest_price || tr.entry_price).toFixed(4);
-                    const unPnlStr = (unPnl >= 0 ? '+' : '') + unPnl.toFixed(4) + ' USDT (' + (unPnlPct >= 0 ? '+' : '') + unPnlPct.toFixed(2) + '%)';
-                    const unPnlColor = unPnl >= 0 ? '#3fb950' : '#f85149';
-                    const stopDiffPct = ((Number(tr.stop_price) - Number(tr.entry_price)) / Number(tr.entry_price) * 100).toFixed(2);
-                    const stopDiffSign = Number(stopDiffPct) >= 0 ? '+' : '';
+                }
 
-                    actEl.innerHTML = `
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; border-bottom:1px solid #21262d; padding-bottom:8px;">
-                        <span style="font-weight:bold; color:#58a6ff; font-size:14px;">🦅 POSICIÓN EN CURSO: ${tr.symbol}</span>
-                        ${badge}
-                    </div>
-                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap:10px; margin-bottom:10px;">
-                        <div><span style="color:var(--text-dim); font-size:10px;">PORTE (TAMAÑO):</span><br><b>${tr.amount} ${tr.symbol.split('/')[0]}</b> <span style="color:var(--text-dim); font-size:11px;">($${Number(tr.capital).toFixed(2)})</span></div>
-                        <div><span style="color:var(--text-dim); font-size:10px;">PRECIO ENTRADA:</span><br><b>$${entP}</b></div>
-                        <div><span style="color:var(--text-dim); font-size:10px;">PRECIO ACTUAL:</span><br><b style="color:#58a6ff;">$${liveP}</b> <span style="color:var(--text-dim); font-size:11px;">(Max: $${highP})</span></div>
-                        <div><span style="color:var(--text-dim); font-size:10px;">PNL FLOTANTE:</span><br><b style="color:${unPnlColor};">${unPnlStr}</b></div>
-                    </div>
-                    <div style="background:#161b22; border-radius:6px; padding:10px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px; font-size:11px; border:1px solid #21262d;">
-                        <div>🎯 <b>Target Dinámico:</b> <span style="color:#3fb950; font-weight:bold;">$${tgtP} (+${(tr.target_pct*100).toFixed(2)}%)</span></div>
-                        <div>🛡️ <b>Stop Dinámico ATR:</b> <span style="color:${Number(stopDiffPct) >= 0 ? '#3fb950' : '#f85149'}; font-weight:bold;">$${stpP} (${stopDiffSign}${stopDiffPct}%)</span></div>
-                        <div>📐 <b>R:R:</b> <span style="color:#3fb950; font-weight:bold;">${tr.rr_ratio}:1</span></div>
-                        <div>🌊 <b>ATR 1H:</b> <span style="color:var(--text-main); font-weight:bold;">${tr.atr_pct}%</span></div>
-                    </div>`;
+                // Posiciones Activas (Multi-Trade / Diversificación al Unísono)
+                const actEl = document.getElementById('active-status');
+                const trades = d.active_trades || (d.active_trade ? [d.active_trade] : []);
+                if (trades.length > 0) {
+                    let tradesHtml = '';
+                    trades.forEach(tr => {
+                        let badge = '<span class="tag tag-yellow">🟡 RIESGO INICIAL CONTROLADO</span>';
+                        if (tr.is_trailing_active) {
+                            badge = '<span class="tag tag-green">📈 TRAILING PROFIT ACTIVO (ATR Chandelier)</span>';
+                        } else if (tr.is_be_active) {
+                            badge = '<span class="tag tag-green">🛡️ BREAK-EVEN ACTIVO (Riesgo Cero)</span>';
+                        }
+                        const liveP = Number(tr.current_price || tr.entry_price).toFixed(4);
+                        const entP = Number(tr.entry_price).toFixed(4);
+                        const tgtP = Number(tr.target_price).toFixed(4);
+                        const stpP = Number(tr.stop_price).toFixed(4);
+                        const highP = Number(tr.highest_price || tr.entry_price).toFixed(4);
+                        const trPnl = Number(tr.unrealized_pnl || 0);
+                        const trPct = Number(tr.unrealized_pnl_pct || 0);
+                        const trPnlStr = (trPnl >= 0 ? '+' : '') + trPnl.toFixed(4) + ' USDT (' + (trPct >= 0 ? '+' : '') + trPct.toFixed(2) + '%)';
+                        const trPnlColor = trPnl >= 0 ? '#3fb950' : '#f85149';
+                        const stopDiffPct = ((Number(tr.stop_price) - Number(tr.entry_price)) / Number(tr.entry_price) * 100).toFixed(2);
+                        const stopDiffSign = Number(stopDiffPct) >= 0 ? '+' : '';
+
+                        tradesHtml += `
+                        <div style="background:#161b22; border:1px solid #30363d; border-radius:8px; padding:12px; margin-bottom:12px;">
+                            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:6px;">
+                                <span style="font-weight:bold; color:#58a6ff; font-size:13px;">🦅 POSICIÓN EN CURSO: ${tr.symbol}</span>
+                                ${badge}
+                            </div>
+                            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap:8px; margin-bottom:8px;">
+                                <div><span style="color:var(--text-dim); font-size:10px;">PORTE (TAMAÑO):</span><br><b>${tr.amount} ${tr.symbol.split('/')[0]}</b> <span style="color:var(--text-dim); font-size:11px;">($${Number(tr.capital).toFixed(2)})</span></div>
+                                <div><span style="color:var(--text-dim); font-size:10px;">PRECIO ENTRADA:</span><br><b>$${entP}</b></div>
+                                <div><span style="color:var(--text-dim); font-size:10px;">PRECIO ACTUAL:</span><br><b style="color:#58a6ff;">$${liveP}</b> <span style="color:var(--text-dim); font-size:11px;">(Max: $${highP})</span></div>
+                                <div><span style="color:var(--text-dim); font-size:10px;">PNL FLOTANTE:</span><br><b style="color:${trPnlColor};">${trPnlStr}</b></div>
+                            </div>
+                            <div style="background:#0d1117; border-radius:6px; padding:8px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px; font-size:11px; border:1px solid #21262d;">
+                                <div>🎯 <b>Target Dinámico:</b> <span style="color:#3fb950; font-weight:bold;">$${tgtP} (+${(tr.target_pct*100).toFixed(2)}%)</span></div>
+                                <div>🛡️ <b>Stop Dinámico ATR:</b> <span style="color:${Number(stopDiffPct) >= 0 ? '#3fb950' : '#f85149'}; font-weight:bold;">$${stpP} (${stopDiffSign}${stopDiffPct}%)</span></div>
+                                <div>📐 <b>R:R:</b> <span style="color:#3fb950; font-weight:bold;">${tr.rr_ratio}:1</span></div>
+                                <div>🌊 <b>ATR 1H:</b> <span style="color:var(--text-main); font-weight:bold;">${tr.atr_pct}%</span></div>
+                            </div>
+                        </div>`;
+                    });
+                    actEl.innerHTML = tradesHtml;
                 } else {
                     actEl.innerHTML = `<span style="color:var(--text-dim);">${d.status_msg || 'Sin posición activa. Buscando retrocesos de alta probabilidad...'}</span>`;
                 }
@@ -1046,13 +1130,13 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 stats = bot.db.get_stats()
                 events = bot.db.get_recent_events(30)
                 grid_stats = dict(bot.real_grid_stats)
-                tr = bot.active_trade
+                trades_list = list(bot.active_trades.values())
 
-            invested = round(tr.amount * tr.entry_price, 2) if tr else 0.0
-            live_val = round(tr.amount * getattr(tr, "current_price", tr.entry_price), 2) if tr else 0.0
-            unrealized_pnl = getattr(tr, "unrealized_pnl", live_val - invested) if tr else 0.0
-            unrealized_pnl_pct = getattr(tr, "unrealized_pnl_pct", ((live_val - invested) / invested * 100.0 if invested > 0 else 0.0)) if tr else 0.0
-            equity = bot.cash + (invested + unrealized_pnl if tr else 0.0)
+            invested = sum(round(t.amount * t.entry_price, 2) for t in trades_list)
+            live_val = sum(round(t.amount * getattr(t, "current_price", t.entry_price), 2) for t in trades_list)
+            unrealized_pnl = sum(getattr(t, "unrealized_pnl", 0.0) for t in trades_list)
+            unrealized_pnl_pct = ((unrealized_pnl / invested) * 100.0) if invested > 0 else 0.0
+            equity = bot.cash + (invested + unrealized_pnl)
 
             payload = {
                 "cash": round(bot.cash, 2),
@@ -1060,8 +1144,11 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 "invested": round(invested, 2),
                 "unrealized_pnl": round(unrealized_pnl, 4),
                 "unrealized_pnl_pct": round(unrealized_pnl_pct, 2),
+                "tier_mode": bot.get_tier_name(),
+                "max_concurrent_trades": bot.get_max_concurrent_trades(),
                 "status_msg": bot.status_msg,
-                "active_trade": tr.to_dict() if tr else None,
+                "active_trade": trades_list[0].to_dict() if trades_list else None,
+                "active_trades": [t.to_dict() for t in trades_list],
                 "stats": stats,
                 "radar_telemetry": telemetry,
                 "real_grid": grid_stats,
