@@ -1,14 +1,15 @@
 """
 ========================================================================================
-  THE HOURLY SWING SNIPER (1H / 4H ASYMMETRIC ENGINE - EV > 0)
-  - Modo: PAPER TRADING ESTRICTO (Capital virtual $70.00 USDT, datos reales CCXT/Pionex)
-  - Seguridad: Cero órdenes reales a Pionex. La Malla real de DOGE permanece 100% intacta.
-  - Marco Temporal: Velas de 1 Hora (1H) con confirmación de tendencia en 4 Horas (4H).
-  - Expectativa Matemática: R:R Asimétrico >= 3:1 (Arriesgar ~1.5% para ganar +4.5% a +6.5%).
-  - Escudo Break-Even: Al alcanzar +1.20% de avance, el Stop sube automáticamente a +0.20%.
+  ADAPTIVE SNIPER V2: RADAR DE FUERZA RELATIVA + GATILLO RÁPIDO (15m / 3m)
+  - Modo: PAPER TRADING ESTRICTO (Capital virtual, datos reales CCXT/Binance)
+  - Seguridad: Cero órdenes reales a Pionex. Malla real DOGE permanece 100% intacta.
+  - Fase 1: Escáner Dinámico de TODO el mercado (Top movers por volumen + RS).
+  - Fase 2: Filtro de Fuerza Relativa (monedas desacopladas que suben si BTC baja).
+  - Fase 3: Gatillo Rápido en 15m (ruptura con volumen confirmada).
+  - Trailing Ágil: Protección rápida al +1.0%, trailing desde +1.5%.
+  - Anti-Ametralladora: Tras stop loss, exige confirmación superior para re-entrar.
   - Persistencia: SQLite WAL (swing_logs/paper/swing_vault.db).
   - Dashboard Reactivo Dual: http://localhost:8900
-    * Muestra en vivo la Malla real de DOGE (Solo Lectura) + El Swing Engine en Paper.
 ========================================================================================
 """
 
@@ -43,21 +44,28 @@ SWING_DB_FILE = os.path.join(SWING_LOGS_DIR, "swing_vault.db")
 SWING_STATE_FILE = os.path.join(SWING_LOGS_DIR, "swing_live_state.json")
 SWING_HTTP_PORT = 8900
 
-# Parámetros Cuantitativos Asimétricos (EV > 0)
+# Parámetros Cuantitativos V2
 PAPER_INITIAL_CAPITAL = 70.00
-SWING_CAPITAL_ALLOCATION = 0.85  # 85% de la caja por disparo (~$55 a $60 USDT)
-BREAK_EVEN_TRIGGER_PCT = 0.0120  # +1.20% de ganancia activa el Escudo Break-Even
-BREAK_EVEN_STOP_PCT = 0.0020     # +0.20% asegura comisiones y ganancia neta en BE
-DEFAULT_MIN_RR_RATIO = 2.8       # R:R mínimo exigido para disparar
 FEE_RATE = 0.0005                # 0.05% por lado (0.10% round-trip)
+BREAK_EVEN_TRIGGER_PCT = 0.010   # +1.0% activa Break-Even
+BREAK_EVEN_STOP_PCT = 0.0020     # +0.20% asegura comisiones en BE
+MIN_VOLUME_USDT = 8_000_000      # Filtro mínimo: $8M de volumen diario en USDT
+RS_MIN_THRESHOLD = 1.5           # Fuerza Relativa mínima vs BTC (en puntos porcentuales)
+BREAKOUT_VOL_SPIKE_MIN = 1.3     # Volumen de vela 15m debe ser >= 1.3x el promedio
+MIN_SCORE_V2 = 70.0              # Score mínimo para disparo
+STOP_ATR_MULT = 1.2              # Stop Loss: 1.2x ATR 15m (corto y ágil)
+TARGET_ATR_MULT = 3.0            # Target: 3.0x ATR 15m (R:R = 2.5:1 mínimo)
+TRAIL_TRIGGER_ATR = 1.0          # Trailing se activa al superar +1.0x ATR 15m
+TRAIL_DISTANCE_ATR = 0.8         # Trailing persigue el máximo menos 0.8x ATR 15m
+POST_STOP_COOLDOWN_S = 180       # 3 minutos mínimo tras un stop (no horas, pero no 3 segundos)
+POST_STOP_EXTRA_SCORE = 15.0     # Tras un stop reciente, la siguiente moneda necesita +15 puntos extra
 
-# Whitelist de Altcoins Líderes de Alta Capitalización y Liquidez
-SWING_WHITELIST = [
-    "BTC/USDT", "ETH/USDT", "SOL/USDT", "NEAR/USDT", "AVAX/USDT",
-    "INJ/USDT", "DOGE/USDT", "SUI/USDT", "LINK/USDT", "UNI/USDT", "XRP/USDT"
-]
+# Stablecoins y tokens a ignorar en el escáner
+IGNORE_SYMBOLS = {"USDC/USDT", "BUSD/USDT", "TUSD/USDT", "FDUSD/USDT", "USD1/USDT",
+                  "RLUSD/USDT", "RWUSD/USDT", "BFUSD/USDT", "USDD/USDT", "DAI/USDT",
+                  "EURI/USDT", "AEUR/USDT", "PAXG/USDT"}
 
-# ID de la Malla Real en Pionex (SOLO LECTURA para auditoría en el Dashboard)
+# ID de la Malla Real en Pionex (SOLO LECTURA)
 REAL_DOGE_GRID_BOT_ID = "61b3f37a-0cdd-458e-adf2-db096722c53b"
 
 exchange = ccxt.binance({"enableRateLimit": True, "timeout": 10000})
@@ -264,6 +272,7 @@ class SwingBot:
         self.radar_telemetry: List[Dict] = []
         self.real_grid_stats: Dict = {}
         self.cooldowns: Dict[str, float] = {}
+        self.last_stop_time: float = 0.0
         self.status_msg = "Iniciando Hourly Swing Sniper..."
         self.data_lock = threading.Lock()
         self.scan_cycle = 0
@@ -341,6 +350,7 @@ class SwingBot:
                             st = SwingTrade.from_dict(tr)
                             self.active_trades[st.symbol] = st
                     self.cooldowns = d.get("cooldowns", {})
+                    self.last_stop_time = float(d.get("last_stop_time", 0.0))
                     self.sim_order_seq = int(d.get("sim_order_seq", 1000))
             except Exception as e:
                 self.add_log(f"Error cargando estado swing: {e}", "error")
@@ -353,6 +363,7 @@ class SwingBot:
             "tier_mode": self.get_tier_name(),
             "max_concurrent_trades": self.get_max_concurrent_trades(),
             "cooldowns": self.cooldowns,
+            "last_stop_time": self.last_stop_time,
             "sim_order_seq": self.sim_order_seq,
             "updated_at": time.time()
         }
@@ -398,16 +409,17 @@ def fetch_real_pionex_grid_stats() -> Dict:
     return {}
 
 
-# ====================== MOTOR CUANTITATIVO 1H / 4H (SNIPER) ======================
+# ====================== MOTOR ADAPTATIVO V2: ESCÁNER + FUERZA RELATIVA + GATILLO 15m ======================
 _ohlcv_cache = {}
+_ticker_cache = {"ts": 0.0, "data": {}}
+_btc_performance_cache = {"ts": 0.0, "change_1h": 0.0, "change_4h": 0.0, "trend_4h": "neutral"}
 
 
 def fetch_ohlcv_cached(symbol: str, timeframe: str, limit: int = 60) -> List:
     key = f"{symbol}_{timeframe}"
     now = time.time()
     cached = _ohlcv_cache.get(key)
-    # Cache de 120s para 1h y 300s para 4h (reduce llamadas REST innecesarias)
-    ttl = 120 if timeframe == "1h" else 300
+    ttl = 30 if timeframe in ("3m", "5m") else (60 if timeframe == "15m" else 180)
     if cached and (now - cached["ts"] < ttl):
         return cached["data"]
     try:
@@ -418,121 +430,255 @@ def fetch_ohlcv_cached(symbol: str, timeframe: str, limit: int = 60) -> List:
         return cached["data"] if cached else []
 
 
-def analyze_hourly_swing_structure(symbol: str) -> Optional[Dict]:
-    """
-    Analiza la estructura de mercado institucional en 4H (Régimen) y 1H (Entrada Francotirador).
-    """
-    candles_4h = fetch_ohlcv_cached(symbol, "4h", limit=60)
-    candles_1h = fetch_ohlcv_cached(symbol, "1h", limit=60)
+def calc_ema(series: List[float], period: int) -> float:
+    k = 2.0 / (period + 1.0)
+    ema = series[0]
+    for val in series[1:]:
+        ema = (val * k) + (ema * (1.0 - k))
+    return ema
 
-    if len(candles_4h) < 25 or len(candles_1h) < 25:
-        return None
 
-    # 1. Análisis Macro en 4H: ¿Hay tendencia sólida a favor?
-    closes_4h = [c[4] for c in candles_4h]
-    closes_1h = [c[4] for c in candles_1h]
-    curr_p = closes_1h[-1]
-    
-    # EMA 20 y EMA 50 en 4H
-    def calc_ema(series: List[float], period: int) -> float:
-        k = 2.0 / (period + 1.0)
-        ema = series[0]
-        for val in series[1:]:
-            ema = (val * k) + (ema * (1.0 - k))
-        return ema
-
-    ema20_4h = calc_ema(closes_4h, 20)
-    ema50_4h = calc_ema(closes_4h, 50)
-    macro_bullish = curr_p > ema50_4h and ema20_4h >= ema50_4h * 0.995
-
-    # 2. Análisis Microestructural en 1H
-    highs_1h = [c[2] for c in candles_1h]
-    lows_1h = [c[3] for c in candles_1h]
-    vols_1h = [c[5] for c in candles_1h]
-
-    ema20_1h = calc_ema(closes_1h, 20)
-    dev_ema20 = (curr_p - ema20_1h) / ema20_1h * 100.0
-
-    # ATR 14 de 1H
-    trs = []
-    for i in range(1, len(candles_1h)):
-        h, l, prev_c = candles_1h[i][2], candles_1h[i][3], candles_1h[i-1][4]
-        trs.append(max(h - l, abs(h - prev_c), abs(l - prev_c)))
-    atr_1h = sum(trs[-14:]) / 14.0 if trs else (highs_1h[-1] - lows_1h[-1])
-    atr_pct = (atr_1h / curr_p * 100.0) if curr_p > 0 else 1.5
-
-    # RSI 14 de 1H
+def calc_rsi(closes: List[float], period: int = 14) -> float:
+    if len(closes) < period + 1:
+        return 50.0
     gains, losses = [], []
-    for i in range(1, 15):
-        diff = closes_1h[-15+i] - closes_1h[-15+i-1]
+    for i in range(1, period + 1):
+        diff = closes[-(period + 1) + i] - closes[-(period + 1) + i - 1]
         gains.append(max(0.0, diff))
         losses.append(max(0.0, -diff))
-    avg_g = sum(gains) / 14.0 if gains else 0.0001
-    avg_l = sum(losses) / 14.0 if losses else 0.0001
-    rs = avg_g / (avg_l if avg_l > 0 else 0.0001)
-    rsi_1h = 100.0 - (100.0 / (1.0 + rs))
+    avg_g = sum(gains) / period
+    avg_l = sum(losses) / period
+    if avg_l < 0.0001:
+        return 99.0
+    return 100.0 - (100.0 / (1.0 + avg_g / avg_l))
 
-    # Detección de Vela de Rechazo en 1H (Mecha inferior en zona de soporte)
-    last_candle = candles_1h[-1]
-    o_c, h_c, l_c, c_c = last_candle[1], last_candle[2], last_candle[3], last_candle[4]
-    c_range = h_c - l_c
-    lower_wick = min(o_c, c_c) - l_c
-    rejection_ratio = (lower_wick / c_range) if c_range > 0 else 0.0
-    has_rejection = rejection_ratio >= 0.40 or (c_c > o_c and c_c > closes_1h[-2])
 
-    # Volumen relativo en soporte
-    avg_vol = sum(vols_1h[-20:]) / 20.0 if vols_1h else 1.0
-    vol_spike = (vols_1h[-1] / avg_vol) if avg_vol > 0 else 1.0
+def calc_atr(candles: List, period: int = 14) -> float:
+    trs = []
+    for i in range(1, len(candles)):
+        h, l, prev_c = candles[i][2], candles[i][3], candles[i - 1][4]
+        trs.append(max(h - l, abs(h - prev_c), abs(l - prev_c)))
+    if len(trs) < period:
+        return sum(trs) / max(len(trs), 1)
+    return sum(trs[-period:]) / period
 
-    # 3. Parámetros Cuantitativos 100% Dinámicos por ATR 1H (Cero Hardcoding):
-    # Stop Loss Dinámico: 1.50x ATR 1H (espacio natural de oscilación de la moneda)
-    stop_distance = 1.50 * atr_1h
-    stop_pct = round(stop_distance / curr_p, 4)
-    stop_price = round(curr_p - stop_distance, 4)
 
-    # Target Asimétrico Dinámico: 4.50x ATR 1H (Garantiza R:R de 3.0:1 exacto)
-    target_distance = 4.50 * atr_1h
-    target_pct = round(target_distance / curr_p, 4)
-    target_price = round(curr_p + target_distance, 4)
-    rr_ratio = round(target_pct / (stop_pct if stop_pct > 0 else 0.001), 2)
+def update_btc_context():
+    """Actualiza el contexto macro de Bitcoin (se usa para Fuerza Relativa)."""
+    global _btc_performance_cache
+    now = time.time()
+    if now - _btc_performance_cache["ts"] < 60:
+        return _btc_performance_cache
+    try:
+        c_1h = fetch_ohlcv_cached("BTC/USDT", "1h", limit=6)
+        c_4h = fetch_ohlcv_cached("BTC/USDT", "4h", limit=25)
+        if len(c_1h) >= 2 and len(c_4h) >= 5:
+            chg_1h = (c_1h[-1][4] - c_1h[-2][4]) / c_1h[-2][4] * 100.0
+            chg_4h = (c_4h[-1][4] - c_4h[-5][4]) / c_4h[-5][4] * 100.0
+            closes_4h = [c[4] for c in c_4h]
+            ema20 = calc_ema(closes_4h, 20)
+            trend = "bullish" if c_4h[-1][4] > ema20 else "bearish"
+            _btc_performance_cache = {"ts": now, "change_1h": chg_1h, "change_4h": chg_4h, "trend_4h": trend}
+    except Exception:
+        pass
+    return _btc_performance_cache
 
-    # 4. Filtro Anti-Cuchillo (Anti-Knife Shield):
-    # Prohibido comprar si las últimas 3 velas de 1H son rojas consecutivas con cuerpo expansivo
-    is_falling_knife = False
-    if len(candles_1h) >= 4:
-        r1 = candles_1h[-2][4] < candles_1h[-2][1]
-        r2 = candles_1h[-3][4] < candles_1h[-3][1]
-        r3 = candles_1h[-4][4] < candles_1h[-4][1]
-        if r1 and r2 and r3 and not has_rejection:
-            is_falling_knife = True
 
-    # 5. Puntuación Cuantitativa Swing (0 a 100)
+def scan_market_top_movers() -> List[Dict]:
+    """
+    FASE 1: Escáner Dinámico de TODO el mercado.
+    Busca monedas USDT con alto volumen y rendimiento positivo (o fuerza relativa positiva vs BTC).
+    No usa una whitelist fija: rastrea todo Binance.
+    """
+    global _ticker_cache
+    now = time.time()
+    if now - _ticker_cache["ts"] < 30:
+        tickers = _ticker_cache["data"]
+    else:
+        try:
+            tickers = exchange.fetch_tickers()
+            _ticker_cache = {"ts": now, "data": tickers}
+        except Exception:
+            tickers = _ticker_cache.get("data", {})
+
+    btc_ctx = update_btc_context()
+    btc_chg_1h = btc_ctx["change_1h"]
+
+    candidates = []
+    for sym, t in tickers.items():
+        if not sym.endswith("/USDT"):
+            continue
+        if sym in IGNORE_SYMBOLS:
+            continue
+        vol = float(t.get("quoteVolume", 0) or 0)
+        if vol < MIN_VOLUME_USDT:
+            continue
+        pct_24h = float(t.get("percentage", 0) or 0)
+        last_price = float(t.get("last", 0) or 0)
+        if last_price <= 0:
+            continue
+
+        # Fuerza Relativa: qué tan bien se comporta vs BTC en la última hora
+        relative_strength = pct_24h - (btc_chg_1h * 0.5)  # Positivo = más fuerte que BTC
+
+        candidates.append({
+            "symbol": sym,
+            "price": last_price,
+            "pct_24h": round(pct_24h, 2),
+            "volume_usdt": vol,
+            "relative_strength": round(relative_strength, 2),
+        })
+
+    # Ordenar por fuerza relativa descendente (las que más resisten o suben vs BTC primero)
+    candidates.sort(key=lambda x: x["relative_strength"], reverse=True)
+    return candidates[:25]  # Top 25 para analizar en detalle
+
+
+def analyze_breakout_15m(symbol: str, btc_ctx: Dict) -> Optional[Dict]:
+    """
+    FASE 2 + 3: Analiza un candidato en 15m buscando ruptura confirmada con volumen.
+    Solo dispara si hay confirmación de que la moneda ya está subiendo.
+    """
+    c_15m = fetch_ohlcv_cached(symbol, "15m", limit=40)
+    c_1h = fetch_ohlcv_cached(symbol, "1h", limit=30)
+
+    if len(c_15m) < 20 or len(c_1h) < 15:
+        return None
+
+    closes_15m = [c[4] for c in c_15m]
+    highs_15m = [c[2] for c in c_15m]
+    lows_15m = [c[3] for c in c_15m]
+    vols_15m = [c[5] for c in c_15m]
+    closes_1h = [c[4] for c in c_1h]
+    curr_p = closes_15m[-1]
+
+    if curr_p <= 0:
+        return None
+
+    # --- Indicadores 15m ---
+    atr_15m = calc_atr(c_15m, 14)
+    atr_pct_15m = (atr_15m / curr_p * 100.0) if curr_p > 0 else 1.0
+    rsi_15m = calc_rsi(closes_15m, 14)
+    ema9_15m = calc_ema(closes_15m, 9)
+    ema20_15m = calc_ema(closes_15m, 20)
+
+    # --- Indicadores 1H (tendencia de fondo) ---
+    ema20_1h = calc_ema(closes_1h, 20)
+    ema50_1h = calc_ema(closes_1h[-50:], 50) if len(closes_1h) >= 50 else calc_ema(closes_1h, len(closes_1h))
+    rsi_1h = calc_rsi(closes_1h, 14)
+    trend_1h_bullish = curr_p > ema20_1h
+
+    # --- Micro-resistencia en 15m: Máximo de las últimas 8 velas (2 horas) ---
+    recent_high = max(highs_15m[-9:-1]) if len(highs_15m) >= 9 else max(highs_15m[-5:-1])
+    breakout_confirmed = curr_p > recent_high
+
+    # --- Volumen Spike: Última vela 15m vs promedio de las últimas 20 ---
+    avg_vol = sum(vols_15m[-20:]) / 20.0 if len(vols_15m) >= 20 else sum(vols_15m) / max(len(vols_15m), 1)
+    vol_spike = (vols_15m[-1] / avg_vol) if avg_vol > 0 else 0.0
+
+    # --- Vela actual verde y con cuerpo ---
+    last_c = c_15m[-1]
+    is_green = last_c[4] > last_c[1]
+    body = abs(last_c[4] - last_c[1])
+    full_range = last_c[2] - last_c[3]
+    body_ratio = (body / full_range) if full_range > 0 else 0.0
+
+    # --- Momentum: Las últimas 2 velas de 15m son verdes ---
+    prev_green = c_15m[-2][4] > c_15m[-2][1] if len(c_15m) >= 2 else False
+    double_green = is_green and prev_green
+
+    # --- Anti-Cuchillo: Las últimas 4 velas de 1H no deben ser todas rojas ---
+    knife_count = sum(1 for c in c_1h[-4:] if c[4] < c[1])
+    is_falling_knife = knife_count >= 4
+
+    # --- Fuerza Relativa vs BTC (comparar cambio 1H de esta moneda vs BTC) ---
+    if len(c_1h) >= 2:
+        coin_chg_1h = (c_1h[-1][4] - c_1h[-2][4]) / c_1h[-2][4] * 100.0
+    else:
+        coin_chg_1h = 0.0
+    rs_vs_btc = coin_chg_1h - btc_ctx["change_1h"]
+
+    # --- Parámetros de Trade Dinámicos por ATR 15m ---
+    stop_distance = STOP_ATR_MULT * atr_15m
+    stop_pct = stop_distance / curr_p
+    stop_price = round(curr_p - stop_distance, 6)
+    target_distance = TARGET_ATR_MULT * atr_15m
+    target_pct = target_distance / curr_p
+    target_price = round(curr_p + target_distance, 6)
+    rr_ratio = round(target_pct / max(stop_pct, 0.001), 2)
+
+    # =================== PUNTUACIÓN V2 ADAPTATIVA ===================
     score = 0.0
-    if macro_bullish:
-        score += 35.0  # Tendencia 4H a favor
-    if dev_ema20 <= 0.50 and rsi_1h <= 48.0:
-        score += 30.0  # Descuento en soporte 1H
-    if has_rejection:
-        score += 20.0  # Vela de rechazo / absorción
-    if vol_spike >= 1.2:
-        score += 15.0  # Volumen de soporte
 
-    # Disparo Francotirador listo:
-    is_trigger_ready = (score >= 65.0) and macro_bullish and not is_falling_knife and (rr_ratio >= DEFAULT_MIN_RR_RATIO)
+    # A. Ruptura de micro-resistencia en 15m (+30)
+    if breakout_confirmed:
+        score += 30.0
 
-    status_str = "🟢 DISPARO LISTO" if is_trigger_ready else (
-        "🟡 ESPERANDO RETROCESO" if macro_bullish else "⚪ SIN TENDENCIA 4H"
+    # B. Volumen Spike en la vela actual (+20 si >= 1.3x, +10 si >= 1.0x)
+    if vol_spike >= BREAKOUT_VOL_SPIKE_MIN:
+        score += 20.0
+    elif vol_spike >= 1.0:
+        score += 10.0
+
+    # C. Vela(s) verde(s) con cuerpo (+15 por doble verde, +8 por verde simple)
+    if double_green and body_ratio >= 0.40:
+        score += 15.0
+    elif is_green and body_ratio >= 0.30:
+        score += 8.0
+
+    # D. RSI 15m en zona de impulso (40-65 es ideal, ni sobrevendido ni sobrecomprado) (+10)
+    if 38.0 <= rsi_15m <= 68.0:
+        score += 10.0
+
+    # E. Tendencia 1H a favor (precio > EMA20 1H) (+15)
+    if trend_1h_bullish:
+        score += 15.0
+
+    # F. Fuerza Relativa positiva vs BTC (+10 si es más fuerte que BTC)
+    if rs_vs_btc >= RS_MIN_THRESHOLD:
+        score += 10.0
+    elif rs_vs_btc >= 0.5:
+        score += 5.0
+
+    # Penalizaciones:
+    if is_falling_knife:
+        score -= 40.0
+    if rsi_15m > 78.0:
+        score -= 20.0  # Sobrecomprado extremo
+    if rsi_1h > 78.0:
+        score -= 15.0
+
+    is_trigger_ready = (
+        score >= MIN_SCORE_V2
+        and breakout_confirmed
+        and is_green
+        and vol_spike >= 1.0
+        and not is_falling_knife
+        and rr_ratio >= 2.0
     )
+
+    if is_trigger_ready:
+        status_str = "🟢 RUPTURA CONFIRMADA"
+    elif breakout_confirmed and score >= 50:
+        status_str = "🟡 RUPTURA SIN VOLUMEN"
+    elif trend_1h_bullish:
+        status_str = "🔵 TENDENCIA OK - SIN RUPTURA"
+    else:
+        status_str = "⚪ OBSERVANDO"
 
     return {
         "symbol": symbol,
         "price": curr_p,
-        "macro_bullish": macro_bullish,
-        "dev_ema20": round(dev_ema20, 2),
-        "rsi_1h": round(rsi_1h, 1),
-        "atr_1h_pct": round(atr_pct, 2),
+        "breakout": breakout_confirmed,
         "vol_spike": round(vol_spike, 2),
-        "has_rejection": has_rejection,
+        "is_green": is_green,
+        "double_green": double_green,
+        "rsi_15m": round(rsi_15m, 1),
+        "rsi_1h": round(rsi_1h, 1),
+        "trend_1h": trend_1h_bullish,
+        "atr_15m_pct": round(atr_pct_15m, 2),
+        "rs_vs_btc": round(rs_vs_btc, 2),
+        "coin_chg_1h": round(coin_chg_1h, 2),
         "is_falling_knife": is_falling_knife,
         "stop_pct": round(stop_pct * 100.0, 2),
         "target_pct": round(target_pct * 100.0, 2),
@@ -545,9 +691,9 @@ def analyze_hourly_swing_structure(symbol: str) -> Optional[Dict]:
     }
 
 
-# ====================== GESTOR DE EJECUCIÓN SWING PAPER ======================
+# ====================== GESTOR DE EJECUCIÓN V2 PAPER ======================
 def execute_swing_paper_entry(bot: SwingBot, opp: Dict):
-    """Abre una posición Swing simulada con tamaño proporcional y ratio R:R >= 3:1 con Interés Compuesto."""
+    """Abre una posición con confirmación de ruptura 15m + Interés Compuesto."""
     sym = opp["symbol"]
     if sym in bot.active_trades:
         return
@@ -559,7 +705,7 @@ def execute_swing_paper_entry(bot: SwingBot, opp: Dict):
     if trade_capital < 15.0 or curr_p <= 0 or bot.cash < trade_capital:
         return
 
-    # Precision de tamaño adaptada al valor del activo (BTC requiere 6 decimales)
+    # Precision de tamaño adaptada al valor del activo
     if curr_p >= 1000:
         amount = round(trade_capital / curr_p, 6)
     elif curr_p >= 1:
@@ -572,7 +718,7 @@ def execute_swing_paper_entry(bot: SwingBot, opp: Dict):
     stop_p = opp["stop_price"]
     target_pct = opp["target_pct"] / 100.0
     stop_pct = opp["stop_pct"] / 100.0
-    atr_p = opp["atr_1h_pct"]
+    atr_p = opp["atr_15m_pct"]
     rr = opp["rr_ratio"]
 
     bot.sim_order_seq += 1
@@ -599,19 +745,20 @@ def execute_swing_paper_entry(bot: SwingBot, opp: Dict):
     )
     bot.active_trades[sym] = trade
     tier = bot.get_tier_name()
-    bot.add_log(f"🎯 DISPARO SWING 1H #{order_id}: {sym} @ ${curr_p:.4f} | Asignado: ${trade_capital:.2f} (Interés Compuesto) | Tier: {tier} | Target: ${target_p:.4f} (+{target_pct*100:.2f}%) | Stop: ${stop_p:.4f} (-{stop_pct*100:.2f}%) | R:R {rr}:1", "trade")
+    rs_info = f"RS vs BTC: {opp.get('rs_vs_btc', 0):+.1f}pp"
+    bot.add_log(f"🎯 DISPARO V2 #{order_id}: {sym} @ ${curr_p:.4f} | {rs_info} | Ruptura 15m + Vol {opp.get('vol_spike', 0):.1f}x | ${trade_capital:.2f} USDT | Target: ${target_p:.4f} (+{target_pct*100:.2f}%) | Stop: ${stop_p:.4f} (-{stop_pct*100:.2f}%) | R:R {rr}:1", "trade")
     bot.db.log_trade(
         symbol=sym, side="BUY", price=curr_p, amount=amount, capital=trade_capital,
         pnl=0.0, fee=entry_fee, order_id=order_id, target_price=target_p, stop_price=stop_p,
-        note=f"Swing Entry #{order_id} (R:R {rr}:1 | ATR 1H {atr_p:.2f}%)"
+        note=f"V2 Entry #{order_id} (R:R {rr}:1 | ATR 15m {atr_p:.2f}% | RS {opp.get('rs_vs_btc', 0):+.1f}pp)"
     )
     bot.save_state()
 
 
 def manage_active_swing_trade(bot: SwingBot):
-    """Monitorea todas las posiciones activas: Break-Even, Trailing ATR, Target y Stop."""
+    """V2: Monitorea trades activos con Trailing Ágil basado en ATR 15m."""
     if not bot.active_trades:
-        bot.status_msg = "Sin posiciones activas. Escaneando retrocesos con EV > 0..."
+        bot.status_msg = "Sin posiciones. Escáner V2 buscando rupturas con fuerza relativa..."
         return
 
     for tr in list(bot.active_trades.values()):
@@ -634,59 +781,64 @@ def manage_active_swing_trade(bot: SwingBot):
 
         atr_val_abs = tr.entry_price * (tr.atr_pct / 100.0)
 
-        # 1. Escudo Break-Even: Si el trade alcanza +1.0x ATR (o mínimo +1.20%), subir el Stop a +0.20% (riesgo cero)
-        be_threshold = max(0.0120, (tr.atr_pct / 100.0) * 0.8)
-        if not tr.is_be_active and gain_pct >= be_threshold:
+        # 1. Break-Even Ágil: Al +1.0%, stop sube a +0.20%
+        if not tr.is_be_active and gain_pct >= BREAK_EVEN_TRIGGER_PCT:
             tr.is_be_active = True
-            new_stop = round(tr.entry_price * (1.0 + BREAK_EVEN_STOP_PCT), 4)
+            new_stop = round(tr.entry_price * (1.0 + BREAK_EVEN_STOP_PCT), 6)
             if new_stop > tr.stop_price:
                 tr.stop_price = new_stop
-                bot.add_log(f"🛡️ ESCUDO BREAK-EVEN ACTIVADO en {sym}: Ganancia +{gain_pct*100:.2f}%. Stop sube a ${new_stop:.4f} (+0.20% asegurado). Trade 100% libre de riesgo.", "trade")
+                bot.add_log(f"🛡️ BREAK-EVEN V2 en {sym}: +{gain_pct*100:.2f}%. Stop -> ${new_stop:.4f} (+0.20%). Riesgo CERO.", "trade")
                 bot.save_state()
 
-        # 2. Trailing Profit Dinámico por ATR (Chandelier Exit):
-        # Si la ganancia supera +1.5x ATR, el Stop persigue el máximo histórico menos 1.5x ATR, bloqueando beneficios:
+        # 2. Trailing Ágil: Desde +1.5x ATR 15m, persigue el máximo menos 0.8x ATR
         trailing_trigger = (tr.atr_pct / 100.0) * 1.5
         if gain_pct >= trailing_trigger:
-            trail_stop = round(tr.highest_price - (1.50 * atr_val_abs), 4)
+            trail_stop = round(tr.highest_price - (TRAIL_DISTANCE_ATR * atr_val_abs), 6)
             if trail_stop > tr.stop_price:
                 old_stop = tr.stop_price
                 tr.stop_price = trail_stop
                 tr.is_trailing_active = True
-                bot.add_log(f"📈 TRAILING ATR ELEVADO en {sym}: Máximo ${tr.highest_price:.4f}. Stop sube de ${old_stop:.4f} a ${trail_stop:.4f} asegurando beneficios crecientes.", "trade")
+                bot.add_log(f"📈 TRAILING ÁGIL en {sym}: Max ${tr.highest_price:.4f}. Stop ${old_stop:.4f} -> ${trail_stop:.4f}", "trade")
                 bot.save_state()
 
-        # 3. Cierre por Target (+4.5x ATR neto):
+        # 3. Cierre por Target:
         if curr_p >= tr.target_price:
             gross_pnl = (tr.target_price - tr.entry_price) * tr.amount
             exit_fee = (tr.target_price * tr.amount) * FEE_RATE
             net_pnl = gross_pnl - tr.entry_fee - exit_fee
             bot.cash += (tr.capital + net_pnl)
-            bot.add_log(f"🏆 VICTORIA TOTAL SWING en {sym}: Target ${tr.target_price:.4f} alcanzado | PnL neto: +${net_pnl:.4f} USDT (+{tr.target_pct*100:.2f}%)", "trade")
+            bot.add_log(f"🏆 TARGET V2 en {sym}: ${tr.target_price:.4f} | PnL: +${net_pnl:.4f} USDT (+{tr.target_pct*100:.2f}%)", "trade")
             bot.db.log_trade(
                 symbol=sym, side="SELL", price=tr.target_price, amount=tr.amount, capital=tr.capital,
                 pnl=net_pnl, fee=exit_fee, order_id=tr.trade_id, target_price=tr.target_price, stop_price=tr.stop_price,
-                note=f"🏆 TARGET ALCANZADO (+{tr.target_pct*100:.2f}%)"
+                note=f"🏆 TARGET V2 (+{tr.target_pct*100:.2f}%)"
             )
-            bot.cooldowns[sym] = time.time() + 1800  # 30 min cooldown
+            bot.cooldowns[sym] = time.time() + 300  # 5 min cooldown tras win
             bot.active_trades.pop(sym, None)
             bot.save_state()
             continue
 
-        # 4. Cierre por Stop Loss (o Stop Break-Even):
+        # 4. Cierre por Stop Loss (o Break-Even / Trailing):
         if curr_p <= tr.stop_price:
             gross_pnl = (tr.stop_price - tr.entry_price) * tr.amount
             exit_fee = (tr.stop_price * tr.amount) * FEE_RATE
             net_pnl = gross_pnl - tr.entry_fee - exit_fee
             bot.cash += (tr.capital + net_pnl)
-            reason = "🛡️ SALIDA BREAK-EVEN (Coste Cero)" if tr.is_be_active else f"🛑 STOP LOSS DEFENSIVO (-{tr.stop_pct*100:.2f}%)"
-            bot.add_log(f"{reason} en {sym} @ ${tr.stop_price:.4f} | PnL neto: {net_pnl:+.4f} USDT", "trade")
+            if tr.is_trailing_active:
+                reason = f"📈 TRAILING CERRÓ CON GANANCIA"
+            elif tr.is_be_active:
+                reason = "🛡️ SALIDA BREAK-EVEN"
+            else:
+                reason = f"🛑 STOP DEFENSIVO (-{tr.stop_pct*100:.2f}%)"
+            bot.add_log(f"{reason} en {sym} @ ${tr.stop_price:.4f} | PnL: {net_pnl:+.4f} USDT", "trade")
             bot.db.log_trade(
                 symbol=sym, side="SELL", price=tr.stop_price, amount=tr.amount, capital=tr.capital,
                 pnl=net_pnl, fee=exit_fee, order_id=tr.trade_id, target_price=tr.target_price, stop_price=tr.stop_price,
                 note=reason
             )
-            bot.cooldowns[sym] = time.time() + 3600  # 1 hora de cooldown tras stop
+            # Anti-Ametralladora: cooldown inteligente tras stop
+            bot.cooldowns[sym] = time.time() + POST_STOP_COOLDOWN_S
+            bot.last_stop_time = time.time()  # Marca global para exigir score extra
             bot.active_trades.pop(sym, None)
             bot.save_state()
             continue
@@ -874,7 +1026,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <div class="card" style="border-left: 4px solid var(--accent);">
                 <div class="card-header">
                     <div class="card-title" style="color: var(--accent);">
-                        <span>🎯 PILAR 2: SWING SNIPER 1H/4H (PAPER TRADING)</span>
+                        <span>🎯 PILAR 2: SWING SNIPER V2 (FUERZA RELATIVA & 15m BREAKOUT)</span>
                     </div>
                     <div style="display: flex; gap: 8px; align-items: center;">
                         <span class="tag tag-yellow" id="tier-badge">Mono-Sniper (&lt;$120)</span>
@@ -914,13 +1066,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             </div>
         </div>
 
-        <!-- RADAR MATRIX 1H / 4H -->
+        <!-- RADAR MATRIX V2 -->
         <div class="card" style="margin-bottom: 24px;">
             <div class="card-header">
                 <div class="card-title">
-                    <span>📊 RADAR CUANTITATIVO 1H / 4H: PULLBACKS DE ALTA CONVICCIÓN</span>
+                    <span>📊 RADAR CUANTITATIVO V2: FUERZA RELATIVA & RUPTURAS 15m</span>
                 </div>
-                <span style="font-size: 11px; color: var(--text-dim); font-family: monospace;">Filtro Anti-Cuchillo + R:R &gt;= 3.0:1</span>
+                <span style="font-size: 11px; color: var(--text-dim); font-family: monospace;">Escáner de Todo Binance + Anti-Cuchillo + R:R &gt;= 2.0:1</span>
             </div>
             <div style="overflow-x: auto;">
                 <table>
@@ -929,19 +1081,20 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                             <th>#</th>
                             <th>Par</th>
                             <th>Precio</th>
-                            <th>Tendencia 4H</th>
-                            <th>Desviación EMA20 1H</th>
-                            <th>RSI 1H</th>
-                            <th>ATR 1H</th>
-                            <th>Rechazo Soporte</th>
-                            <th>R:R Proyectado</th>
+                            <th>RS vs BTC</th>
+                            <th>Ruptura 15m</th>
+                            <th>Vol Spike</th>
+                            <th>Velas 15m</th>
+                            <th>RSI 15m</th>
+                            <th>Tendencia 1H</th>
                             <th>Target / Stop</th>
+                            <th>R:R</th>
                             <th>Puntaje</th>
                             <th>Estado</th>
                         </tr>
                     </thead>
                     <tbody id="radar-tbody">
-                        <tr><td colspan="12" style="text-align: center; color: var(--text-dim); padding: 20px;">Cargando velas de 1H y 4H...</td></tr>
+                        <tr><td colspan="13" style="text-align: center; color: var(--text-dim); padding: 20px;">Escaneando candidatos con Fuerza Relativa y Rupturas 15m...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -1055,27 +1208,31 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     actEl.innerHTML = `<span style="color:var(--text-dim);">${d.status_msg || 'Sin posición activa. Buscando retrocesos de alta probabilidad...'}</span>`;
                 }
 
-                // 3. Radar Table
+                // 3. Radar Table V2
                 const tbody = document.getElementById('radar-tbody');
                 if (tbody && d.radar_telemetry && d.radar_telemetry.length > 0) {
                     let rows = '';
                     d.radar_telemetry.forEach((c, idx) => {
-                        const macroTag = c.macro_bullish ? '<span class="tag tag-green">ALCISTA</span>' : '<span class="tag tag-gray">NEUTRAL</span>';
-                        const devColor = c.dev_ema20 <= 0 ? '#3fb950' : '#d29922';
-                        const rejTag = c.has_rejection ? '<span style="color:#3fb950;">SÍ (Absorción)</span>' : '<span style="color:#8b949e;">No</span>';
+                        const rsSign = (c.rs_vs_btc >= 0 ? '+' : '');
+                        const rsColor = c.rs_vs_btc >= 1.0 ? '#3fb950' : (c.rs_vs_btc >= 0 ? '#58a6ff' : '#f85149');
+                        const brkTag = c.breakout ? '<span class="tag tag-green">RUPTURA</span>' : '<span class="tag tag-gray">NO</span>';
+                        const volColor = c.vol_spike >= 1.3 ? '#3fb950' : (c.vol_spike >= 1.0 ? '#d29922' : '#8b949e');
+                        const candleTag = c.double_green ? '<span style="color:#3fb950; font-weight:600;">2 Verdes</span>' : (c.is_green ? '<span style="color:#3fb950;">1 Verde</span>' : '<span style="color:#f85149;">Roja</span>');
+                        const trendTag = c.trend_1h ? '<span class="tag tag-green">ALCISTA</span>' : '<span class="tag tag-gray">BAJISTA</span>';
                         const statusClass = c.trigger_ready ? 'tag-green' : (c.score >= 50 ? 'tag-yellow' : 'tag-gray');
                         
                         rows += `<tr>
                             <td>${idx + 1}</td>
                             <td><b>${c.symbol.split('/')[0]}</b></td>
                             <td>$${Number(c.price).toFixed(4)}</td>
-                            <td>${macroTag}</td>
-                            <td style="color:${devColor}; font-weight:bold;">${c.dev_ema20 > 0 ? '+' : ''}${c.dev_ema20.toFixed(2)}%</td>
-                            <td><span style="color:${c.rsi_1h <= 45 ? '#3fb950' : '#c9d1d9'}">${c.rsi_1h}</span></td>
-                            <td>${c.atr_1h_pct}%</td>
-                            <td>${rejTag}</td>
-                            <td style="color:#3fb950; font-weight:bold;">${c.rr_ratio} : 1</td>
+                            <td style="color:${rsColor}; font-weight:bold;">${rsSign}${c.rs_vs_btc}pp</td>
+                            <td>${brkTag}</td>
+                            <td style="color:${volColor}; font-weight:bold;">${c.vol_spike}x</td>
+                            <td>${candleTag}</td>
+                            <td><span style="color:${c.rsi_15m >= 40 && c.rsi_15m <= 65 ? '#3fb950' : '#c9d1d9'}">${c.rsi_15m}</span></td>
+                            <td>${trendTag}</td>
                             <td>+${c.target_pct}% / -${c.stop_pct}%</td>
+                            <td style="color:#3fb950; font-weight:bold;">${c.rr_ratio} : 1</td>
                             <td><b>${c.score}</b></td>
                             <td><span class="tag ${statusClass}">${c.status}</span></td>
                         </tr>`;
@@ -1169,19 +1326,22 @@ def start_swing_dashboard(bot: SwingBot, port: int = SWING_HTTP_PORT):
     print(f"  🌐 [SWING & GRID DASHBOARD] Acceso en vivo: http://localhost:{port}", flush=True)
 
 
-# ====================== HILO DE ESCANEO DE MERCADO (1H / 4H) ======================
+# ====================== HILO DE ESCANEO DE MERCADO V2 ======================
 def swing_telemetry_thread(bot: SwingBot):
-    """Escanea la whitelist de altcoins en 1H y 4H cada 15 segundos."""
-    print("  📡 [SWING 1H/4H RADAR] Motor de análisis estructural activo.", flush=True)
+    """Escanea el mercado dinámicamente buscando candidatos con Fuerza Relativa y Rupturas 15m."""
+    print("  📡 [SWING RADAR V2] Motor dinámico de Fuerza Relativa & Ruptura 15m activo.", flush=True)
     last_grid_check = 0.0
 
     while True:
         try:
             bot.scan_cycle += 1
+            btc_ctx = update_btc_context()
+            movers = scan_market_top_movers()
+
             results = []
-            for sym in SWING_WHITELIST:
+            for cand in movers:
                 try:
-                    res = analyze_hourly_swing_structure(sym)
+                    res = analyze_breakout_15m(cand["symbol"], btc_ctx)
                     if res:
                         results.append(res)
                 except Exception:
@@ -1201,19 +1361,20 @@ def swing_telemetry_thread(bot: SwingBot):
                 last_grid_check = now
 
         except Exception as e:
-            bot.add_log(f"Error en escaneo swing: {e}", "error")
+            bot.add_log(f"Error en escaneo radar V2: {e}", "error")
 
-        time.sleep(15.0)
+        time.sleep(12.0)
 
 
-# ====================== BUCLE PRINCIPAL ======================
+# ====================== BUCLE PRINCIPAL V2 ======================
 def run_hourly_swing():
     print("=" * 80, flush=True)
-    print("  THE HOURLY SWING SNIPER (1H / 4H ASYMMETRIC ENGINE)", flush=True)
-    print("  • Modo                           -> PAPER TRADING ESTRICTO (Capital virtual $70.00)", flush=True)
+    print("  THE ADAPTIVE SWING SNIPER V2 (RELATIVE STRENGTH & 15m BREAKOUT ENGINE)", flush=True)
+    print("  • Modo                           -> PAPER TRADING ESTRICTO (Capital virtual)", flush=True)
     print("  • Seguridad                      -> Malla DOGE Real Pionex INTACTA (Solo Lectura)", flush=True)
-    print("  • Ratio Riesgo/Beneficio         -> R:R >= 3.0:1 (Stop ~1.5% | Target +4.5% a +6.5%)", flush=True)
-    print("  • Escudo Break-Even              -> Activación automática al +1.20%", flush=True)
+    print("  • Estrategia V2                  -> Fuerza Relativa vs BTC + Ruptura 15m + Vol Spike", flush=True)
+    print("  • Filtro Anti-Ametralladora      -> Cooldown 180s + Exigencia de Score Elevado tras stop", flush=True)
+    print("  • Gestión de Riesgo              -> Stop Dinámico 1.2x ATR | Break-Even +1.0% | Trailing 0.8x ATR", flush=True)
     print(f"  • Dashboard Integrado            -> http://localhost:{SWING_HTTP_PORT}", flush=True)
     print("=" * 80, flush=True)
 
@@ -1229,15 +1390,27 @@ def run_hourly_swing():
         try:
             now_ts = time.time()
 
-            if bot.active_trade:
-                manage_active_swing_trade(bot)
-            else:
+            manage_active_swing_trade(bot)
+
+            # Verificar si hay cupo para abrir trades (según tier de capital y diversificación)
+            max_concurrent = bot.get_max_concurrent_trades()
+            current_active_count = len(bot.active_trades)
+
+            if current_active_count < max_concurrent:
                 with bot.data_lock:
                     telemetry = list(bot.radar_telemetry)
 
+                # Anti-Ametralladora: Si hubo un stop loss en los últimos 300 segundos, exigir score extra
+                time_since_last_stop = now_ts - getattr(bot, "last_stop_time", 0.0)
+                is_recovering_from_stop = time_since_last_stop < 300.0
+                effective_min_score = (MIN_SCORE_V2 + POST_STOP_EXTRA_SCORE) if is_recovering_from_stop else MIN_SCORE_V2
+
                 ready_opps = [
                     o for o in telemetry
-                    if o["trigger_ready"] and bot.cooldowns.get(o["symbol"], 0.0) <= now_ts
+                    if o.get("trigger_ready")
+                    and o.get("score", 0.0) >= effective_min_score
+                    and bot.cooldowns.get(o["symbol"], 0.0) <= now_ts
+                    and o["symbol"] not in bot.active_trades
                 ]
 
                 if ready_opps:
@@ -1245,16 +1418,20 @@ def run_hourly_swing():
                     execute_swing_paper_entry(bot, best)
                 else:
                     top = telemetry[0] if telemetry else None
-                    if top:
-                        bot.status_msg = f"Escaneando 1H/4H: Líder {top['symbol']} (Score {top['score']}/100 | {top['status']}). Esperando confluencia."
+                    if top and not bot.active_trades:
+                        cooldown_active = bot.cooldowns.get(top["symbol"], 0.0) > now_ts
+                        anti_badge = f" [Anti-Ametralladora: Min Score {effective_min_score:.0f}]" if is_recovering_from_stop else ""
+                        cd_badge = " (Cooldown activo)" if cooldown_active else ""
+                        bot.status_msg = f"Radar V2: Líder {top['symbol']} (Score {top['score']}/100 | RS {top.get('rs_vs_btc', 0):+.1f}pp | {top['status']}){cd_badge}{anti_badge}."
 
             time.sleep(2.5)
 
         except KeyboardInterrupt:
-            print("\nDeteniendo Swing Engine...", flush=True)
+            print("\nDeteniendo Swing Engine V2...", flush=True)
             break
         except Exception as e:
             bot.add_log(f"Error en bucle swing: {e}", "error")
+            time.sleep(5.0)
             time.sleep(5.0)
 
 
