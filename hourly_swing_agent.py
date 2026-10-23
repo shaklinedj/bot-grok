@@ -51,17 +51,17 @@ FEE_RATE = 0.0005                # 0.05% por lado (0.10% round-trip)
 MIN_VOLUME_USDT = 8_000_000      # Filtro mínimo: $8M de volumen diario en USDT
 RS_MIN_THRESHOLD = 1.5           # Fuerza Relativa mínima vs BTC (en puntos porcentuales)
 
-# Configuración por defecto (Calibración Óptima ATR - Opción B)
+# Configuración por defecto (Calibración base de fábrica)
 DEFAULT_SETTINGS = {
     "auto_atr_mode": True,               # Modo Automático ATR ON/OFF
-    "be_trigger_pct": 0.016,             # +1.60% activa Break-Even (Opción B equilibrada)
+    "be_trigger_pct": 0.016,             # +1.60% activa Break-Even
     "be_stop_pct": 0.0020,               # +0.20% asegura comisiones en BE
-    "stop_atr_mult": 1.2,                # Stop Loss: 1.2x ATR 15m
+    "stop_atr_mult": 1.2,                # Stop Loss: Multiplicador ATR base
     "target_atr_mult": 3.0,              # Target: 3.0x ATR 15m (R:R ~ 2.5:1)
-    "trail_distance_atr": 0.8,           # Trailing persigue el máximo menos 0.8x ATR
-    "min_score": 70.0,                   # Score mínimo para disparo
+    "trail_distance_atr": 0.8,           # Trailing persigue el máximo menos distancia ATR
+    "min_score": 70.0,                   # Score mínimo base
     "vol_spike_min": 1.2,                # Pico de volumen mínimo (1.2x media)
-    "post_stop_cooldown_s": 180,         # 3 minutos cooldown tras stop
+    "post_stop_cooldown_s": 180,         # Cooldown base tras stop
     "post_stop_extra_score": 15.0        # Penalización temporal tras stop
 }
 
@@ -154,6 +154,24 @@ class SwingDatabase:
                     key TEXT PRIMARY KEY,
                     val_json TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                );
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS trade_autopsies (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    trade_id TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    pnl REAL NOT NULL,
+                    pnl_pct REAL NOT NULL,
+                    duration_s REAL NOT NULL,
+                    mfe_pct REAL NOT NULL,
+                    mae_pct REAL NOT NULL,
+                    exit_reason TEXT NOT NULL,
+                    classification TEXT NOT NULL,
+                    btc_regime TEXT NOT NULL,
+                    lesson_learned TEXT NOT NULL,
+                    adaptive_action TEXT NOT NULL
                 );
             """)
             conn.commit()
@@ -264,6 +282,45 @@ class SwingDatabase:
                     res[r["key"]] = r["val_json"]
         return res
 
+    def log_autopsy(self, trade_id: str, symbol: str, pnl: float, pnl_pct: float,
+                    duration_s: float, mfe_pct: float, mae_pct: float,
+                    exit_reason: str, classification: str, btc_regime: str,
+                    lesson_learned: str, adaptive_action: str):
+        """Registra la autopsia clínica post-trade para autoaprendizaje dinámico."""
+        ts = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            conn.execute("""
+                INSERT INTO trade_autopsies (
+                    timestamp, trade_id, symbol, pnl, pnl_pct, duration_s,
+                    mfe_pct, mae_pct, exit_reason, classification, btc_regime,
+                    lesson_learned, adaptive_action
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (ts, trade_id, symbol, pnl, pnl_pct, duration_s,
+                  mfe_pct, mae_pct, exit_reason, classification, btc_regime,
+                  lesson_learned, adaptive_action))
+            conn.commit()
+
+    def get_recent_autopsies(self, limit: int = 15) -> List[Dict]:
+        """Recupera las autopsias clínicas más recientes de SQLite."""
+        with self._get_connection() as conn:
+            rows = conn.execute("""
+                SELECT timestamp, trade_id, symbol, pnl, pnl_pct, duration_s,
+                       mfe_pct, mae_pct, exit_reason, classification, btc_regime,
+                       lesson_learned, adaptive_action
+                FROM trade_autopsies
+                ORDER BY id DESC LIMIT ?
+            """, (limit,)).fetchall()
+            return [
+                {
+                    "timestamp": r["timestamp"], "trade_id": r["trade_id"], "symbol": r["symbol"],
+                    "pnl": r["pnl"], "pnl_pct": r["pnl_pct"], "duration_s": r["duration_s"],
+                    "mfe_pct": r["mfe_pct"], "mae_pct": r["mae_pct"], "exit_reason": r["exit_reason"],
+                    "classification": r["classification"], "btc_regime": r["btc_regime"],
+                    "lesson_learned": r["lesson_learned"], "adaptive_action": r["adaptive_action"]
+                }
+                for r in rows
+            ]
+
 
 # ====================== MODELO DE DATOS SWING ======================
 class SwingTrade:
@@ -288,6 +345,7 @@ class SwingTrade:
         self.is_be_active = False        # Break-Even Shield activado (+0.20%)
         self.is_trailing_active = False  # Trailing Stop ATR activado
         self.highest_price = entry_price
+        self.lowest_price = entry_price
         self.current_price = entry_price
         self.unrealized_pnl = 0.0
         self.unrealized_pnl_pct = 0.0
@@ -312,6 +370,7 @@ class SwingTrade:
             "is_be_active": self.is_be_active,
             "is_trailing_active": self.is_trailing_active,
             "highest_price": self.highest_price,
+            "lowest_price": getattr(self, "lowest_price", self.entry_price),
             "current_price": self.current_price,
             "unrealized_pnl": self.unrealized_pnl,
             "unrealized_pnl_pct": self.unrealized_pnl_pct,
@@ -339,6 +398,7 @@ class SwingTrade:
         st.is_be_active = d.get("is_be_active", False)
         st.is_trailing_active = d.get("is_trailing_active", False)
         st.highest_price = d.get("highest_price", st.entry_price)
+        st.lowest_price = d.get("lowest_price", st.entry_price)
         st.current_price = d.get("current_price", st.entry_price)
         st.unrealized_pnl = d.get("unrealized_pnl", 0.0)
         st.unrealized_pnl_pct = d.get("unrealized_pnl_pct", 0.0)
@@ -542,7 +602,11 @@ def fetch_real_pionex_grid_stats() -> Dict:
 # ====================== MOTOR ADAPTATIVO V2: ESCÁNER + FUERZA RELATIVA + GATILLO 15m ======================
 _ohlcv_cache = {}
 _ticker_cache = {"ts": 0.0, "data": {}}
-_btc_performance_cache = {"ts": 0.0, "change_1h": 0.0, "change_4h": 0.0, "trend_4h": "neutral"}
+_btc_performance_cache = {
+    "ts": 0.0, "change_1h": 0.0, "change_4h": 0.0, "trend_4h": "neutral",
+    "regime": "NEUTRAL_TRANSITION", "regime_desc": "Iniciando análisis macro...",
+    "range_3h_pct": 1.0, "can_trade_alts": True
+}
 
 
 def fetch_ohlcv_cached(symbol: str, timeframe: str, limit: int = 60) -> List:
@@ -594,21 +658,61 @@ def calc_atr(candles: List, period: int = 14) -> float:
 
 
 def update_btc_context():
-    """Actualiza el contexto macro de Bitcoin (se usa para Fuerza Relativa)."""
+    """Actualiza el contexto macro de Bitcoin (Régimen de Mercado, Filtro Lateral y Fuerza Relativa)."""
     global _btc_performance_cache
     now = time.time()
-    if now - _btc_performance_cache["ts"] < 60:
+    if now - _btc_performance_cache.get("ts", 0) < 45:
         return _btc_performance_cache
     try:
-        c_1h = fetch_ohlcv_cached("BTC/USDT", "1h", limit=6)
+        c_15m = fetch_ohlcv_cached("BTC/USDT", "15m", limit=24)
+        c_1h = fetch_ohlcv_cached("BTC/USDT", "1h", limit=24)
         c_4h = fetch_ohlcv_cached("BTC/USDT", "4h", limit=25)
         if len(c_1h) >= 2 and len(c_4h) >= 5:
+            btc_curr = c_1h[-1][4]
             chg_1h = (c_1h[-1][4] - c_1h[-2][4]) / c_1h[-2][4] * 100.0
             chg_4h = (c_4h[-1][4] - c_4h[-5][4]) / c_4h[-5][4] * 100.0
             closes_4h = [c[4] for c in c_4h]
-            ema20 = calc_ema(closes_4h, 20)
-            trend = "bullish" if c_4h[-1][4] > ema20 else "bearish"
-            _btc_performance_cache = {"ts": now, "change_1h": chg_1h, "change_4h": chg_4h, "trend_4h": trend}
+            ema20_4h = calc_ema(closes_4h, 20)
+            trend_4h = "bullish" if c_4h[-1][4] > ema20_4h else "bearish"
+
+            closes_1h = [c[4] for c in c_1h]
+            ema20_1h = calc_ema(closes_1h, 20)
+
+            range_3h_pct = 1.0
+            if len(c_15m) >= 12:
+                highs_3h = max(c[2] for c in c_15m[-12:])
+                lows_3h = min(c[3] for c in c_15m[-12:])
+                range_3h_pct = (highs_3h - lows_3h) / btc_curr * 100.0
+
+            # Diagnóstico de Régimen Cuantitativo:
+            if btc_curr < ema20_1h and chg_1h < -0.35:
+                regime = "BEARISH_DUMP"
+                regime_desc = "Corrección de BTC (< EMA20 1H). Disparos en altcoins bloqueados preventivamente."
+                can_trade_alts = False
+            elif range_3h_pct < 0.90 and abs(chg_1h) < 0.25:
+                regime = "CHOP_COMPRESSION"
+                regime_desc = "Compresión lateral de BTC (rango 3h < 0.9%). Falsas rupturas frecuentes. Exigiendo Score A+ (86+)."
+                can_trade_alts = True
+            elif btc_curr >= ema20_1h and chg_1h >= 0.10:
+                regime = "BULLISH_EXPANSION"
+                regime_desc = "Expansión alcista de BTC. Viento de cola favorable para rupturas en altcoins."
+                can_trade_alts = True
+            else:
+                regime = "NEUTRAL_TRANSITION"
+                regime_desc = "BTC en consolidación neutra."
+                can_trade_alts = True
+
+            _btc_performance_cache = {
+                "ts": now,
+                "price": btc_curr,
+                "change_1h": chg_1h,
+                "change_4h": chg_4h,
+                "trend_4h": trend_4h,
+                "range_3h_pct": range_3h_pct,
+                "regime": regime,
+                "regime_desc": regime_desc,
+                "can_trade_alts": can_trade_alts
+            }
     except Exception:
         pass
     return _btc_performance_cache
@@ -692,6 +796,24 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict, settings: Optional[Dict] = 
     if curr_p <= 0:
         return None
 
+    btc_regime = btc_ctx.get("regime", "NEUTRAL_TRANSITION")
+    # Candado Macro BTC: Si BTC está en corrección brusca (DUMP), prohibido comprar altcoins
+    if btc_regime == "BEARISH_DUMP":
+        return {
+            "symbol": symbol, "price": curr_p, "breakout": False, "score": 0.0,
+            "vol_spike": 0.0, "is_green": False, "double_green": False,
+            "rsi_15m": 50.0, "rsi_1h": 50.0, "trend_1h": False, "atr_15m_pct": 1.0,
+            "rs_vs_btc": 0.0, "coin_chg_1h": 0.0, "is_falling_knife": False,
+            "is_overextended": False, "has_healthy_base": False, "rsi_5m": 50.0,
+            "stop_pct": 1.5, "target_pct": 3.3, "stop_price": round(curr_p * 0.985, 6),
+            "target_price": round(curr_p * 1.033, 6), "rr_ratio": 2.2,
+            "trigger_ready": False, "status": "🚫 BLOQUEO: BTC en Corrección"
+        }
+
+    # Si BTC está en compresión lateral (chop), se exige Score A+ (86+)
+    if btc_regime == "CHOP_COMPRESSION":
+        min_score_target = max(min_score_target, 86.0)
+
     # --- Microestructura 5m (para evitar comprar en techos de agotamiento) ---
     if c_5m and len(c_5m) >= 15:
         closes_5m = [c[4] for c in c_5m]
@@ -765,12 +887,16 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict, settings: Optional[Dict] = 
         coin_chg_1h = 0.0
     rs_vs_btc = coin_chg_1h - btc_ctx["change_1h"]
 
-    # --- Parámetros de Trade Dinámicos con Tope de Riesgo Estricto (máximo -1.60% inicial) ---
-    max_stop_pct = 0.0160  # Blindaje: un stop inicial nunca arriesga más del 1.60% (~$0.85 USDT)
-    stop_distance = min(stop_mult * atr_15m, curr_p * max_stop_pct)
+    # --- Parámetros de Trade Asimétricos con Piso Defensivo (1.20% min) y Techo (2.20% max) ---
+    min_stop_pct = 0.0120  # Piso mínimo 1.20%: Erradica la muerte por micro-stops y ruido blanco
+    max_stop_pct = 0.0220  # Techo máximo 2.20%: Preserva el capital ante cisnes negros
+    raw_stop_dist = stop_mult * atr_15m
+    stop_distance = max(curr_p * min_stop_pct, min(raw_stop_dist, curr_p * max_stop_pct))
     stop_pct = stop_distance / curr_p
     stop_price = round(curr_p - stop_distance, 6)
-    target_distance = max(target_mult * atr_15m, stop_distance * 2.0)
+
+    # Target asimétrico: Mínimo 2.2x el stop real para garantizar Payoff positivo (>2.2:1)
+    target_distance = max(target_mult * atr_15m, stop_distance * 2.2)
     target_pct = target_distance / curr_p
     target_price = round(curr_p + target_distance, 6)
     rr_ratio = round(target_pct / max(stop_pct, 0.001), 2)
@@ -935,8 +1061,92 @@ def execute_swing_paper_entry(bot: SwingBot, opp: Dict):
     bot.save_state()
 
 
+def process_trade_autopsy_and_feedback(bot: SwingBot, tr: SwingTrade, exit_price: float, net_pnl: float, reason: str, exit_fee: float):
+    """
+    Motor Dinámico de Autoaprendizaje y Autopsia Post-Trade.
+    Evalúa MFE (máxima subida), MAE (máxima caída), contexto macro de BTC y duración.
+    Clasifica la causa raíz y autoajusta los parámetros en caliente en SQLite.
+    """
+    now = time.time()
+    duration_s = max(1.0, now - tr.entry_time)
+    highest_p = getattr(tr, "highest_price", tr.entry_price)
+    lowest_p = getattr(tr, "lowest_price", tr.entry_price)
+    mfe_pct = (highest_p - tr.entry_price) / tr.entry_price * 100.0
+    mae_pct = (lowest_p - tr.entry_price) / tr.entry_price * 100.0
+    pnl_pct = (net_pnl / tr.capital * 100.0) if tr.capital > 0 else 0.0
+
+    btc_ctx = update_btc_context()
+    btc_regime = btc_ctx.get("regime", "NEUTRAL_TRANSITION")
+
+    classification = "UNKNOWN"
+    lesson = ""
+    action = ""
+
+    if net_pnl > 0:
+        if "TARGET" in reason or pnl_pct >= 3.0:
+            classification = "TARGET_HIT"
+            lesson = f"Ruptura sólida en {tr.symbol} con expansión completa (+{pnl_pct:.2f}%). Cosecha óptima."
+            action = "Mantener parámetros de convicción y celebrar la paciencia técnica."
+        elif mfe_pct >= 2.0 and pnl_pct < 0.30:
+            classification = "PREMATURE_CHOKE"
+            lesson = f"El activo subió +{mfe_pct:.2f}% (MFE) pero el trade se cerró con apenas +{pnl_pct:.2f}% (+${net_pnl:.2f}). Trailing/BE demasiado apretado."
+            action = "Autoaprendizaje: Relajando holgura de Trailing a 1.6x-1.8x ATR."
+            cur_trail = bot.settings.get("trail_distance_atr", 1.6)
+            bot.settings["trail_distance_atr"] = round(min(2.0, max(1.5, cur_trail + 0.1)), 2)
+            bot.save_settings()
+        elif "TRAILING" in reason:
+            classification = "RUNNER_HARVESTED"
+            lesson = f"Tendencia aprovechada (+{pnl_pct:.2f}%). Trailing Stop aseguró ganancias en retroceso."
+            action = "Excelente ejecución de persecución de tendencia."
+        else:
+            classification = "BREAK_EVEN_EXIT"
+            lesson = f"Cierre defensivo en coste protegido (+{pnl_pct:.2f}%). Capital preservado."
+            action = "Continuar escaneo."
+    else:
+        # Trade perdedor:
+        if duration_s < 1500 and abs(mae_pct) < 1.0:
+            classification = "NOISE_STOP_HUNT"
+            lesson = f"Stop tocado en {duration_s/60:.0f}m con oscilación menor (-{abs(mae_pct):.2f}%). Víctima de ruido blanco / spread."
+            action = "Autoaprendizaje: Forzar piso mínimo de Stop al 1.40% y elevar stop multiplier."
+            cur_stop = bot.settings.get("stop_atr_mult", 2.0)
+            bot.settings["stop_atr_mult"] = round(min(2.5, cur_stop + 0.1), 2)
+            bot.save_settings()
+        elif btc_regime == "CHOP_COMPRESSION":
+            classification = "CHOP_FALSE_BREAKOUT"
+            lesson = f"Falsa ruptura en {tr.symbol} atrapada por compresión lateral de Bitcoin. Trampa de liquidez."
+            action = "Autoaprendizaje: Activando Cooldown extendido (15 min) y exigiendo Score A+ (86+)."
+            bot.settings["post_stop_cooldown_s"] = 900
+            bot.settings["min_score"] = round(max(84.0, bot.settings.get("min_score", 82.0) + 1.0), 1)
+            bot.save_settings()
+        elif btc_regime == "BEARISH_DUMP":
+            classification = "MACRO_BTC_DRAG"
+            lesson = f"Venta masiva de Bitcoin arrastró a {tr.symbol}. Ruptura invalidada por macro."
+            action = "Autoaprendizaje: Candado bajista activado. Prohibidas compras hasta estabilización de BTC."
+        else:
+            classification = "NORMAL_STOP_DEFENSIVE"
+            lesson = f"Stop defensivo actuó según plan (-{abs(pnl_pct):.2f}%). Pérdida estrictamente acotada."
+            action = "Respetar cooldown y esperar siguiente configuración A+."
+
+    # Registrar en SQLite
+    bot.db.log_autopsy(
+        trade_id=tr.trade_id,
+        symbol=tr.symbol,
+        pnl=net_pnl,
+        pnl_pct=pnl_pct,
+        duration_s=duration_s,
+        mfe_pct=mfe_pct,
+        mae_pct=mae_pct,
+        exit_reason=reason,
+        classification=classification,
+        btc_regime=btc_regime,
+        lesson_learned=lesson,
+        adaptive_action=action
+    )
+    bot.add_log(f"🔬 AUTOPSIA [{classification}] {tr.symbol}: PnL {net_pnl:+.4f} USDT ({pnl_pct:+.2f}%) | MFE: +{mfe_pct:.2f}% | MAE: {mae_pct:.2f}% | Lección: {lesson}", "trade")
+
+
 def manage_active_swing_trade(bot: SwingBot):
-    """V2: Monitorea trades activos con Trailing Ágil basado en ATR 15m."""
+    """V2: Monitorea trades activos con Trailing Ágil basado en ATR 15m y Autopsia Post-Trade."""
     if not bot.active_trades:
         bot.status_msg = "Sin posiciones. Escáner V2 buscando rupturas con fuerza relativa..."
         return
@@ -956,12 +1166,13 @@ def manage_active_swing_trade(bot: SwingBot):
 
         tr.current_price = curr_p
         tr.highest_price = max(getattr(tr, "highest_price", tr.entry_price), curr_p)
+        tr.lowest_price = min(getattr(tr, "lowest_price", tr.entry_price), curr_p)
         tr.unrealized_pnl = (curr_p - tr.entry_price) * tr.amount
         tr.unrealized_pnl_pct = gain_pct * 100.0
 
         atr_val_abs = tr.entry_price * (tr.atr_pct / 100.0)
 
-        # 1. Break-Even: Dinámico por ATR o Manual según calibración en faders
+        # 1. Break-Even: Dinámico por ATR o Manual según faders
         if getattr(bot, "settings", {}).get("auto_atr_mode", True):
             # En Modo Automático ATR: El umbral escala con el ATR del activo (0.9x ATR, mínimo 1.20%)
             be_threshold = max(0.012, (tr.atr_pct / 100.0) * 0.90)
@@ -978,8 +1189,8 @@ def manage_active_swing_trade(bot: SwingBot):
                 bot.add_log(f"🛡️ BREAK-EVEN [{mode_lbl}] en {sym}: +{gain_pct*100:.2f}% (Umbral {be_threshold*100:.2f}%). Stop -> ${new_stop:.4f} (+{be_stop*100:.2f}%). Riesgo CERO.", "trade")
                 bot.save_state()
 
-        # 2. Trailing Ágil: Desde +1.5x ATR 15m, persigue el máximo menos distancia ATR configurada
-        trail_dist_mult = getattr(bot, "settings", {}).get("trail_distance_atr", 0.8)
+        # 2. Trailing: Desde +1.5x ATR 15m, persigue el máximo menos distancia ATR configurada
+        trail_dist_mult = getattr(bot, "settings", {}).get("trail_distance_atr", 1.6)
         trailing_trigger = (tr.atr_pct / 100.0) * 1.5
         if gain_pct >= trailing_trigger:
             trail_stop = round(tr.highest_price - (trail_dist_mult * atr_val_abs), 6)
@@ -987,7 +1198,7 @@ def manage_active_swing_trade(bot: SwingBot):
                 old_stop = tr.stop_price
                 tr.stop_price = trail_stop
                 tr.is_trailing_active = True
-                bot.add_log(f"📈 TRAILING ÁGIL en {sym}: Max ${tr.highest_price:.4f}. Stop ${old_stop:.4f} -> ${trail_stop:.4f} ({trail_dist_mult}x ATR)", "trade")
+                bot.add_log(f"📈 TRAILING en {sym}: Max ${tr.highest_price:.4f}. Stop ${old_stop:.4f} -> ${trail_stop:.4f} ({trail_dist_mult}x ATR)", "trade")
                 bot.save_state()
 
         # 3. Cierre por Target:
@@ -996,12 +1207,14 @@ def manage_active_swing_trade(bot: SwingBot):
             exit_fee = (tr.target_price * tr.amount) * FEE_RATE
             net_pnl = gross_pnl - tr.entry_fee - exit_fee
             bot.cash += (tr.capital + net_pnl)
-            bot.add_log(f"🏆 TARGET V2 en {sym}: ${tr.target_price:.4f} | PnL: +${net_pnl:.4f} USDT (+{tr.target_pct*100:.2f}%)", "trade")
+            reason = f"🏆 TARGET V2 (+{tr.target_pct*100:.2f}%)"
+            bot.add_log(f"{reason} en {sym}: ${tr.target_price:.4f} | PnL: +${net_pnl:.4f} USDT", "trade")
             bot.db.log_trade(
                 symbol=sym, side="SELL", price=tr.target_price, amount=tr.amount, capital=tr.capital,
                 pnl=net_pnl, fee=exit_fee, order_id=tr.trade_id, target_price=tr.target_price, stop_price=tr.stop_price,
-                note=f"🏆 TARGET V2 (+{tr.target_pct*100:.2f}%)"
+                note=reason
             )
+            process_trade_autopsy_and_feedback(bot, tr, tr.target_price, net_pnl, reason, exit_fee)
             bot.cooldowns[sym] = time.time() + 300  # 5 min cooldown tras win
             bot.active_trades.pop(sym, None)
             bot.save_state()
@@ -1025,6 +1238,7 @@ def manage_active_swing_trade(bot: SwingBot):
                 pnl=net_pnl, fee=exit_fee, order_id=tr.trade_id, target_price=tr.target_price, stop_price=tr.stop_price,
                 note=reason
             )
+            process_trade_autopsy_and_feedback(bot, tr, tr.stop_price, net_pnl, reason, exit_fee)
             # Anti-Ametralladora: cooldown inteligente tras stop
             cd_sec = getattr(bot, "settings", {}).get("post_stop_cooldown_s", POST_STOP_COOLDOWN_S)
             bot.cooldowns[sym] = time.time() + cd_sec
@@ -1336,6 +1550,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 <div id="last-trade-box" style="margin-top: 10px; background: #090d13; border: 1px solid #21262d; border-radius: 6px; padding: 8px 12px; font-family: 'JetBrains Mono', monospace; font-size: 11px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px;">
                     <span style="color: var(--text-dim); font-size: 10px; font-weight: 600;">🏆 ÚLTIMA OPERACIÓN FINALIZADA:</span>
                     <span id="last-trade-summary" style="color: #ffffff;">Consultando historial SQLite...</span>
+                </div>
+
+                <!-- CEREBRO ADAPTATIVO & AUTOPSIA POST-TRADE -->
+                <div id="autopsy-box" style="margin-top: 10px; background: #0c1017; border: 1px solid #30363d; border-radius: 6px; padding: 10px 14px; font-family: 'JetBrains Mono', monospace; font-size: 11px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 6px;">
+                        <span style="color: #58a6ff; font-weight: 700;">🔬 CEREBRO ADAPTATIVO & AUTOPSIA POST-TRADE</span>
+                        <span id="btc-regime-badge" class="tag tag-blue" style="font-size: 10px;">REGIMEN: CALCULANDO...</span>
+                    </div>
+                    <div id="autopsy-summary" style="color: #c9d1d9; font-size: 11px; line-height: 1.4;">
+                        Analizando historial de 24 trades en SQLite. Próximo trade será clasificado automáticamente...
+                    </div>
                 </div>
 
                 <!-- RADAR STATUS FEED -->
@@ -1707,6 +1932,44 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     radarLiveEl.innerText = d.status_msg || 'Escaneando Binance...';
                 }
 
+                // 2.3 Régimen Macro de Bitcoin y Autopsia Post-Trade
+                const btcBadge = document.getElementById('btc-regime-badge');
+                if (btcBadge && d.btc_context) {
+                    const btc = d.btc_context;
+                    if (btc.regime === 'BULLISH_EXPANSION') {
+                        btcBadge.className = 'tag tag-green';
+                        btcBadge.innerText = '🟢 BTC: EXPANSIÓN ALCISTA';
+                    } else if (btc.regime === 'CHOP_COMPRESSION') {
+                        btcBadge.className = 'tag tag-purple';
+                        btcBadge.innerText = '🟡 BTC: COMPRESIÓN CHOP (Falsas Rupturas)';
+                    } else if (btc.regime === 'BEARISH_DUMP') {
+                        btcBadge.className = 'tag tag-red';
+                        btcBadge.innerText = '🔴 BTC: CORRECCIÓN DUMP (BLOQUEO)';
+                    } else {
+                        btcBadge.className = 'tag tag-blue';
+                        btcBadge.innerText = `🔵 BTC: ${btc.regime}`;
+                    }
+                }
+
+                const autopsySummaryEl = document.getElementById('autopsy-summary');
+                if (autopsySummaryEl) {
+                    if (d.recent_autopsies && d.recent_autopsies.length > 0) {
+                        const topA = d.recent_autopsies[0];
+                        const pnlSign = Number(topA.pnl) >= 0 ? '+' : '';
+                        const col = Number(topA.pnl) >= 0 ? '#3fb950' : '#f85149';
+                        autopsySummaryEl.innerHTML = `
+                            <div style="display:flex; justify-content:space-between; margin-bottom:4px; flex-wrap:wrap; gap:4px;">
+                                <span><strong>Última Autopsia:</strong> <span style="color:#58a6ff;">${topA.symbol}</span> | <span style="color:${col}; font-weight:bold;">${pnlSign}$${Number(topA.pnl).toFixed(4)} USDT</span> | Clase: <span class="tag tag-purple" style="font-size:9px;">${topA.classification}</span></span>
+                                <span style="color:var(--text-dim); font-size:10px;">MFE: +${Number(topA.mfe_pct).toFixed(2)}% | MAE: ${Number(topA.mae_pct).toFixed(2)}%</span>
+                            </div>
+                            <div style="color:#8b949e; font-size:10px;">💡 <em>${topA.lesson_learned}</em> &rarr; <span style="color:#58a6ff;">${topA.adaptive_action}</span></div>
+                        `;
+                    } else {
+                        const btcRegimeDesc = (d.btc_context && d.btc_context.regime_desc) ? d.btc_context.regime_desc : 'Monitoreo activo.';
+                        autopsySummaryEl.innerHTML = `<span style="color:#8b949e;">📡 Contexto BTC: <em>${btcRegimeDesc}</em> | Piso de Stop mínimo 1.20% activo para filtrar ruido.</span>`;
+                    }
+                }
+
                 // Título de pestaña interactivo con PnL en vivo
                 if (trades.length > 0) {
                     const topTr = trades[0];
@@ -1795,6 +2058,13 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             self.wfile.write(DASHBOARD_HTML.encode("utf-8"))
+        elif self.path == "/api/autopsies":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            autopsies = self.bot.db.get_recent_autopsies(20)
+            self.wfile.write(json.dumps(autopsies).encode("utf-8"))
         elif self.path == "/api/status":
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -1809,6 +2079,7 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 grid_stats = dict(bot.real_grid_stats)
                 trades_list = list(bot.active_trades.values())
                 last_closed = bot.db.get_last_closed_trade()
+                autopsies = bot.db.get_recent_autopsies(5)
 
             invested = sum(round(t.amount * t.entry_price, 2) for t in trades_list)
             live_val = sum(round(t.amount * getattr(t, "current_price", t.entry_price), 2) for t in trades_list)
@@ -1832,7 +2103,9 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 "settings": bot.settings,
                 "radar_telemetry": telemetry,
                 "real_grid": grid_stats,
-                "events": events
+                "events": events,
+                "btc_context": update_btc_context(),
+                "recent_autopsies": autopsies
             }
             self.wfile.write(json.dumps(payload).encode("utf-8"))
         else:

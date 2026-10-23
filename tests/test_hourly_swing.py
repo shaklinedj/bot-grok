@@ -332,5 +332,56 @@ def test_sqlite_settings_and_state_persistence(test_bot, tmp_path):
     assert bot2.cash == pytest.approx(95.50)
 
 
+def test_post_trade_autopsy_and_sqlite_logging(test_bot, monkeypatch):
+    """Verifica que el motor de autopsia clínica clasifique y persista en SQLite tras un stop."""
+    trade = SwingTrade(
+        trade_id="SWING_TEST_AUTOPSY",
+        symbol="AUTO/USDT",
+        entry_price=10.0,
+        amount=5.0,
+        capital=50.0,
+        target_price=10.50,
+        stop_price=9.85,
+        initial_stop=9.85,
+        target_pct=0.05,
+        stop_pct=0.015,
+        atr_pct=1.5,
+        rr_ratio=3.33,
+        entry_time=1000.0,
+        entry_fee=0.025
+    )
+    test_bot.active_trade = trade
+
+    # Precio cae al stop en 9.80
+    monkeypatch.setattr("hourly_swing_agent.exchange.fetch_ticker", lambda s: {"last": 9.80})
+    manage_active_swing_trade(test_bot)
+
+    # Debe haberse generado y guardado la autopsia en la tabla trade_autopsies de SQLite
+    autopsies = test_bot.db.get_recent_autopsies(5)
+    assert len(autopsies) >= 1
+    latest = autopsies[0]
+    assert latest["trade_id"] == "SWING_TEST_AUTOPSY"
+    assert latest["symbol"] == "AUTO/USDT"
+    assert latest["pnl"] < 0
+    assert "classification" in latest
+    assert "lesson_learned" in latest
+
+
+def test_btc_regime_gate_blocks_on_dump(monkeypatch):
+    """Verifica que si Bitcoin está en régimen BEARISH_DUMP, las compras en altcoins queden bloqueadas."""
+    mock_15m = [[1700000000000 + i * 900000, 10.0, 10.2, 9.9, 10.1, 1500.0] for i in range(40)]
+    mock_1h = [[1700000000000 + i * 3600000, 9.8, 10.2, 9.7, 10.0, 5000.0] for i in range(30)]
+    monkeypatch.setattr("hourly_swing_agent.fetch_ohlcv_cached", lambda sym, tf, limit=60: mock_15m if tf == "15m" else mock_1h)
+
+    # Simular contexto macro con BTC en corrección bajista
+    btc_dump_ctx = {"change_1h": -1.5, "change_4h": -3.0, "regime": "BEARISH_DUMP"}
+    res = analyze_breakout_15m("ALT/USDT", btc_dump_ctx)
+
+    assert res is not None
+    assert res["trigger_ready"] is False
+    assert "BLOQUEO" in res["status"]
+
+
+
 
 
