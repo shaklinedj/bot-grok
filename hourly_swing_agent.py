@@ -42,23 +42,40 @@ os.makedirs(SWING_LOGS_DIR, exist_ok=True)
 
 SWING_DB_FILE = os.path.join(SWING_LOGS_DIR, "swing_vault.db")
 SWING_STATE_FILE = os.path.join(SWING_LOGS_DIR, "swing_live_state.json")
+SWING_SETTINGS_FILE = os.path.join(SWING_LOGS_DIR, "swing_settings.json")
 SWING_HTTP_PORT = 8900
 
-# Parámetros Cuantitativos V2
+# Parámetros Cuantitativos y Calibración en Caliente
 PAPER_INITIAL_CAPITAL = 70.00
 FEE_RATE = 0.0005                # 0.05% por lado (0.10% round-trip)
-BREAK_EVEN_TRIGGER_PCT = 0.010   # +1.0% activa Break-Even
-BREAK_EVEN_STOP_PCT = 0.0020     # +0.20% asegura comisiones en BE
 MIN_VOLUME_USDT = 8_000_000      # Filtro mínimo: $8M de volumen diario en USDT
 RS_MIN_THRESHOLD = 1.5           # Fuerza Relativa mínima vs BTC (en puntos porcentuales)
-BREAKOUT_VOL_SPIKE_MIN = 1.3     # Volumen de vela 15m debe ser >= 1.3x el promedio
-MIN_SCORE_V2 = 70.0              # Score mínimo para disparo
-STOP_ATR_MULT = 1.2              # Stop Loss: 1.2x ATR 15m (corto y ágil)
-TARGET_ATR_MULT = 3.0            # Target: 3.0x ATR 15m (R:R = 2.5:1 mínimo)
-TRAIL_TRIGGER_ATR = 1.0          # Trailing se activa al superar +1.0x ATR 15m
-TRAIL_DISTANCE_ATR = 0.8         # Trailing persigue el máximo menos 0.8x ATR 15m
-POST_STOP_COOLDOWN_S = 180       # 3 minutos mínimo tras un stop (no horas, pero no 3 segundos)
-POST_STOP_EXTRA_SCORE = 15.0     # Tras un stop reciente, la siguiente moneda necesita +15 puntos extra
+
+# Configuración por defecto (Calibración Óptima ATR - Opción B)
+DEFAULT_SETTINGS = {
+    "auto_atr_mode": True,               # Modo Automático ATR ON/OFF
+    "be_trigger_pct": 0.016,             # +1.60% activa Break-Even (Opción B equilibrada)
+    "be_stop_pct": 0.0020,               # +0.20% asegura comisiones en BE
+    "stop_atr_mult": 1.2,                # Stop Loss: 1.2x ATR 15m
+    "target_atr_mult": 3.0,              # Target: 3.0x ATR 15m (R:R ~ 2.5:1)
+    "trail_distance_atr": 0.8,           # Trailing persigue el máximo menos 0.8x ATR
+    "min_score": 70.0,                   # Score mínimo para disparo
+    "vol_spike_min": 1.2,                # Pico de volumen mínimo (1.2x media)
+    "post_stop_cooldown_s": 180,         # 3 minutos cooldown tras stop
+    "post_stop_extra_score": 15.0        # Penalización temporal tras stop
+}
+
+# Constantes retrocompatibles
+BREAK_EVEN_TRIGGER_PCT = DEFAULT_SETTINGS["be_trigger_pct"]
+BREAK_EVEN_STOP_PCT = DEFAULT_SETTINGS["be_stop_pct"]
+BREAKOUT_VOL_SPIKE_MIN = DEFAULT_SETTINGS["vol_spike_min"]
+MIN_SCORE_V2 = DEFAULT_SETTINGS["min_score"]
+STOP_ATR_MULT = DEFAULT_SETTINGS["stop_atr_mult"]
+TARGET_ATR_MULT = DEFAULT_SETTINGS["target_atr_mult"]
+TRAIL_TRIGGER_ATR = 1.0
+TRAIL_DISTANCE_ATR = DEFAULT_SETTINGS["trail_distance_atr"]
+POST_STOP_COOLDOWN_S = DEFAULT_SETTINGS["post_stop_cooldown_s"]
+POST_STOP_EXTRA_SCORE = DEFAULT_SETTINGS["post_stop_extra_score"]
 
 # Stablecoins y tokens a ignorar en el escáner
 IGNORE_SYMBOLS = {"USDC/USDT", "BUSD/USDT", "TUSD/USDT", "FDUSD/USDT", "USD1/USDT",
@@ -273,11 +290,46 @@ class SwingBot:
         self.real_grid_stats: Dict = {}
         self.cooldowns: Dict[str, float] = {}
         self.last_stop_time: float = 0.0
+        self.settings: Dict = dict(DEFAULT_SETTINGS)
         self.status_msg = "Iniciando Hourly Swing Sniper..."
         self.data_lock = threading.Lock()
         self.scan_cycle = 0
         self.sim_order_seq = 1000
+        self.load_settings()
         self.load_state()
+
+    def load_settings(self):
+        if os.path.exists(SWING_SETTINGS_FILE):
+            try:
+                with open(SWING_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                    saved = json.load(f)
+                    self.settings.update(saved)
+            except Exception as e:
+                self.add_log(f"Error cargando settings: {e}", "error")
+
+    def save_settings(self):
+        tmp = SWING_SETTINGS_FILE + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self.settings, f, indent=2)
+            os.replace(tmp, SWING_SETTINGS_FILE)
+        except Exception as e:
+            self.add_log(f"Error guardando settings: {e}", "error")
+
+    def update_settings(self, new_cfg: Dict):
+        with self.data_lock:
+            for k, v in new_cfg.items():
+                if k in self.settings:
+                    if k in ("post_stop_cooldown_s",):
+                        self.settings[k] = int(v)
+                    elif k in ("auto_atr_mode",):
+                        self.settings[k] = bool(v)
+                    else:
+                        self.settings[k] = float(v)
+            self.save_settings()
+        be_pct = self.settings["be_trigger_pct"] * 100.0
+        mode_str = "AUTO ATR" if self.settings.get("auto_atr_mode") else "MANUAL"
+        self.add_log(f"🎛️ Parámetros actualizados [{mode_str}]: BE=+{be_pct:.2f}% | Stop={self.settings['stop_atr_mult']}x ATR | Target={self.settings['target_atr_mult']}x ATR | Trail={self.settings['trail_distance_atr']}x ATR | Score={self.settings['min_score']:.0f}", "info")
 
     @property
     def active_trade(self) -> Optional[SwingTrade]:
@@ -534,11 +586,17 @@ def scan_market_top_movers() -> List[Dict]:
     return candidates[:25]  # Top 25 para analizar en detalle
 
 
-def analyze_breakout_15m(symbol: str, btc_ctx: Dict) -> Optional[Dict]:
+def analyze_breakout_15m(symbol: str, btc_ctx: Dict, settings: Optional[Dict] = None) -> Optional[Dict]:
     """
     FASE 2 + 3: Analiza un candidato en 15m buscando ruptura confirmada con volumen.
     Solo dispara si hay confirmación de que la moneda ya está subiendo.
     """
+    cfg = settings or DEFAULT_SETTINGS
+    stop_mult = cfg.get("stop_atr_mult", 1.2)
+    target_mult = cfg.get("target_atr_mult", 3.0)
+    vol_min = cfg.get("vol_spike_min", 1.2)
+    min_score_target = cfg.get("min_score", 70.0)
+
     c_15m = fetch_ohlcv_cached(symbol, "15m", limit=40)
     c_1h = fetch_ohlcv_cached(symbol, "1h", limit=30)
 
@@ -599,10 +657,10 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict) -> Optional[Dict]:
     rs_vs_btc = coin_chg_1h - btc_ctx["change_1h"]
 
     # --- Parámetros de Trade Dinámicos por ATR 15m ---
-    stop_distance = STOP_ATR_MULT * atr_15m
+    stop_distance = stop_mult * atr_15m
     stop_pct = stop_distance / curr_p
     stop_price = round(curr_p - stop_distance, 6)
-    target_distance = TARGET_ATR_MULT * atr_15m
+    target_distance = target_mult * atr_15m
     target_pct = target_distance / curr_p
     target_price = round(curr_p + target_distance, 6)
     rr_ratio = round(target_pct / max(stop_pct, 0.001), 2)
@@ -614,8 +672,8 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict) -> Optional[Dict]:
     if breakout_confirmed:
         score += 30.0
 
-    # B. Volumen Spike en la vela actual (+20 si >= 1.3x, +10 si >= 1.0x)
-    if vol_spike >= BREAKOUT_VOL_SPIKE_MIN:
+    # B. Volumen Spike en la vela actual (+20 si >= vol_min, +10 si >= 1.0x)
+    if vol_spike >= vol_min:
         score += 20.0
     elif vol_spike >= 1.0:
         score += 10.0
@@ -649,7 +707,7 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict) -> Optional[Dict]:
         score -= 15.0
 
     is_trigger_ready = (
-        score >= MIN_SCORE_V2
+        score >= min_score_target
         and breakout_confirmed
         and is_green
         and vol_spike >= 1.0
@@ -781,24 +839,33 @@ def manage_active_swing_trade(bot: SwingBot):
 
         atr_val_abs = tr.entry_price * (tr.atr_pct / 100.0)
 
-        # 1. Break-Even Ágil: Al +1.0%, stop sube a +0.20%
-        if not tr.is_be_active and gain_pct >= BREAK_EVEN_TRIGGER_PCT:
+        # 1. Break-Even: Dinámico por ATR o Manual según calibración en faders
+        if getattr(bot, "settings", {}).get("auto_atr_mode", True):
+            # En Modo Automático ATR: El umbral escala con el ATR del activo (0.9x ATR, mínimo 1.20%)
+            be_threshold = max(0.012, (tr.atr_pct / 100.0) * 0.90)
+        else:
+            be_threshold = getattr(bot, "settings", {}).get("be_trigger_pct", 0.016)
+
+        be_stop = getattr(bot, "settings", {}).get("be_stop_pct", 0.0020)
+        if not tr.is_be_active and gain_pct >= be_threshold:
             tr.is_be_active = True
-            new_stop = round(tr.entry_price * (1.0 + BREAK_EVEN_STOP_PCT), 6)
+            new_stop = round(tr.entry_price * (1.0 + be_stop), 6)
             if new_stop > tr.stop_price:
                 tr.stop_price = new_stop
-                bot.add_log(f"🛡️ BREAK-EVEN V2 en {sym}: +{gain_pct*100:.2f}%. Stop -> ${new_stop:.4f} (+0.20%). Riesgo CERO.", "trade")
+                mode_lbl = "AUTO ATR" if getattr(bot, "settings", {}).get("auto_atr_mode", True) else "MANUAL"
+                bot.add_log(f"🛡️ BREAK-EVEN [{mode_lbl}] en {sym}: +{gain_pct*100:.2f}% (Umbral {be_threshold*100:.2f}%). Stop -> ${new_stop:.4f} (+{be_stop*100:.2f}%). Riesgo CERO.", "trade")
                 bot.save_state()
 
-        # 2. Trailing Ágil: Desde +1.5x ATR 15m, persigue el máximo menos 0.8x ATR
+        # 2. Trailing Ágil: Desde +1.5x ATR 15m, persigue el máximo menos distancia ATR configurada
+        trail_dist_mult = getattr(bot, "settings", {}).get("trail_distance_atr", 0.8)
         trailing_trigger = (tr.atr_pct / 100.0) * 1.5
         if gain_pct >= trailing_trigger:
-            trail_stop = round(tr.highest_price - (TRAIL_DISTANCE_ATR * atr_val_abs), 6)
+            trail_stop = round(tr.highest_price - (trail_dist_mult * atr_val_abs), 6)
             if trail_stop > tr.stop_price:
                 old_stop = tr.stop_price
                 tr.stop_price = trail_stop
                 tr.is_trailing_active = True
-                bot.add_log(f"📈 TRAILING ÁGIL en {sym}: Max ${tr.highest_price:.4f}. Stop ${old_stop:.4f} -> ${trail_stop:.4f}", "trade")
+                bot.add_log(f"📈 TRAILING ÁGIL en {sym}: Max ${tr.highest_price:.4f}. Stop ${old_stop:.4f} -> ${trail_stop:.4f} ({trail_dist_mult}x ATR)", "trade")
                 bot.save_state()
 
         # 3. Cierre por Target:
@@ -837,7 +904,8 @@ def manage_active_swing_trade(bot: SwingBot):
                 note=reason
             )
             # Anti-Ametralladora: cooldown inteligente tras stop
-            bot.cooldowns[sym] = time.time() + POST_STOP_COOLDOWN_S
+            cd_sec = getattr(bot, "settings", {}).get("post_stop_cooldown_s", POST_STOP_COOLDOWN_S)
+            bot.cooldowns[sym] = time.time() + cd_sec
             bot.last_stop_time = time.time()  # Marca global para exigir score extra
             bot.active_trades.pop(sym, None)
             bot.save_state()
@@ -972,6 +1040,84 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         .log-time { color: var(--text-dim); }
         .log-trade { color: var(--green); font-weight: 600; }
         .log-info { color: var(--text-main); }
+
+        /* Faders & Sliders Panel de Control */
+        .fader-group {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 12px 14px;
+            transition: border-color 0.2s;
+        }
+        .fader-group:hover {
+            border-color: #58a6ff;
+        }
+        .fader-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        .fader-label {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-main);
+        }
+        .fader-val {
+            font-size: 13px;
+            font-weight: 700;
+            color: #58a6ff;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .fader-sub {
+            font-size: 10px;
+            color: var(--text-dim);
+            margin-top: 6px;
+            line-height: 1.3;
+        }
+        input[type=range] {
+            -webkit-appearance: none;
+            width: 100%;
+            background: #21262d;
+            height: 6px;
+            border-radius: 3px;
+            outline: none;
+            cursor: pointer;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #f0883e;
+            cursor: pointer;
+            box-shadow: 0 0 6px rgba(240, 136, 62, 0.5);
+            transition: transform 0.1s;
+        }
+        input[type=range]::-webkit-slider-thumb:hover {
+            transform: scale(1.25);
+        }
+        .btn-toggle-auto {
+            background: #1f6feb;
+            border: 1px solid #388bfd;
+            color: #ffffff;
+            font-weight: 700;
+            font-size: 11px;
+            padding: 6px 14px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .btn-toggle-auto:hover {
+            background: #388bfd;
+        }
+        .btn-toggle-auto.off {
+            background: #21262d;
+            border-color: #30363d;
+            color: #8b949e;
+        }
     </style>
 </head>
 <body>
@@ -1066,6 +1212,83 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             </div>
         </div>
 
+        <!-- CONSOLA DE CONTROL INTERACTIVA (FADERS & MODO AUTOMÁTICO ATR) -->
+        <div class="card" style="margin-bottom: 24px; border-left: 4px solid #f0883e;">
+            <div class="card-header" style="flex-wrap: wrap; gap: 12px;">
+                <div class="card-title" style="color: #f0883e;">
+                    <span>🎛️ CONSOLA DE CALIBRACIÓN EN VIVO (FADERS & GESTIÓN DE RIESGO)</span>
+                </div>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <span id="cfg-sync-badge" class="tag tag-green" style="font-size: 11px;">● SINCRONIZADO</span>
+                    <button id="btn-auto-atr" onclick="toggleAutoAtr()" class="btn-toggle-auto">
+                        🤖 MODO AUTOMÁTICO (ATR DINÁMICO): ON
+                    </button>
+                </div>
+            </div>
+            
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px;">
+                <!-- Fader 1: Umbral Break-Even -->
+                <div class="fader-group">
+                    <div class="fader-header">
+                        <span class="fader-label">🛡️ Umbral Break-Even:</span>
+                        <span class="fader-val" id="val-be-trigger">+1.60%</span>
+                    </div>
+                    <input type="range" id="slider-be-trigger" min="0.5" max="3.5" step="0.1" value="1.6" oninput="updateFaderUI('be_trigger_pct', this.value)" onchange="sendSettingsUpdate()">
+                    <div class="fader-sub">Ganancia requerida para subir stop a coste cero (+0.20%).</div>
+                </div>
+
+                <!-- Fader 2: Stop Loss ATR -->
+                <div class="fader-group">
+                    <div class="fader-header">
+                        <span class="fader-label">🛑 Stop Loss (ATR 15m):</span>
+                        <span class="fader-val" id="val-stop-atr">1.2x ATR</span>
+                    </div>
+                    <input type="range" id="slider-stop-atr" min="0.8" max="2.5" step="0.1" value="1.2" oninput="updateFaderUI('stop_atr_mult', this.value)" onchange="sendSettingsUpdate()">
+                    <div class="fader-sub">Distancia inicial de protección calculada en base a volatilidad.</div>
+                </div>
+
+                <!-- Fader 3: Target Profit ATR -->
+                <div class="fader-group">
+                    <div class="fader-header">
+                        <span class="fader-label">🎯 Target Profit (ATR 15m):</span>
+                        <span class="fader-val" id="val-target-atr">3.0x ATR</span>
+                    </div>
+                    <input type="range" id="slider-target-atr" min="1.5" max="5.0" step="0.1" value="3.0" oninput="updateFaderUI('target_atr_mult', this.value)" onchange="sendSettingsUpdate()">
+                    <div class="fader-sub">Toma de ganancia simétrica por volatilidad (R:R objetivo).</div>
+                </div>
+
+                <!-- Fader 4: Distancia Trailing ATR -->
+                <div class="fader-group">
+                    <div class="fader-header">
+                        <span class="fader-label">📈 Distancia Trailing (ATR 15m):</span>
+                        <span class="fader-val" id="val-trail-atr">0.8x ATR</span>
+                    </div>
+                    <input type="range" id="slider-trail-atr" min="0.4" max="2.0" step="0.1" value="0.8" oninput="updateFaderUI('trail_distance_atr', this.value)" onchange="sendSettingsUpdate()">
+                    <div class="fader-sub">Margen detrás del máximo para perseguir beneficios en subida.</div>
+                </div>
+
+                <!-- Fader 5: Score Mínimo -->
+                <div class="fader-group">
+                    <div class="fader-header">
+                        <span class="fader-label">⚡ Score Mínimo Entrada:</span>
+                        <span class="fader-val" id="val-min-score">70 pts</span>
+                    </div>
+                    <input type="range" id="slider-min-score" min="50" max="90" step="1" value="70" oninput="updateFaderUI('min_score', this.value)" onchange="sendSettingsUpdate()">
+                    <div class="fader-sub">Puntaje de convicción mínima (ruptura + volumen + RS + velas).</div>
+                </div>
+
+                <!-- Fader 6: Cooldown Post-Stop -->
+                <div class="fader-group">
+                    <div class="fader-header">
+                        <span class="fader-label">⏱️ Cooldown Anti-Ametralladora:</span>
+                        <span class="fader-val" id="val-cooldown">180 seg</span>
+                    </div>
+                    <input type="range" id="slider-cooldown" min="30" max="600" step="15" value="180" oninput="updateFaderUI('post_stop_cooldown_s', this.value)" onchange="sendSettingsUpdate()">
+                    <div class="fader-sub">Tiempo de enfriamiento en el par tras tocar Stop Loss.</div>
+                </div>
+            </div>
+        </div>
+
         <!-- RADAR MATRIX V2 -->
         <div class="card" style="margin-bottom: 24px;">
             <div class="card-header">
@@ -1114,10 +1337,124 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
 
     <script>
+        let isUserDraggingFader = false;
+        let currentSettings = { auto_atr_mode: true };
+
+        function updateFaderUI(param, val) {
+            isUserDraggingFader = true;
+            if (param === 'be_trigger_pct') {
+                document.getElementById('val-be-trigger').innerText = '+' + Number(val).toFixed(2) + '%';
+            } else if (param === 'stop_atr_mult') {
+                document.getElementById('val-stop-atr').innerText = Number(val).toFixed(1) + 'x ATR';
+            } else if (param === 'target_atr_mult') {
+                document.getElementById('val-target-atr').innerText = Number(val).toFixed(1) + 'x ATR';
+            } else if (param === 'trail_distance_atr') {
+                document.getElementById('val-trail-atr').innerText = Number(val).toFixed(1) + 'x ATR';
+            } else if (param === 'min_score') {
+                document.getElementById('val-min-score').innerText = Math.round(val) + ' pts';
+            } else if (param === 'post_stop_cooldown_s') {
+                document.getElementById('val-cooldown').innerText = Math.round(val) + ' seg';
+            }
+        }
+
+        async function sendSettingsUpdate() {
+            isUserDraggingFader = false;
+            const payload = {
+                be_trigger_pct: parseFloat(document.getElementById('slider-be-trigger').value) / 100.0,
+                stop_atr_mult: parseFloat(document.getElementById('slider-stop-atr').value),
+                target_atr_mult: parseFloat(document.getElementById('slider-target-atr').value),
+                trail_distance_atr: parseFloat(document.getElementById('slider-trail-atr').value),
+                min_score: parseFloat(document.getElementById('slider-min-score').value),
+                post_stop_cooldown_s: parseInt(document.getElementById('slider-cooldown').value),
+                auto_atr_mode: currentSettings.auto_atr_mode !== undefined ? currentSettings.auto_atr_mode : true
+            };
+            const badge = document.getElementById('cfg-sync-badge');
+            if (badge) {
+                badge.innerText = '⏳ GUARDANDO...';
+                badge.className = 'tag tag-yellow';
+            }
+            try {
+                const res = await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
+                });
+                if (res.ok) {
+                    if (badge) {
+                        badge.innerText = '✅ APLICADO';
+                        badge.className = 'tag tag-green';
+                        setTimeout(() => { if (badge) badge.innerText = '● SINCRONIZADO'; }, 2000);
+                    }
+                }
+            } catch (err) {
+                console.error("Error guardando settings:", err);
+            }
+        }
+
+        async function toggleAutoAtr() {
+            const newMode = !currentSettings.auto_atr_mode;
+            const payload = { auto_atr_mode: newMode };
+            if (newMode) {
+                // Restablecer valores óptimos para Modo Automático ATR (Opción B)
+                payload.be_trigger_pct = 0.016;
+                payload.stop_atr_mult = 1.2;
+                payload.target_atr_mult = 3.0;
+                payload.trail_distance_atr = 0.8;
+                payload.min_score = 70.0;
+                payload.post_stop_cooldown_s = 180;
+            }
+            try {
+                await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
+                });
+                updateDashboard();
+            } catch (err) {
+                console.error("Error cambiando modo auto ATR:", err);
+            }
+        }
+
         async function updateDashboard() {
             try {
                 const res = await fetch('/api/status');
                 const d = await res.json();
+
+                // 0. Sincronizar Consola de Control (Faders y Modo Auto)
+                if (d.settings) {
+                    currentSettings = d.settings;
+                    const btn = document.getElementById('btn-auto-atr');
+                    if (btn) {
+                        if (d.settings.auto_atr_mode) {
+                            btn.innerText = '🤖 MODO AUTOMÁTICO (ATR DINÁMICO): ON';
+                            btn.className = 'btn-toggle-auto';
+                        } else {
+                            btn.innerText = '🎚️ MODO MANUAL (CONTROL POR FADERS)';
+                            btn.className = 'btn-toggle-auto off';
+                        }
+                    }
+
+                    if (!isUserDraggingFader) {
+                        const beVal = (d.settings.be_trigger_pct * 100.0).toFixed(1);
+                        document.getElementById('slider-be-trigger').value = beVal;
+                        document.getElementById('val-be-trigger').innerText = '+' + Number(beVal).toFixed(2) + '%';
+
+                        document.getElementById('slider-stop-atr').value = d.settings.stop_atr_mult;
+                        document.getElementById('val-stop-atr').innerText = Number(d.settings.stop_atr_mult).toFixed(1) + 'x ATR';
+
+                        document.getElementById('slider-target-atr').value = d.settings.target_atr_mult;
+                        document.getElementById('val-target-atr').innerText = Number(d.settings.target_atr_mult).toFixed(1) + 'x ATR';
+
+                        document.getElementById('slider-trail-atr').value = d.settings.trail_distance_atr;
+                        document.getElementById('val-trail-atr').innerText = Number(d.settings.trail_distance_atr).toFixed(1) + 'x ATR';
+
+                        document.getElementById('slider-min-score').value = d.settings.min_score;
+                        document.getElementById('val-min-score').innerText = Math.round(d.settings.min_score) + ' pts';
+
+                        document.getElementById('slider-cooldown').value = d.settings.post_stop_cooldown_s;
+                        document.getElementById('val-cooldown').innerText = Math.round(d.settings.post_stop_cooldown_s) + ' seg';
+                    }
+                }
 
                 // 1. Malla Real
                 if (d.real_grid) {
@@ -1307,11 +1644,33 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 "active_trade": trades_list[0].to_dict() if trades_list else None,
                 "active_trades": [t.to_dict() for t in trades_list],
                 "stats": stats,
+                "settings": bot.settings,
                 "radar_telemetry": telemetry,
                 "real_grid": grid_stats,
                 "events": events
             }
             self.wfile.write(json.dumps(payload).encode("utf-8"))
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self):
+        if self.path == "/api/settings":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length).decode("utf-8")
+                data = json.loads(body)
+                self.bot.update_settings(data)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "ok", "settings": self.bot.settings}).encode("utf-8"))
+            except Exception as e:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "error", "message": str(e)}).encode("utf-8"))
         else:
             self.send_response(404)
             self.end_headers()
@@ -1341,7 +1700,7 @@ def swing_telemetry_thread(bot: SwingBot):
             results = []
             for cand in movers:
                 try:
-                    res = analyze_breakout_15m(cand["symbol"], btc_ctx)
+                    res = analyze_breakout_15m(cand["symbol"], btc_ctx, bot.settings)
                     if res:
                         results.append(res)
                 except Exception:
@@ -1403,7 +1762,9 @@ def run_hourly_swing():
                 # Anti-Ametralladora: Si hubo un stop loss en los últimos 300 segundos, exigir score extra
                 time_since_last_stop = now_ts - getattr(bot, "last_stop_time", 0.0)
                 is_recovering_from_stop = time_since_last_stop < 300.0
-                effective_min_score = (MIN_SCORE_V2 + POST_STOP_EXTRA_SCORE) if is_recovering_from_stop else MIN_SCORE_V2
+                base_min_score = bot.settings.get("min_score", MIN_SCORE_V2)
+                extra_score = bot.settings.get("post_stop_extra_score", POST_STOP_EXTRA_SCORE)
+                effective_min_score = (base_min_score + extra_score) if is_recovering_from_stop else base_min_score
 
                 ready_opps = [
                     o for o in telemetry

@@ -45,8 +45,8 @@ def test_swing_trade_break_even_shield(test_bot, monkeypatch):
     )
     test_bot.active_trade = trade
 
-    # 1. Precio sube a $101.50 (+1.50% > +1.20% umbral Break-Even)
-    monkeypatch.setattr("hourly_swing_agent.exchange.fetch_ticker", lambda s: {"last": 101.50})
+    # 1. Precio sube a $101.80 (+1.80% > umbral dinámico ATR Opción B)
+    monkeypatch.setattr("hourly_swing_agent.exchange.fetch_ticker", lambda s: {"last": 101.80})
     manage_active_swing_trade(test_bot)
 
     # El Escudo Break-Even debe activarse y mover el Stop a $100.20 (+0.20%)
