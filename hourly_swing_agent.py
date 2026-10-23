@@ -27,6 +27,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
 
 import ccxt
+import numpy as np
 
 if hasattr(sys.stdout, "reconfigure"):
     try:
@@ -178,13 +179,14 @@ class SwingDatabase:
 
     def log_trade(self, symbol: str, side: str, price: float, amount: float, capital: float,
                   pnl: float = 0.0, fee: float = 0.0, order_id: str = "",
-                  target_price: float = 0.0, stop_price: float = 0.0, note: str = ""):
+                  target_price: float = 0.0, stop_price: float = 0.0, note: str = "",
+                  mode: str = "PAPER_SWING"):
         ts = datetime.now().isoformat()
         with self._get_connection() as conn:
             conn.execute("""
-                INSERT INTO trades (timestamp, symbol, side, price, amount, capital, pnl, fee, order_id, target_price, stop_price, note)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (ts, symbol, side, price, amount, capital, pnl, fee, order_id, target_price, stop_price, note))
+                INSERT INTO trades (timestamp, symbol, side, price, amount, capital, pnl, fee, order_id, target_price, stop_price, note, mode)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (ts, symbol, side, price, amount, capital, pnl, fee, order_id, target_price, stop_price, note, mode))
             conn.commit()
 
     def insert_event(self, event_type: str, message: str):
@@ -406,12 +408,207 @@ class SwingTrade:
         return st
 
 
+# ====================== MODELO Y ALGORITMOS DE MALLA ACOTADA EN CHOP ======================
+def calc_hurst_exponent(series: List[float], min_window: int = 8, max_window: int = 32) -> float:
+    """
+    Calcula el Exponente de Hurst (H) mediante análisis Rescaled Range (R/S).
+    - H < 0.45: Serie anti-persistente (Reversión a la Media). Ideal para Malla Acotada.
+    - H = 0.50: Paseo Aleatorio puro.
+    - H > 0.50: Serie persistente (Tendencial). Prohibido para Malla.
+    """
+    arr = np.asarray(series, dtype=float)
+    if len(arr) < max_window:
+        return 0.50
+    returns = np.diff(arr)
+    if len(returns) < min_window:
+        return 0.50
+    window_sizes = [w for w in [8, 12, 16, 24, 32] if w <= len(returns)]
+    if len(window_sizes) < 3:
+        return 0.50
+    rs_values = []
+    for w in window_sizes:
+        num_chunks = len(returns) // w
+        rs_chunk_vals = []
+        for i in range(num_chunks):
+            chunk = returns[i*w:(i+1)*w]
+            mean = np.mean(chunk)
+            deviations = chunk - mean
+            cum_dev = np.cumsum(deviations)
+            r = np.max(cum_dev) - np.min(cum_dev)
+            s = np.std(chunk, ddof=1)
+            if s > 1e-8:
+                rs_chunk_vals.append(r / s)
+        if rs_chunk_vals:
+            rs_values.append((w, np.mean(rs_chunk_vals)))
+    if len(rs_values) < 2:
+        return 0.50
+    log_w = [np.log(w) for w, rs in rs_values]
+    log_rs = [np.log(rs) for w, rs in rs_values]
+    poly = np.polyfit(log_w, log_rs, 1)
+    return round(float(np.clip(poly[0], 0.05, 0.95)), 3)
+
+
+def detect_horizontal_channel(candles: List) -> Optional[Dict]:
+    """
+    Detecta si el par se encuentra confinado en un canal horizontal acotado.
+    - Pendiente lineal plana (|slope_pct| < 1.8%).
+    - Ancho del canal entre 1.0% y 5.0%.
+    - Precio dentro del canal o cerca del soporte.
+    """
+    if len(candles) < 24:
+        return None
+    closes = np.array([c[4] for c in candles], dtype=float)
+    highs = np.array([c[2] for c in candles], dtype=float)
+    lows = np.array([c[3] for c in candles], dtype=float)
+    curr_p = closes[-1]
+
+    x = np.arange(len(closes))
+    slope, _ = np.polyfit(x, closes, 1)
+    slope_pct = (slope * len(closes)) / closes[0] * 100.0
+    if abs(slope_pct) > 1.8:
+        return None
+
+    support = float(np.percentile(lows, 5))
+    resistance = float(np.percentile(highs, 95))
+    if support <= 0:
+        return None
+
+    channel_width_pct = (resistance - support) / support * 100.0
+    if not (1.0 <= channel_width_pct <= 5.0):
+        return None
+
+    if curr_p < support * 0.985 or curr_p > resistance * 1.015:
+        return None
+
+    midpoint = (support + resistance) / 2.0
+    channel_pos = (curr_p - support) / max((resistance - support), 1e-8)
+
+    return {
+        "support": round(support, 6),
+        "resistance": round(resistance, 6),
+        "midpoint": round(midpoint, 6),
+        "width_pct": round(channel_width_pct, 2),
+        "channel_pos": round(channel_pos, 2),
+        "slope_pct": round(slope_pct, 2)
+    }
+
+
+class GridLevel:
+    def __init__(self, level_idx: int, price: float, amount: float, capital: float, status: str = "PENDING"):
+        self.level_idx = level_idx
+        self.price = price
+        self.amount = amount
+        self.capital = capital
+        self.status = status  # PENDING, FILLED, CLOSED
+        self.fill_price = 0.0
+        self.fill_time = 0.0
+
+    def to_dict(self) -> Dict:
+        return {
+            "level_idx": self.level_idx,
+            "price": self.price,
+            "amount": self.amount,
+            "capital": self.capital,
+            "status": self.status,
+            "fill_price": self.fill_price,
+            "fill_time": self.fill_time
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict) -> "GridLevel":
+        gl = cls(d["level_idx"], d["price"], d["amount"], d["capital"], d.get("status", "PENDING"))
+        gl.fill_price = d.get("fill_price", 0.0)
+        gl.fill_time = d.get("fill_time", 0.0)
+        return gl
+
+
+class BoundedMicroGrid:
+    """Malla Micro-Acotada de 3 niveles con Kill-Switch estricto para mercado Chop."""
+    def __init__(self, grid_id: str, symbol: str, channel_support: float, channel_resistance: float,
+                 midpoint: float, hurst_exponent: float, kill_switch_price: float, total_capital: float = 54.0):
+        self.grid_id = grid_id
+        self.symbol = symbol
+        self.channel_support = channel_support
+        self.channel_resistance = channel_resistance
+        self.midpoint = midpoint
+        self.hurst_exponent = hurst_exponent
+        self.kill_switch_price = kill_switch_price
+        self.total_capital = total_capital
+        self.levels: List[GridLevel] = []
+        self.created_at = time.time()
+        self.status = "ACTIVE"
+        self.pnl = 0.0
+        self.pnl_pct = 0.0
+        self.current_price = midpoint
+        self.unrealized_pnl = 0.0
+
+    def get_filled_levels(self) -> List[GridLevel]:
+        return [lvl for lvl in self.levels if lvl.status == "FILLED"]
+
+    def get_total_inventory(self) -> float:
+        return sum(lvl.amount for lvl in self.get_filled_levels())
+
+    def get_invested_capital(self) -> float:
+        return sum(lvl.capital for lvl in self.get_filled_levels())
+
+    def get_average_entry(self) -> float:
+        inv = self.get_total_inventory()
+        if inv <= 0:
+            return 0.0
+        return sum(lvl.fill_price * lvl.amount for lvl in self.get_filled_levels()) / inv
+
+    def to_dict(self) -> Dict:
+        return {
+            "grid_id": self.grid_id,
+            "symbol": self.symbol,
+            "channel_support": self.channel_support,
+            "channel_resistance": self.channel_resistance,
+            "midpoint": self.midpoint,
+            "hurst_exponent": self.hurst_exponent,
+            "kill_switch_price": self.kill_switch_price,
+            "total_capital": self.total_capital,
+            "levels": [lvl.to_dict() for lvl in self.levels],
+            "created_at": self.created_at,
+            "status": self.status,
+            "pnl": self.pnl,
+            "pnl_pct": self.pnl_pct,
+            "current_price": self.current_price,
+            "unrealized_pnl": self.unrealized_pnl,
+            "invested_capital": round(self.get_invested_capital(), 2),
+            "average_entry": round(self.get_average_entry(), 6),
+            "filled_count": len(self.get_filled_levels())
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict) -> "BoundedMicroGrid":
+        bmg = cls(
+            grid_id=d["grid_id"],
+            symbol=d["symbol"],
+            channel_support=d["channel_support"],
+            channel_resistance=d["channel_resistance"],
+            midpoint=d["midpoint"],
+            hurst_exponent=d["hurst_exponent"],
+            kill_switch_price=d["kill_switch_price"],
+            total_capital=d.get("total_capital", 54.0)
+        )
+        bmg.levels = [GridLevel.from_dict(lvl) for lvl in d.get("levels", [])]
+        bmg.created_at = d.get("created_at", time.time())
+        bmg.status = d.get("status", "ACTIVE")
+        bmg.pnl = d.get("pnl", 0.0)
+        bmg.pnl_pct = d.get("pnl_pct", 0.0)
+        bmg.current_price = d.get("current_price", d["midpoint"])
+        bmg.unrealized_pnl = d.get("unrealized_pnl", 0.0)
+        return bmg
+
+
 # ====================== BOT SWING STATE & EXECUTION ======================
 class SwingBot:
     def __init__(self, db_path: Optional[str] = None):
         self.db = SwingDatabase(db_path or SWING_DB_FILE)
         self.cash = PAPER_INITIAL_CAPITAL
         self.active_trades: Dict[str, SwingTrade] = {}
+        self.active_grid: Optional[BoundedMicroGrid] = None
+        self.active_mode: str = "SWING_SNIPER"
         self.radar_telemetry: List[Dict] = []
         self.real_grid_stats: Dict = {}
         self.cooldowns: Dict[str, float] = {}
@@ -474,9 +671,12 @@ class SwingBot:
             self.active_trades[val.symbol] = val
 
     def total_equity(self) -> float:
-        """Calcula el patrimonio total en vivo: Caja disponible + Posiciones valoradas."""
+        """Calcula el patrimonio total en vivo: Caja disponible + Posiciones Swing + Malla Acotada."""
         pos_val = sum(tr.amount * getattr(tr, "current_price", tr.entry_price) for tr in self.active_trades.values())
-        return self.cash + pos_val
+        grid_val = 0.0
+        if getattr(self, "active_grid", None):
+            grid_val = self.active_grid.get_invested_capital() + self.active_grid.unrealized_pnl
+        return self.cash + pos_val + grid_val
 
     def get_max_concurrent_trades(self) -> int:
         """Escalabilidad de diversificación multi-trade según nivel de capital."""
@@ -538,6 +738,12 @@ class SwingBot:
                 self.cooldowns = d.get("cooldowns", {})
                 self.last_stop_time = float(d.get("last_stop_time", 0.0))
                 self.sim_order_seq = int(d.get("sim_order_seq", 1000))
+                self.active_mode = d.get("active_mode", "SWING_SNIPER")
+                raw_grid = d.get("active_grid")
+                if raw_grid and isinstance(raw_grid, dict):
+                    self.active_grid = BoundedMicroGrid.from_dict(raw_grid)
+                else:
+                    self.active_grid = None
         except Exception as e:
             self.add_log(f"Error cargando estado desde SQLite: {e}", "error")
 
@@ -546,6 +752,8 @@ class SwingBot:
             "cash": self.cash,
             "active_trade": self.active_trade.to_dict() if self.active_trade else None,
             "active_trades": [t.to_dict() for t in self.active_trades.values()],
+            "active_grid": self.active_grid.to_dict() if getattr(self, "active_grid", None) else None,
+            "active_mode": getattr(self, "active_mode", "SWING_SNIPER"),
             "tier_mode": self.get_tier_name(),
             "max_concurrent_trades": self.get_max_concurrent_trades(),
             "cooldowns": self.cooldowns,
@@ -1252,6 +1460,227 @@ def manage_active_swing_trade(bot: SwingBot):
         bot.status_msg = f"Posiciones Activas ({len(bot.active_trades)}/{bot.get_max_concurrent_trades()}): " + ", ".join(summaries)
 
 
+# ====================== MOTOR DUAL: GESTIÓN DE MALLA ACOTADA EN CHOP ======================
+def scan_bounded_grid_candidates(bot: SwingBot) -> Optional[BoundedMicroGrid]:
+    """
+    Escanea candidatos para Malla Acotada durante régimen CHOP_COMPRESSION.
+    Criterios matemáticos:
+    - Volumen diario >= $15M
+    - Exponente de Hurst H < 0.46 (Reversión a la media comprobada)
+    - Canal horizontal detectado (1.0% <= Ancho <= 4.5%, pendiente plana)
+    - Posición actual en el canal: channel_pos <= 0.60 (compramos en la mitad inferior)
+    """
+    if bot.cash < 45.0 or getattr(bot, "active_grid", None) or bot.active_trades:
+        return None
+
+    now = time.time()
+    movers = scan_market_top_movers()
+    symbols = [m["symbol"] for m in movers[:15] if m["symbol"] not in IGNORE_SYMBOLS]
+    priority_pairs = ["BNB/USDT", "SOL/USDT", "DOGE/USDT", "XRP/USDT", "NEAR/USDT", "ADA/USDT", "SUI/USDT"]
+    for p in priority_pairs:
+        if p not in symbols:
+            symbols.append(p)
+
+    best_candidate = None
+    lowest_hurst = 0.50
+
+    for sym in symbols:
+        if bot.cooldowns.get(sym, 0) > now:
+            continue
+        try:
+            candles = fetch_ohlcv_cached(sym, "15m", limit=36)
+            if len(candles) < 24:
+                continue
+            closes = [c[4] for c in candles]
+            h = calc_hurst_exponent(closes)
+            if h >= 0.46:  # No califica si es tendencial
+                continue
+
+            chan = detect_horizontal_channel(candles)
+            if not chan:
+                continue
+
+            if chan["channel_pos"] > 0.60:
+                continue
+
+            if h < lowest_hurst:
+                lowest_hurst = h
+                best_candidate = (sym, chan, h, closes[-1])
+        except Exception:
+            continue
+
+    if not best_candidate:
+        return None
+
+    sym, chan, h, curr_p = best_candidate
+    supp = chan["support"]
+    res = chan["resistance"]
+    mid = chan["midpoint"]
+
+    total_grid_cap = min(bot.cash * 0.85, 54.0)
+    level_cap = round(total_grid_cap / 3.0, 2)
+
+    half_width = (mid - supp)
+    p1 = round(mid - half_width * 0.25, 6)
+    p2 = round(mid - half_width * 0.65, 6)
+    p3 = round(supp * 1.002, 6)
+
+    def get_amt(p):
+        if p >= 1000: return round(level_cap / p, 6)
+        elif p >= 1: return round(level_cap / p, 4)
+        else: return round(level_cap / p, 2)
+
+    kill_switch_p = round(supp * 0.988, 6)
+
+    bot.sim_order_seq += 1
+    grid_id = f"GRID_{bot.sim_order_seq}"
+
+    grid = BoundedMicroGrid(
+        grid_id=grid_id,
+        symbol=sym,
+        channel_support=supp,
+        channel_resistance=res,
+        midpoint=mid,
+        hurst_exponent=h,
+        kill_switch_price=kill_switch_p,
+        total_capital=total_grid_cap
+    )
+
+    lvl1 = GridLevel(0, p1, get_amt(p1), level_cap)
+    lvl2 = GridLevel(1, p2, get_amt(p2), level_cap)
+    lvl3 = GridLevel(2, p3, get_amt(p3), level_cap)
+
+    if curr_p <= p1:
+        lvl1.status = "FILLED"
+        lvl1.fill_price = curr_p
+        lvl1.fill_time = time.time()
+        bot.cash -= level_cap
+        bot.db.log_trade(
+            symbol=sym, side="BUY", price=curr_p, amount=lvl1.amount, capital=level_cap,
+            pnl=0.0, fee=level_cap * FEE_RATE, order_id=f"{grid_id}_L1",
+            target_price=res, stop_price=kill_switch_p,
+            note=f"📥 MALLA FILL N1/3 {sym} (Canal {chan['width_pct']}% | H: {h})", mode="BOUNDED_GRID"
+        )
+
+    grid.levels = [lvl1, lvl2, lvl3]
+    bot.active_grid = grid
+    bot.active_mode = "BOUNDED_GRID"
+
+    bot.add_log(f"🟡 ACTIVANDO MALLA ACOTADA #{grid_id} en {sym}: Canal ${supp:.4f} - ${res:.4f} ({chan['width_pct']}%) | Hurst: {h} | Kill-Switch: ${kill_switch_p:.4f} | Cap: ${total_grid_cap:.2f} USDT", "trade")
+    bot.save_state()
+    return grid
+
+
+def manage_active_bounded_grid(bot: SwingBot):
+    """
+    Monitorea la Malla Acotada activa.
+    1. Ejecuta Kill-Switch si el precio rompe el soporte del canal.
+    2. Llena órdenes de compra pendientes cuando el precio retrocede.
+    3. Cosecha ganancias (Take Profit) cuando el precio revierte hacia la resistencia o media.
+    """
+    grid = getattr(bot, "active_grid", None)
+    if not grid or grid.status != "ACTIVE":
+        return
+
+    sym = grid.symbol
+    try:
+        ticker = exchange.fetch_ticker(sym)
+        curr_p = float(ticker.get("last", 0.0) or 0.0)
+    except Exception:
+        return
+
+    if curr_p <= 0:
+        return
+
+    grid.current_price = curr_p
+    total_inv = grid.get_total_inventory()
+    invested_cap = grid.get_invested_capital()
+    avg_entry = grid.get_average_entry()
+
+    if total_inv > 0 and avg_entry > 0:
+        grid.unrealized_pnl = (curr_p - avg_entry) * total_inv
+        unrealized_pct = (curr_p - avg_entry) / avg_entry * 100.0
+    else:
+        grid.unrealized_pnl = 0.0
+        unrealized_pct = 0.0
+
+    # 1. KILL-SWITCH ESTRICTO (Garantía Anti-Atrapamiento):
+    if curr_p <= grid.kill_switch_price:
+        exit_fee = (curr_p * total_inv) * FEE_RATE if total_inv > 0 else 0.0
+        gross_pnl = (curr_p - avg_entry) * total_inv if total_inv > 0 else 0.0
+        net_pnl = gross_pnl - exit_fee
+        bot.cash += (invested_cap + net_pnl)
+        reason = f"🛑 KILL-SWITCH MALLA: Canal roto en {sym} @ ${curr_p:.4f} (Stop {-abs(unrealized_pct):.2f}%)"
+        bot.add_log(f"{reason} | PnL: {net_pnl:+.4f} USDT | Capital protegido.", "trade")
+        if total_inv > 0:
+            bot.db.log_trade(
+                symbol=sym, side="SELL", price=curr_p, amount=total_inv, capital=invested_cap,
+                pnl=net_pnl, fee=exit_fee, order_id=f"{grid.grid_id}_KILL",
+                target_price=grid.channel_resistance, stop_price=grid.kill_switch_price,
+                note=reason, mode="BOUNDED_GRID"
+            )
+            bot.db.log_autopsy(
+                trade_id=grid.grid_id, symbol=sym, pnl=net_pnl, pnl_pct=unrealized_pct,
+                duration_s=time.time() - grid.created_at, mfe_pct=0.0, mae_pct=unrealized_pct,
+                exit_reason=reason, classification="GRID_KILL_SWITCH", btc_regime="CHOP_COMPRESSION",
+                lesson_learned=f"Canal horizontal de {sym} perforado. Kill-Switch liquidó inventario evitando atrapamiento.",
+                adaptive_action="Enfriamiento de 15m en el par y re-verificación de Hurst."
+            )
+        bot.cooldowns[sym] = time.time() + 900  # 15 min cooldown
+        bot.active_grid = None
+        bot.active_mode = "SWING_SNIPER"
+        bot.save_state()
+        return
+
+    # 2. Ejecutar Fills de Niveles Pendientes:
+    for lvl in grid.levels:
+        if lvl.status == "PENDING" and curr_p <= lvl.price:
+            if bot.cash >= lvl.capital:
+                bot.cash -= lvl.capital
+                lvl.status = "FILLED"
+                lvl.fill_price = curr_p
+                lvl.fill_time = time.time()
+                bot.add_log(f"📥 MALLA FILL Nivel {lvl.level_idx+1}/3 en {sym} @ ${curr_p:.4f} (${lvl.capital:.2f} USDT)", "trade")
+                bot.db.log_trade(
+                    symbol=sym, side="BUY", price=curr_p, amount=lvl.amount, capital=lvl.capital,
+                    pnl=0.0, fee=lvl.capital * FEE_RATE, order_id=f"{grid.grid_id}_L{lvl.level_idx+1}",
+                    target_price=grid.channel_resistance, stop_price=grid.kill_switch_price,
+                    note=f"📥 MALLA FILL N{lvl.level_idx+1}/3 @ ${curr_p:.4f}", mode="BOUNDED_GRID"
+                )
+                bot.save_state()
+
+    # 3. COSECHA DE GANANCIAS (Take Profit / Reversión a la Resistencia del Canal):
+    if total_inv > 0 and (curr_p >= grid.channel_resistance or (curr_p >= avg_entry * 1.018 and curr_p >= grid.midpoint)):
+        exit_fee = (curr_p * total_inv) * FEE_RATE
+        gross_pnl = (curr_p - avg_entry) * total_inv
+        net_pnl = gross_pnl - exit_fee
+        bot.cash += (invested_cap + net_pnl)
+        pnl_pct = (net_pnl / invested_cap) * 100.0
+        reason = f"🏆 COSECHA MALLA CHOP en {sym} @ ${curr_p:.4f} (+{pnl_pct:.2f}%)"
+        bot.add_log(f"{reason} | PnL: +${net_pnl:.4f} USDT | Capital devuelto a caja.", "trade")
+        bot.db.log_trade(
+            symbol=sym, side="SELL", price=curr_p, amount=total_inv, capital=invested_cap,
+            pnl=net_pnl, fee=exit_fee, order_id=f"{grid.grid_id}_HARVEST",
+            target_price=grid.channel_resistance, stop_price=grid.kill_switch_price,
+            note=reason, mode="BOUNDED_GRID"
+        )
+        bot.db.log_autopsy(
+            trade_id=grid.grid_id, symbol=sym, pnl=net_pnl, pnl_pct=pnl_pct,
+            duration_s=time.time() - grid.created_at, mfe_pct=pnl_pct, mae_pct=0.0,
+            exit_reason=reason, classification="GRID_CHOP_HARVEST", btc_regime="CHOP_COMPRESSION",
+            lesson_learned=f"Reversión a la media exitosa en {sym} (Hurst: {grid.hurst_exponent}). Ganancia cosechada sin acumulación.",
+            adaptive_action="Capital liberado a caja listo para siguiente ciclo."
+        )
+        bot.cooldowns[sym] = time.time() + 300  # 5 min cooldown tras win
+        bot.active_grid = None
+        bot.active_mode = "SWING_SNIPER"
+        bot.save_state()
+        return
+
+    filled_cnt = len(grid.get_filled_levels())
+    bot.status_msg = f"🟡 Malla Chop {sym}: {filled_cnt}/3 niveles ({unrealized_pct:+.2f}%) | Kill-Switch: ${grid.kill_switch_price:.4f} | Hurst: {grid.hurst_exponent}"
+
+
 # ====================== SERVIDOR DASHBOARD REACTIVO (PUERTO 8900) ======================
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="es">
@@ -1899,6 +2328,48 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                         </div>`;
                     });
                     actEl.innerHTML = tradesHtml;
+                } else if (d.active_grid) {
+                    const g = d.active_grid;
+                    const liveP = Number(g.current_price || g.midpoint).toFixed(4);
+                    const avgP = Number(g.average_entry || g.midpoint).toFixed(4);
+                    const suppP = Number(g.channel_support).toFixed(4);
+                    const resP = Number(g.channel_resistance).toFixed(4);
+                    const killP = Number(g.kill_switch_price).toFixed(4);
+                    const gPnl = Number(g.unrealized_pnl || 0);
+                    const gPct = g.invested_capital > 0 ? (gPnl / g.invested_capital * 100) : 0;
+                    const pnlCol = gPnl >= 0 ? '#3fb950' : '#f85149';
+                    const pnlSign = gPnl >= 0 ? '+' : '';
+
+                    let lvlsHtml = '';
+                    (g.levels || []).forEach((lvl, i) => {
+                        const statusColor = lvl.status === 'FILLED' ? '#3fb950' : '#8b949e';
+                        const statusIcon = lvl.status === 'FILLED' ? '✅' : '⏳';
+                        lvlsHtml += `<div style="background:#090d13; border:1px solid #21262d; border-radius:4px; padding:4px 8px; font-size:10px;">
+                            ${statusIcon} <b>Nivel ${lvl.level_idx+1}:</b> $${Number(lvl.price).toFixed(4)} ($${Number(lvl.capital).toFixed(2)}) - <span style="color:${statusColor};">${lvl.status}</span>
+                        </div>`;
+                    });
+
+                    actEl.innerHTML = `
+                    <div style="background:#161b22; border:1px solid #d29922; border-radius:8px; padding:12px; margin-bottom:12px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:6px; flex-wrap:wrap; gap:6px;">
+                            <span style="font-weight:bold; color:#f0883e; font-size:13px;">🟡 MALLA ACOTADA EN CHOP: ${g.symbol}</span>
+                            <span class="tag tag-yellow">Hurst H: ${g.hurst_exponent} (Reversión a la Media)</span>
+                        </div>
+                        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap:8px; margin-bottom:8px;">
+                            <div><span style="color:var(--text-dim); font-size:10px;">INVENTARIO / CAPITAL:</span><br><b>${g.filled_count}/3 Niveles</b> <span style="color:var(--text-dim); font-size:11px;">($${Number(g.invested_capital).toFixed(2)} USDT)</span></div>
+                            <div><span style="color:var(--text-dim); font-size:10px;">PRECIO MEDIO ENTRADA:</span><br><b>$${avgP}</b></div>
+                            <div><span style="color:var(--text-dim); font-size:10px;">PRECIO ACTUAL:</span><br><b style="color:#58a6ff;">$${liveP}</b></div>
+                            <div><span style="color:var(--text-dim); font-size:10px;">PNL FLOTANTE:</span><br><b style="color:${pnlCol};">${pnlSign}$${gPnl.toFixed(4)} (${pnlSign}${gPct.toFixed(2)}%)</b></div>
+                        </div>
+                        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:6px; margin-bottom:8px;">
+                            ${lvlsHtml}
+                        </div>
+                        <div style="background:#0d1117; border-radius:6px; padding:8px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px; font-size:11px; border:1px solid #21262d;">
+                            <div>🎯 <b>Cosecha Techo (Resistencia):</b> <span style="color:#3fb950; font-weight:bold;">$${resP}</span></div>
+                            <div>🛡️ <b>Piso Canal (Soporte):</b> <span style="color:#58a6ff; font-weight:bold;">$${suppP}</span></div>
+                            <div>🛑 <b>Kill-Switch Estricto:</b> <span style="color:#f85149; font-weight:bold;">$${killP} (Cierre total a mercado)</span></div>
+                        </div>
+                    </div>`;
                 } else {
                     actEl.innerHTML = `
                     <div style="background:#0d1117; border: 1px dashed #30363d; border-radius:8px; padding:12px; text-align:center;">
@@ -2085,19 +2556,29 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             live_val = sum(round(t.amount * getattr(t, "current_price", t.entry_price), 2) for t in trades_list)
             unrealized_pnl = sum(getattr(t, "unrealized_pnl", 0.0) for t in trades_list)
             unrealized_pnl_pct = ((unrealized_pnl / invested) * 100.0) if invested > 0 else 0.0
-            equity = bot.cash + (invested + unrealized_pnl)
+            grid_obj = getattr(bot, "active_grid", None)
+            grid_dict = grid_obj.to_dict() if grid_obj else None
+            grid_inv = grid_obj.get_invested_capital() if grid_obj else 0.0
+            grid_unreal = grid_obj.unrealized_pnl if grid_obj else 0.0
+
+            total_invested = invested + grid_inv
+            total_unrealized = unrealized_pnl + grid_unreal
+            total_unrealized_pct = ((total_unrealized / total_invested) * 100.0) if total_invested > 0 else 0.0
+            equity = bot.cash + (total_invested + total_unrealized)
 
             payload = {
                 "cash": round(bot.cash, 2),
                 "equity": round(equity, 2),
-                "invested": round(invested, 2),
-                "unrealized_pnl": round(unrealized_pnl, 4),
-                "unrealized_pnl_pct": round(unrealized_pnl_pct, 2),
+                "invested": round(total_invested, 2),
+                "unrealized_pnl": round(total_unrealized, 4),
+                "unrealized_pnl_pct": round(total_unrealized_pct, 2),
                 "tier_mode": bot.get_tier_name(),
+                "active_mode": getattr(bot, "active_mode", "SWING_SNIPER"),
                 "max_concurrent_trades": bot.get_max_concurrent_trades(),
                 "status_msg": bot.status_msg,
                 "active_trade": trades_list[0].to_dict() if trades_list else None,
                 "active_trades": [t.to_dict() for t in trades_list],
+                "active_grid": grid_dict,
                 "last_closed_trade": last_closed,
                 "stats": stats,
                 "settings": bot.settings,
@@ -2206,42 +2687,64 @@ def run_hourly_swing():
     while True:
         try:
             now_ts = time.time()
+            btc_ctx = update_btc_context()
+            btc_regime = btc_ctx.get("regime", "NEUTRAL_TRANSITION")
 
+            # 1. Monitoreo de posiciones vivas:
             manage_active_swing_trade(bot)
+            manage_active_bounded_grid(bot)
 
-            # Verificar si hay cupo para abrir trades (según tier de capital y diversificación)
-            max_concurrent = bot.get_max_concurrent_trades()
-            current_active_count = len(bot.active_trades)
+            has_active_swing = len(bot.active_trades) > 0
+            has_active_grid = (getattr(bot, "active_grid", None) is not None and bot.active_grid.status == "ACTIVE")
 
-            if current_active_count < max_concurrent:
-                with bot.data_lock:
-                    telemetry = list(bot.radar_telemetry)
+            # 2. Conmutación de Régimen y Ejecución Dual:
+            if not has_active_swing and not has_active_grid:
+                # Régimen 1: Expansión alcista o consolidación normal -> MODO SWING SNIPER
+                if btc_regime in ("BULLISH_EXPANSION", "NEUTRAL_TRANSITION"):
+                    bot.active_mode = "SWING_SNIPER"
+                    max_concurrent = bot.get_max_concurrent_trades()
+                    current_active_count = len(bot.active_trades)
 
-                # Anti-Ametralladora: Si hubo un stop loss en los últimos 300 segundos, exigir score extra
-                time_since_last_stop = now_ts - getattr(bot, "last_stop_time", 0.0)
-                is_recovering_from_stop = time_since_last_stop < 300.0
-                base_min_score = bot.settings.get("min_score", MIN_SCORE_V2)
-                extra_score = bot.settings.get("post_stop_extra_score", POST_STOP_EXTRA_SCORE)
-                effective_min_score = (base_min_score + extra_score) if is_recovering_from_stop else base_min_score
+                    if current_active_count < max_concurrent:
+                        with bot.data_lock:
+                            telemetry = list(bot.radar_telemetry)
 
-                ready_opps = [
-                    o for o in telemetry
-                    if o.get("trigger_ready")
-                    and o.get("score", 0.0) >= effective_min_score
-                    and bot.cooldowns.get(o["symbol"], 0.0) <= now_ts
-                    and o["symbol"] not in bot.active_trades
-                ]
+                        time_since_last_stop = now_ts - getattr(bot, "last_stop_time", 0.0)
+                        is_recovering_from_stop = time_since_last_stop < 300.0
+                        base_min_score = bot.settings.get("min_score", MIN_SCORE_V2)
+                        extra_score = bot.settings.get("post_stop_extra_score", POST_STOP_EXTRA_SCORE)
+                        effective_min_score = (base_min_score + extra_score) if is_recovering_from_stop else base_min_score
 
-                if ready_opps:
-                    best = ready_opps[0]
-                    execute_swing_paper_entry(bot, best)
-                else:
-                    top = telemetry[0] if telemetry else None
-                    if top and not bot.active_trades:
-                        cooldown_active = bot.cooldowns.get(top["symbol"], 0.0) > now_ts
-                        anti_badge = f" [Anti-Ametralladora: Min Score {effective_min_score:.0f}]" if is_recovering_from_stop else ""
-                        cd_badge = " (Cooldown activo)" if cooldown_active else ""
-                        bot.status_msg = f"Radar V2: Líder {top['symbol']} (Score {top['score']}/100 | RS {top.get('rs_vs_btc', 0):+.1f}pp | {top['status']}){cd_badge}{anti_badge}."
+                        ready_opps = [
+                            o for o in telemetry
+                            if o.get("trigger_ready")
+                            and o.get("score", 0.0) >= effective_min_score
+                            and bot.cooldowns.get(o["symbol"], 0.0) <= now_ts
+                            and o["symbol"] not in bot.active_trades
+                        ]
+
+                        if ready_opps:
+                            best = ready_opps[0]
+                            execute_swing_paper_entry(bot, best)
+                        else:
+                            top = telemetry[0] if telemetry else None
+                            if top and not bot.active_trades:
+                                cooldown_active = bot.cooldowns.get(top["symbol"], 0.0) > now_ts
+                                anti_badge = f" [Anti-Ametralladora: Min Score {effective_min_score:.0f}]" if is_recovering_from_stop else ""
+                                cd_badge = " (Cooldown activo)" if cooldown_active else ""
+                                bot.status_msg = f"Radar V2: Líder {top['symbol']} (Score {top['score']}/100 | RS {top.get('rs_vs_btc', 0):+.1f}pp | {top['status']}){cd_badge}{anti_badge}."
+
+                # Régimen 2: Compresión lateral (Chop) -> MODO MALLA ACOTADA
+                elif btc_regime == "CHOP_COMPRESSION":
+                    bot.active_mode = "BOUNDED_GRID"
+                    scan_bounded_grid_candidates(bot)
+                    if not bot.active_grid:
+                        bot.status_msg = f"🟡 MODO CHOP: Escaneando activos con reversión comprobada (Hurst < 0.45)..."
+
+                # Régimen 3: Dump bajista de BTC -> MODO BÚNKER 100% CAJA
+                elif btc_regime == "BEARISH_DUMP":
+                    bot.active_mode = "CASH_VAULT"
+                    bot.status_msg = "🛡️ MODO BÚNKER (Caja 100%): BTC en corrección bajista. Disparos y mallas bloqueados."
 
             time.sleep(2.5)
 

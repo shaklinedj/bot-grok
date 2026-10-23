@@ -7,7 +7,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from hourly_swing_agent import (
     SwingBot, SwingTrade, SwingDatabase, execute_swing_paper_entry, manage_active_swing_trade,
-    analyze_breakout_15m, MIN_SCORE_V2, POST_STOP_EXTRA_SCORE
+    analyze_breakout_15m, MIN_SCORE_V2, POST_STOP_EXTRA_SCORE,
+    calc_hurst_exponent, detect_horizontal_channel, BoundedMicroGrid, GridLevel, manage_active_bounded_grid
 )
 
 
@@ -380,6 +381,91 @@ def test_btc_regime_gate_blocks_on_dump(monkeypatch):
     assert res is not None
     assert res["trigger_ready"] is False
     assert "BLOQUEO" in res["status"]
+
+
+def test_calc_hurst_exponent_and_channel_detection():
+    """Verifica que el exponente de Hurst y el detector de canal horizontal identifiquen chop."""
+    import numpy as np
+    # 1. Serie oscilante con reversión a la media
+    sine_series = [10.0 + np.sin(i * 0.5) * 0.5 for i in range(80)]
+    h = calc_hurst_exponent(sine_series)
+    assert h < 0.46  # Debe confirmar mean-reversion
+
+    # 2. Canal horizontal
+    mock_candles = []
+    for i in range(36):
+        o = 10.0 + np.sin(i * 0.5) * 0.12
+        c = 10.0 + np.sin((i + 1) * 0.5) * 0.12
+        h_val = max(o, c) + 0.04
+        l_val = min(o, c) - 0.04
+        mock_candles.append([1000 + i * 900, o, h_val, l_val, c, 1000])
+
+    chan = detect_horizontal_channel(mock_candles)
+    assert chan is not None
+    assert 1.0 <= chan["width_pct"] <= 5.0
+    assert abs(chan["slope_pct"]) <= 1.8
+
+
+def test_bounded_grid_kill_switch_protection(test_bot, monkeypatch):
+    """Verifica que el Kill-Switch de la malla acotada cierre toda la posición si rompe el canal."""
+    grid = BoundedMicroGrid(
+        grid_id="GRID_TEST_KILL",
+        symbol="TEST/USDT",
+        channel_support=9.80,
+        channel_resistance=10.20,
+        midpoint=10.0,
+        hurst_exponent=0.38,
+        kill_switch_price=9.68,
+        total_capital=54.0
+    )
+    lvl1 = GridLevel(0, 9.95, 1.8, 18.0, status="FILLED")
+    lvl1.fill_price = 9.95
+    grid.levels = [lvl1]
+    test_bot.active_grid = grid
+    test_bot.cash = 45.0  # $45 cash libre + $18 en inventario
+
+    # Precio perfora el canal y cae por debajo del Kill-Switch ($9.65 < $9.68)
+    monkeypatch.setattr("hourly_swing_agent.exchange.fetch_ticker", lambda s: {"last": 9.65})
+    manage_active_bounded_grid(test_bot)
+
+    # La malla debe haberse autodestruido por Kill-Switch, liquidado inventario y vuelto a modo SWING
+    assert test_bot.active_grid is None
+    assert test_bot.active_mode == "SWING_SNIPER"
+    # El capital debe haberse devuelto a la caja menos la pequeña pérdida acotada (~$0.54)
+    assert test_bot.cash > 61.50
+    stats = test_bot.db.get_stats()
+    assert stats["total"] == 1
+
+
+def test_bounded_grid_harvest_profit(test_bot, monkeypatch):
+    """Verifica que la malla acotada coseche beneficios cuando el precio revierte hacia la resistencia."""
+    grid = BoundedMicroGrid(
+        grid_id="GRID_TEST_WIN",
+        symbol="TEST/USDT",
+        channel_support=9.80,
+        channel_resistance=10.20,
+        midpoint=10.0,
+        hurst_exponent=0.38,
+        kill_switch_price=9.68,
+        total_capital=54.0
+    )
+    lvl1 = GridLevel(0, 9.90, 2.0, 19.80, status="FILLED")
+    lvl1.fill_price = 9.90
+    grid.levels = [lvl1]
+    test_bot.active_grid = grid
+    test_bot.cash = 43.50
+
+    # Precio revierte y alcanza la resistencia del canal ($10.22 >= $10.20)
+    monkeypatch.setattr("hourly_swing_agent.exchange.fetch_ticker", lambda s: {"last": 10.22})
+    manage_active_bounded_grid(test_bot)
+
+    # La malla debe haberse cerrado con ganancia cosechada
+    assert test_bot.active_grid is None
+    assert test_bot.cash > (43.50 + 19.80)  # Capital devuelto + PnL neto
+    stats = test_bot.db.get_stats()
+    assert stats["wins"] == 1
+    assert stats["pnl"] > 0
+
 
 
 
