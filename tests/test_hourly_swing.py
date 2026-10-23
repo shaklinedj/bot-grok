@@ -18,8 +18,7 @@ def test_bot(tmp_path, monkeypatch):
     monkeypatch.setattr("hourly_swing_agent.SWING_DB_FILE", db_file)
     monkeypatch.setattr("hourly_swing_agent.SWING_STATE_FILE", state_file)
     
-    bot = SwingBot()
-    bot.db = SwingDatabase(db_file)
+    bot = SwingBot(db_file)
     bot.cash = 70.00
     bot.active_trade = None
     return bot
@@ -278,6 +277,30 @@ def test_v2_anti_ametralladora_threshold(test_bot):
 
     assert is_recovering2 is False
     assert effective_score2 == MIN_SCORE_V2  # Vuelve a 70
+
+
+def test_sqlite_settings_and_state_persistence(test_bot, tmp_path):
+    # 1. Modificar configuración a través de update_settings
+    test_bot.update_settings({"be_trigger_pct": 0.022, "stop_atr_mult": 1.4, "auto_atr_mode": False})
+    
+    # 2. Verificar que se persistió en la tabla bot_settings de SQLite
+    db_settings = test_bot.db.get_all_settings()
+    assert db_settings["be_trigger_pct"] == pytest.approx(0.022)
+    assert db_settings["stop_atr_mult"] == pytest.approx(1.4)
+    assert db_settings["auto_atr_mode"] is False
+
+    # 3. Guardar estado en SQLite
+    test_bot.cash = 95.50
+    test_bot.save_state()
+    db_state = test_bot.db.load_bot_state()
+    assert db_state["cash"] == pytest.approx(95.50)
+
+    # 4. Crear una nueva instancia de SwingBot con la misma base de datos SQLite y verificar carga
+    bot2 = SwingBot(str(test_bot.db.db_path))
+    assert bot2.settings["be_trigger_pct"] == pytest.approx(0.022)
+    assert bot2.settings["auto_atr_mode"] is False
+    assert bot2.cash == pytest.approx(95.50)
+
 
 
 

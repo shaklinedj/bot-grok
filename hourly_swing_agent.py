@@ -24,7 +24,7 @@ import http.server
 import threading
 import subprocess
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 import ccxt
 
@@ -142,6 +142,20 @@ class SwingDatabase:
                     total_trades INTEGER NOT NULL
                 );
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS bot_settings (
+                    key TEXT PRIMARY KEY,
+                    val_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS bot_state (
+                    key TEXT PRIMARY KEY,
+                    val_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+            """)
             conn.commit()
 
     def log_trade(self, symbol: str, side: str, price: float, amount: float, capital: float,
@@ -197,6 +211,54 @@ class SwingDatabase:
             res = [dict(r) for r in rows]
             res.reverse()
             return res
+
+    def save_all_settings(self, settings: Dict[str, Any]):
+        """Persiste toda la configuración en la tabla bot_settings de SQLite."""
+        ts = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            for k, v in settings.items():
+                conn.execute("""
+                    INSERT INTO bot_settings (key, val_json, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET val_json=excluded.val_json, updated_at=excluded.updated_at
+                """, (k, json.dumps(v), ts))
+            conn.commit()
+
+    def get_all_settings(self) -> Dict[str, Any]:
+        """Recupera la configuración completa guardada en la base de datos SQLite."""
+        res = {}
+        with self._get_connection() as conn:
+            rows = conn.execute("SELECT key, val_json FROM bot_settings").fetchall()
+            for r in rows:
+                try:
+                    res[r["key"]] = json.loads(r["val_json"])
+                except Exception:
+                    res[r["key"]] = r["val_json"]
+        return res
+
+    def save_bot_state(self, state: Dict[str, Any]):
+        """Persiste el estado operativo completo en la tabla bot_state de SQLite."""
+        ts = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            for k, v in state.items():
+                conn.execute("""
+                    INSERT INTO bot_state (key, val_json, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET val_json=excluded.val_json, updated_at=excluded.updated_at
+                """, (k, json.dumps(v), ts))
+            conn.commit()
+
+    def load_bot_state(self) -> Dict[str, Any]:
+        """Recupera el estado operativo completo desde la base de datos SQLite."""
+        res = {}
+        with self._get_connection() as conn:
+            rows = conn.execute("SELECT key, val_json FROM bot_state").fetchall()
+            for r in rows:
+                try:
+                    res[r["key"]] = json.loads(r["val_json"])
+                except Exception:
+                    res[r["key"]] = r["val_json"]
+        return res
 
 
 # ====================== MODELO DE DATOS SWING ======================
@@ -282,8 +344,8 @@ class SwingTrade:
 
 # ====================== BOT SWING STATE & EXECUTION ======================
 class SwingBot:
-    def __init__(self):
-        self.db = SwingDatabase()
+    def __init__(self, db_path: Optional[str] = None):
+        self.db = SwingDatabase(db_path or SWING_DB_FILE)
         self.cash = PAPER_INITIAL_CAPITAL
         self.active_trades: Dict[str, SwingTrade] = {}
         self.radar_telemetry: List[Dict] = []
@@ -299,22 +361,26 @@ class SwingBot:
         self.load_state()
 
     def load_settings(self):
-        if os.path.exists(SWING_SETTINGS_FILE):
-            try:
-                with open(SWING_SETTINGS_FILE, "r", encoding="utf-8") as f:
-                    saved = json.load(f)
-                    self.settings.update(saved)
-            except Exception as e:
-                self.add_log(f"Error cargando settings: {e}", "error")
+        try:
+            db_cfg = self.db.get_all_settings()
+            if db_cfg:
+                self.settings.update(db_cfg)
+            else:
+                # Si es la primera vez, sembramos los valores por defecto en SQLite
+                self.db.save_all_settings(self.settings)
+        except Exception as e:
+            self.add_log(f"Error cargando settings desde SQLite: {e}", "error")
 
     def save_settings(self):
-        tmp = SWING_SETTINGS_FILE + ".tmp"
         try:
+            self.db.save_all_settings(self.settings)
+            # Respaldo secundario en JSON
+            tmp = SWING_SETTINGS_FILE + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self.settings, f, indent=2)
             os.replace(tmp, SWING_SETTINGS_FILE)
         except Exception as e:
-            self.add_log(f"Error guardando settings: {e}", "error")
+            self.add_log(f"Error guardando settings en SQLite: {e}", "error")
 
     def update_settings(self, new_cfg: Dict):
         with self.data_lock:
@@ -329,7 +395,7 @@ class SwingBot:
             self.save_settings()
         be_pct = self.settings["be_trigger_pct"] * 100.0
         mode_str = "AUTO ATR" if self.settings.get("auto_atr_mode") else "MANUAL"
-        self.add_log(f"🎛️ Parámetros actualizados [{mode_str}]: BE=+{be_pct:.2f}% | Stop={self.settings['stop_atr_mult']}x ATR | Target={self.settings['target_atr_mult']}x ATR | Trail={self.settings['trail_distance_atr']}x ATR | Score={self.settings['min_score']:.0f}", "info")
+        self.add_log(f"🎛️ Parámetros actualizados en SQLite [{mode_str}]: BE=+{be_pct:.2f}% | Stop={self.settings['stop_atr_mult']}x ATR | Target={self.settings['target_atr_mult']}x ATR | Trail={self.settings['trail_distance_atr']}x ATR | Score={self.settings['min_score']:.0f}", "info")
 
     @property
     def active_trade(self) -> Optional[SwingTrade]:
@@ -385,27 +451,31 @@ class SwingBot:
         self.db.insert_event(event_type, msg)
 
     def load_state(self):
-        if os.path.exists(SWING_STATE_FILE):
-            try:
+        try:
+            d = self.db.load_bot_state()
+            if not d and os.path.exists(SWING_STATE_FILE):
                 with open(SWING_STATE_FILE, "r", encoding="utf-8") as f:
                     d = json.load(f)
-                    self.cash = float(d.get("cash", PAPER_INITIAL_CAPITAL))
-                    self.active_trades.clear()
-                    raw_trades = d.get("active_trades")
-                    if raw_trades and isinstance(raw_trades, list):
-                        for raw_t in raw_trades:
-                            st = SwingTrade.from_dict(raw_t)
-                            self.active_trades[st.symbol] = st
-                    else:
-                        tr = d.get("active_trade")
-                        if tr:
-                            st = SwingTrade.from_dict(tr)
-                            self.active_trades[st.symbol] = st
-                    self.cooldowns = d.get("cooldowns", {})
-                    self.last_stop_time = float(d.get("last_stop_time", 0.0))
-                    self.sim_order_seq = int(d.get("sim_order_seq", 1000))
-            except Exception as e:
-                self.add_log(f"Error cargando estado swing: {e}", "error")
+                self.db.save_bot_state(d)  # Migración automática inicial a SQLite
+
+            if d:
+                self.cash = float(d.get("cash", PAPER_INITIAL_CAPITAL))
+                self.active_trades.clear()
+                raw_trades = d.get("active_trades")
+                if raw_trades and isinstance(raw_trades, list):
+                    for raw_t in raw_trades:
+                        st = SwingTrade.from_dict(raw_t)
+                        self.active_trades[st.symbol] = st
+                else:
+                    tr = d.get("active_trade")
+                    if tr:
+                        st = SwingTrade.from_dict(tr)
+                        self.active_trades[st.symbol] = st
+                self.cooldowns = d.get("cooldowns", {})
+                self.last_stop_time = float(d.get("last_stop_time", 0.0))
+                self.sim_order_seq = int(d.get("sim_order_seq", 1000))
+        except Exception as e:
+            self.add_log(f"Error cargando estado desde SQLite: {e}", "error")
 
     def save_state(self):
         d = {
@@ -419,13 +489,17 @@ class SwingBot:
             "sim_order_seq": self.sim_order_seq,
             "updated_at": time.time()
         }
-        tmp = SWING_STATE_FILE + ".tmp"
         try:
+            # 1. Persistencia primaria en Base de Datos SQLite WAL
+            self.db.save_bot_state(d)
+
+            # 2. Respaldo secundario en JSON
+            tmp = SWING_STATE_FILE + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(d, f, indent=2)
             os.replace(tmp, SWING_STATE_FILE)
         except Exception as e:
-            self.add_log(f"Error guardando estado swing: {e}", "error")
+            self.add_log(f"Error guardando estado en SQLite: {e}", "error")
 
 
 # ====================== LECTURA SEGURA DE LA MALLA REAL PIONEX ======================
