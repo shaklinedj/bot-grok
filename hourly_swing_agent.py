@@ -205,12 +205,10 @@ class SwingDatabase:
             rows = conn.execute("SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
             return [dict(r) for r in rows]
 
-    def get_recent_events(self, limit: int = 30) -> List[Dict]:
+    def get_recent_events(self, limit: int = 40) -> List[Dict]:
         with self._get_connection() as conn:
             rows = conn.execute("SELECT timestamp as time, event_type as type, message as text FROM events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-            res = [dict(r) for r in rows]
-            res.reverse()
-            return res
+            return [dict(r) for r in rows]  # Más recientes PRIMERO para ver siempre la última acción arriba
 
     def save_all_settings(self, settings: Dict[str, Any]):
         """Persiste toda la configuración en la tabla bot_settings de SQLite."""
@@ -1619,20 +1617,40 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     actEl.innerHTML = `<span style="color:var(--text-dim);">${d.status_msg || 'Sin posición activa. Buscando retrocesos de alta probabilidad...'}</span>`;
                 }
 
-                // 3. Radar Table V2
+                // Título de pestaña interactivo con PnL en vivo
+                if (trades.length > 0) {
+                    const topTr = trades[0];
+                    const sign = (topTr.unrealized_pnl >= 0 ? '+' : '');
+                    document.title = `🦅 ${topTr.symbol.split('/')[0]} (${sign}${Number(topTr.unrealized_pnl_pct || 0).toFixed(2)}%) | THE QUANT SNIPER`;
+                } else {
+                    document.title = `🦅 $${equity.toFixed(2)} | THE QUANT SNIPER`;
+                }
+
+                // 3. Radar Table V2 (Con resaltado si el activo está en posición abierta)
+                const activeMap = {};
+                trades.forEach(t => { activeMap[t.symbol] = t; });
+
                 const tbody = document.getElementById('radar-tbody');
                 if (tbody && d.radar_telemetry && d.radar_telemetry.length > 0) {
                     let rows = '';
                     d.radar_telemetry.forEach((c, idx) => {
+                        const inPos = activeMap[c.symbol];
                         const rsSign = (c.rs_vs_btc >= 0 ? '+' : '');
                         const rsColor = c.rs_vs_btc >= 1.0 ? '#3fb950' : (c.rs_vs_btc >= 0 ? '#58a6ff' : '#f85149');
                         const brkTag = c.breakout ? '<span class="tag tag-green">RUPTURA</span>' : '<span class="tag tag-gray">NO</span>';
                         const volColor = c.vol_spike >= 1.3 ? '#3fb950' : (c.vol_spike >= 1.0 ? '#d29922' : '#8b949e');
                         const candleTag = c.double_green ? '<span style="color:#3fb950; font-weight:600;">2 Verdes</span>' : (c.is_green ? '<span style="color:#3fb950;">1 Verde</span>' : '<span style="color:#f85149;">Roja</span>');
                         const trendTag = c.trend_1h ? '<span class="tag tag-green">ALCISTA</span>' : '<span class="tag tag-gray">BAJISTA</span>';
-                        const statusClass = c.trigger_ready ? 'tag-green' : (c.score >= 50 ? 'tag-yellow' : 'tag-gray');
                         
-                        rows += `<tr>
+                        let statusBadge = `<span class="tag ${c.trigger_ready ? 'tag-green' : (c.score >= 50 ? 'tag-yellow' : 'tag-gray')}">${c.status}</span>`;
+                        let trStyle = '';
+                        if (inPos) {
+                            const pnlSign = inPos.unrealized_pnl >= 0 ? '+' : '';
+                            statusBadge = `<span class="tag tag-green" style="font-weight:bold; background:rgba(63,185,80,0.3);">🦅 EN POSICIÓN (${pnlSign}${Number(inPos.unrealized_pnl_pct).toFixed(2)}%)</span>`;
+                            trStyle = 'style="background: rgba(88, 166, 255, 0.15); font-weight: bold; border-left: 3px solid #58a6ff;"';
+                        }
+                        
+                        rows += `<tr ${trStyle}>
                             <td>${idx + 1}</td>
                             <td><b>${c.symbol.split('/')[0]}</b></td>
                             <td>$${Number(c.price).toFixed(4)}</td>
@@ -1645,19 +1663,20 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                             <td>+${c.target_pct}% / -${c.stop_pct}%</td>
                             <td style="color:#3fb950; font-weight:bold;">${c.rr_ratio} : 1</td>
                             <td><b>${c.score}</b></td>
-                            <td><span class="tag ${statusClass}">${c.status}</span></td>
+                            <td>${statusBadge}</td>
                         </tr>`;
                     });
                     tbody.innerHTML = rows;
                 }
 
-                // 4. Logs
+                // 4. Logs (Eventos más recientes arriba de todo con badge)
                 const term = document.getElementById('terminal-feed');
                 if (term && d.events && d.events.length > 0) {
                     let logHtml = '';
-                    d.events.forEach(l => {
+                    d.events.forEach((l, idx) => {
                         const cl = l.type === 'trade' ? 'log-trade' : 'log-info';
-                        logHtml += `<div class="log-row"><span class="log-time">[${l.time}]</span> <span class="${cl}">${l.text}</span></div>`;
+                        const badge = idx === 0 ? '<span class="tag tag-green" style="font-size:9px; padding:1px 4px; margin-right:6px;">ÚLTIMO</span>' : '';
+                        logHtml += `<div class="log-row">${badge}<span class="log-time">[${l.time}]</span> <span class="${cl}">${l.text}</span></div>`;
                     });
                     term.innerHTML = logHtml;
                 }
