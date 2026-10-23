@@ -677,6 +677,7 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict, settings: Optional[Dict] = 
 
     c_15m = fetch_ohlcv_cached(symbol, "15m", limit=40)
     c_1h = fetch_ohlcv_cached(symbol, "1h", limit=30)
+    c_5m = fetch_ohlcv_cached(symbol, "5m", limit=30)
 
     if len(c_15m) < 20 or len(c_1h) < 15:
         return None
@@ -691,12 +692,42 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict, settings: Optional[Dict] = 
     if curr_p <= 0:
         return None
 
+    # --- Microestructura 5m (para evitar comprar en techos de agotamiento) ---
+    if c_5m and len(c_5m) >= 15:
+        closes_5m = [c[4] for c in c_5m]
+        rsi_5m = calc_rsi(closes_5m, 14)
+        ema20_5m = calc_ema(closes_5m, 20)
+        dev_5m_ema20 = (curr_p - ema20_5m) / ema20_5m * 100.0
+    else:
+        rsi_5m = 50.0
+        dev_5m_ema20 = 0.0
+
     # --- Indicadores 15m ---
     atr_15m = calc_atr(c_15m, 14)
     atr_pct_15m = (atr_15m / curr_p * 100.0) if curr_p > 0 else 1.0
     rsi_15m = calc_rsi(closes_15m, 14)
     ema9_15m = calc_ema(closes_15m, 9)
     ema20_15m = calc_ema(closes_15m, 20)
+    dev_15m_ema20 = (curr_p - ema20_15m) / ema20_15m * 100.0
+
+    # Conteo de velas verdes consecutivas en 15m
+    consecutive_greens = 0
+    for c in reversed(c_15m[-6:]):
+        if c[4] > c[1]:
+            consecutive_greens += 1
+        else:
+            break
+
+    # Filtro de Sobreextensión / Agotamiento (Anti-FOMO en el techo)
+    is_overextended = (
+        rsi_15m >= 70.0
+        or rsi_5m >= 74.0
+        or dev_15m_ema20 >= 3.0
+        or consecutive_greens >= 4
+    )
+
+    # Micro-Base Saludable: precio consolidando cerca de la EMA20 sin estar en euforia
+    has_healthy_base = (dev_15m_ema20 <= 2.0) and (38.0 <= rsi_5m <= 66.0) and (consecutive_greens <= 2)
 
     # --- Indicadores 1H (tendencia de fondo) ---
     ema20_1h = calc_ema(closes_1h, 20)
@@ -734,11 +765,12 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict, settings: Optional[Dict] = 
         coin_chg_1h = 0.0
     rs_vs_btc = coin_chg_1h - btc_ctx["change_1h"]
 
-    # --- Parámetros de Trade Dinámicos por ATR 15m ---
-    stop_distance = stop_mult * atr_15m
+    # --- Parámetros de Trade Dinámicos con Tope de Riesgo Estricto (máximo -1.60% inicial) ---
+    max_stop_pct = 0.0160  # Blindaje: un stop inicial nunca arriesga más del 1.60% (~$0.85 USDT)
+    stop_distance = min(stop_mult * atr_15m, curr_p * max_stop_pct)
     stop_pct = stop_distance / curr_p
     stop_price = round(curr_p - stop_distance, 6)
-    target_distance = target_mult * atr_15m
+    target_distance = max(target_mult * atr_15m, stop_distance * 2.0)
     target_pct = target_distance / curr_p
     target_price = round(curr_p + target_distance, 6)
     rr_ratio = round(target_pct / max(stop_pct, 0.001), 2)
@@ -776,12 +808,18 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict, settings: Optional[Dict] = 
     elif rs_vs_btc >= 0.5:
         score += 5.0
 
+    # G. Micro-Base Saludable en 5m/15m (+15 por consolidar en soporte)
+    if has_healthy_base:
+        score += 15.0
+
     # Penalizaciones:
     if is_falling_knife:
         score -= 40.0
-    if rsi_15m > 78.0:
-        score -= 20.0  # Sobrecomprado extremo
-    if rsi_1h > 78.0:
+    if is_overextended:
+        score -= 50.0  # Penalización masiva si está en euforia/techo
+    elif rsi_15m > 68.0:
+        score -= 15.0
+    if rsi_1h > 75.0:
         score -= 15.0
 
     is_trigger_ready = (
@@ -790,10 +828,13 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict, settings: Optional[Dict] = 
         and is_green
         and vol_spike >= 1.0
         and not is_falling_knife
+        and not is_overextended
         and rr_ratio >= 2.0
     )
 
-    if is_trigger_ready:
+    if is_overextended:
+        status_str = "⚠️ SOBREEXTENDIDO (Enfriando)"
+    elif is_trigger_ready:
         status_str = "🟢 RUPTURA CONFIRMADA"
     elif breakout_confirmed and score >= 50:
         status_str = "🟡 RUPTURA SIN VOLUMEN"
@@ -816,6 +857,9 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict, settings: Optional[Dict] = 
         "rs_vs_btc": round(rs_vs_btc, 2),
         "coin_chg_1h": round(coin_chg_1h, 2),
         "is_falling_knife": is_falling_knife,
+        "is_overextended": is_overextended,
+        "has_healthy_base": has_healthy_base,
+        "rsi_5m": round(rsi_5m, 1),
         "stop_pct": round(stop_pct * 100.0, 2),
         "target_pct": round(target_pct * 100.0, 2),
         "stop_price": stop_price,

@@ -215,7 +215,9 @@ def test_v2_breakout_detection(monkeypatch):
     # Última vela 1h con buen avance para dar alta fuerza relativa
     mock_1h[-1][4] = 10.65
 
-    monkeypatch.setattr("hourly_swing_agent.fetch_ohlcv_cached", lambda sym, tf, limit=60: mock_15m if tf == "15m" else mock_1h)
+    mock_5m = [list(c) for c in mock_15m[:25]]
+
+    monkeypatch.setattr("hourly_swing_agent.fetch_ohlcv_cached", lambda sym, tf, limit=60: mock_15m if tf == "15m" else (mock_5m if tf == "5m" else mock_1h))
 
     btc_ctx = {"change_1h": 0.2, "change_4h": 0.5, "trend_4h": "bullish"}
     res = analyze_breakout_15m("TEST/USDT", btc_ctx)
@@ -224,10 +226,38 @@ def test_v2_breakout_detection(monkeypatch):
     assert res["breakout"] is True
     assert res["vol_spike"] >= 2.0
     assert res["double_green"] is True
+    assert res["is_overextended"] is False
     assert 38.0 <= res["rsi_15m"] <= 68.0
     assert res["score"] >= MIN_SCORE_V2
     assert res["trigger_ready"] is True
     assert res["rr_ratio"] >= 2.0
+
+
+def test_v2_overextension_anti_fomo(monkeypatch):
+    # Simula una moneda que ya subió verticalmente (RSI > 75, sobreextendida)
+    base_ts = 1700000000000
+    mock_15m = []
+    # 35 velas subiendo sin parar
+    for i in range(40):
+        p = 10.0 + i * 0.20
+        mock_15m.append([base_ts + i * 900000, p - 0.1, p + 0.3, p - 0.1, p, 2000.0])
+
+    mock_1h = []
+    for i in range(30):
+        p = 9.0 + i * 0.30
+        mock_1h.append([base_ts + i * 3600000, p - 0.1, p + 0.2, p - 0.1, p, 5000.0])
+
+    mock_5m = [list(c) for c in mock_15m[:25]]
+    monkeypatch.setattr("hourly_swing_agent.fetch_ohlcv_cached", lambda sym, tf, limit=60: mock_15m if tf == "15m" else (mock_5m if tf == "5m" else mock_1h))
+
+    btc_ctx = {"change_1h": 0.5, "change_4h": 1.0, "trend_4h": "bullish"}
+    res = analyze_breakout_15m("FOMO/USDT", btc_ctx)
+
+    assert res is not None
+    # Debe ser detectada como sobreextendida / agotamiento
+    assert res["is_overextended"] is True
+    # Disparo estrictamente bloqueado para no comprar techos
+    assert res["trigger_ready"] is False
 
 
 def test_v2_falling_knife_rejection(monkeypatch):
