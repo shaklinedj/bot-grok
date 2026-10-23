@@ -205,6 +205,12 @@ class SwingDatabase:
             rows = conn.execute("SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
             return [dict(r) for r in rows]
 
+    def get_last_closed_trade(self) -> Optional[Dict]:
+        """Recupera el último trade cerrado (SELL) para mostrar el resultado en el dashboard."""
+        with self._get_connection() as conn:
+            row = conn.execute("SELECT * FROM trades WHERE side = 'SELL' ORDER BY id DESC LIMIT 1").fetchone()
+            return dict(row) if row else None
+
     def get_recent_events(self, limit: int = 40) -> List[Dict]:
         with self._get_connection() as conn:
             rows = conn.execute("SELECT timestamp as time, event_type as type, message as text FROM events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
@@ -1278,8 +1284,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     </div>
                 </div>
                 <!-- POSICIÓN SWING ACTIVA -->
-                <div id="active-box" style="background: #0d1117; border: 1px dashed var(--border); border-radius: 8px; padding: 14px; font-family: monospace; font-size: 12px;">
-                    <div id="active-status" style="color: var(--text-dim);">Sin posición Swing activa. Escaneando retrocesos con descuento en 1H...</div>
+                <div id="active-box" style="margin-top: 10px;">
+                    <div id="active-status"></div>
+                </div>
+
+                <!-- ÚLTIMO TRADE FINALIZADO -->
+                <div id="last-trade-box" style="margin-top: 10px; background: #090d13; border: 1px solid #21262d; border-radius: 6px; padding: 8px 12px; font-family: 'JetBrains Mono', monospace; font-size: 11px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px;">
+                    <span style="color: var(--text-dim); font-size: 10px; font-weight: 600;">🏆 ÚLTIMA OPERACIÓN FINALIZADA:</span>
+                    <span id="last-trade-summary" style="color: #ffffff;">Consultando historial SQLite...</span>
+                </div>
+
+                <!-- RADAR STATUS FEED -->
+                <div style="margin-top: 8px; font-size: 11px; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; display: flex; align-items: center; gap: 6px;">
+                    <span style="color: #f0883e;">📡</span> <span id="radar-live-status">Iniciando radar...</span>
                 </div>
             </div>
         </div>
@@ -1614,14 +1631,43 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     });
                     actEl.innerHTML = tradesHtml;
                 } else {
-                    actEl.innerHTML = `<span style="color:var(--text-dim);">${d.status_msg || 'Sin posición activa. Buscando retrocesos de alta probabilidad...'}</span>`;
+                    actEl.innerHTML = `
+                    <div style="background:#0d1117; border: 1px dashed #30363d; border-radius:8px; padding:12px; text-align:center;">
+                        <div style="font-size:12px; font-weight:700; color:#8b949e; margin-bottom:3px;">
+                            ⚪ SIN OPERACIÓN EN CURSO (100% EN CAJA: $${cash.toFixed(2)} USDT)
+                        </div>
+                        <div style="font-size:11px; color:var(--text-dim);">
+                            Capital libre protegido. El radar está buscando confirmación de ruptura con volumen.
+                        </div>
+                    </div>`;
+                }
+
+                // 2.1 Resumen del Último Trade Cerrado
+                const lastTrEl = document.getElementById('last-trade-summary');
+                if (lastTrEl && d.last_closed_trade) {
+                    const lt = d.last_closed_trade;
+                    const pnlVal = Number(lt.pnl || 0);
+                    const pnlSign = pnlVal >= 0 ? '+' : '';
+                    const pnlCol = pnlVal >= 0 ? '#3fb950' : '#f85149';
+                    const noteStr = lt.note ? ` | ${lt.note}` : '';
+                    lastTrEl.innerHTML = `
+                        <span style="font-weight:bold; color:#58a6ff;">${lt.symbol}</span> 
+                        <span style="color:${pnlCol}; font-weight:bold;">${pnlSign}$${pnlVal.toFixed(4)} USDT</span> 
+                        <span style="color:var(--text-dim); font-size:10px;">@ $${Number(lt.price).toFixed(4)}${noteStr}</span>
+                    `;
+                }
+
+                // 2.2 Radar Scanner Status
+                const radarLiveEl = document.getElementById('radar-live-status');
+                if (radarLiveEl) {
+                    radarLiveEl.innerText = d.status_msg || 'Escaneando Binance...';
                 }
 
                 // Título de pestaña interactivo con PnL en vivo
                 if (trades.length > 0) {
                     const topTr = trades[0];
                     const sign = (topTr.unrealized_pnl >= 0 ? '+' : '');
-                    document.title = `🦅 ${topTr.symbol.split('/')[0]} (${sign}${Number(topTr.unrealized_pnl_pct || 0).toFixed(2)}%) | THE QUANT SNIPER`;
+                    document.title = `🟢 ${topTr.symbol.split('/')[0]} (${sign}${Number(topTr.unrealized_pnl_pct || 0).toFixed(2)}%) | THE QUANT SNIPER`;
                 } else {
                     document.title = `🦅 $${equity.toFixed(2)} | THE QUANT SNIPER`;
                 }
@@ -1718,6 +1764,7 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 events = bot.db.get_recent_events(30)
                 grid_stats = dict(bot.real_grid_stats)
                 trades_list = list(bot.active_trades.values())
+                last_closed = bot.db.get_last_closed_trade()
 
             invested = sum(round(t.amount * t.entry_price, 2) for t in trades_list)
             live_val = sum(round(t.amount * getattr(t, "current_price", t.entry_price), 2) for t in trades_list)
@@ -1736,6 +1783,7 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 "status_msg": bot.status_msg,
                 "active_trade": trades_list[0].to_dict() if trades_list else None,
                 "active_trades": [t.to_dict() for t in trades_list],
+                "last_closed_trade": last_closed,
                 "stats": stats,
                 "settings": bot.settings,
                 "radar_telemetry": telemetry,
