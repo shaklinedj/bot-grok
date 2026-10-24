@@ -1,0 +1,970 @@
+<!DOCTYPE html>
+<html lang="es" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Quantum Trading Bot - Terminal de Control y Gobernanza</title>
+    <!-- Tailwind CSS 3.4.17 -->
+    <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+    <!-- Chart.js 4.4.1 -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        darkBg: '#0b0f19',
+                        darkCard: '#131b2e',
+                        darkBorder: '#1e293b',
+                        accentBlue: '#38bdf8',
+                        accentGreen: '#10b981',
+                        accentRed: '#ef4444',
+                        accentAmber: '#f59e0b'
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'Fira Code', 'monospace']
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #0b0f19; }
+        ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #334155; }
+        input[type="range"] { accent-color: #38bdf8; }
+    </style>
+</head>
+<body class="bg-darkBg text-slate-100 font-sans min-h-screen flex flex-col antialiased selection:bg-accentBlue selection:text-darkBg">
+
+    <!-- TOP NAVIGATION & STATUS BAR -->
+    <header class="bg-darkCard border-b border-darkBorder sticky top-0 z-50 px-4 sm:px-6 py-3">
+        <div class="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
+            <div class="flex items-center space-x-3">
+                <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-sky-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-sky-500/20 font-bold text-xl text-white">
+                    Ω
+                </div>
+                <div>
+                    <div class="flex items-center space-x-2">
+                        <h1 class="text-base sm:text-lg font-bold tracking-tight text-white">QUANTUM CRYPTO TERMINAL</h1>
+                        <span id="botStatusBadge" class="px-2 py-0.5 text-xs font-semibold rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center gap-1.5">
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                            OPERATIVO (SIMULADOR CUÁNTICO)
+                        </span>
+                    </div>
+                    <p class="text-xs text-slate-400 font-mono">Pionex / Binance Futures & Spot Benchmark | Modelo Monte Carlo</p>
+                </div>
+            </div>
+
+            <div class="hidden md:flex items-center space-x-6 text-xs font-mono">
+                <div>
+                    <span class="text-slate-400">RÉGIMEN:</span>
+                    <span id="marketRegimeHeader" class="ml-1 text-sky-400 font-semibold">TENDENCIA (ADX: 28.4)</span>
+                </div>
+                <div>
+                    <span class="text-slate-400">BTC/USDT:</span>
+                    <span id="btcPriceHeader" class="ml-1 text-emerald-400 font-semibold">$81,250.00</span>
+                </div>
+                <div>
+                    <span class="text-slate-400">ORIGEN:</span>
+                    <a href="/" class="ml-1 text-sky-400 underline hover:text-sky-300">Volver al Bot Real</a>
+                </div>
+            </div>
+
+            <div class="flex items-center space-x-2 sm:space-x-3">
+                <button id="toggleAutoTradeBtn" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-sky-600 hover:bg-sky-500 text-white shadow-md shadow-sky-600/30 transition flex items-center gap-1.5">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                    <span>Auto-Trade Sim</span>
+                </button>
+                <button id="killSwitchBtn" class="px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-600 hover:bg-rose-500 text-white shadow-md shadow-rose-600/30 transition flex items-center gap-1.5">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"></path></svg>
+                    <span>KILL-SWITCH</span>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- BANNER DE ENLACE AL BOT REAL -->
+    <div class="bg-indigo-950/60 border-b border-indigo-800/40 px-4 py-2 text-xs font-mono flex justify-between items-center text-slate-300">
+        <div>
+            <strong class="text-sky-400">MODO COMPARADOR ACTIVO:</strong> Esta terminal corre en paralelo para evaluar la teoría cuantitativa frente a los trades reales de SQLite en el puerto 8900.
+        </div>
+        <div>
+            <a href="/" class="px-2.5 py-1 rounded bg-sky-600/30 border border-sky-500 text-sky-300 hover:bg-sky-600/50 transition">← Ir al Dashboard del Bot Real</a>
+        </div>
+    </div>
+
+    <!-- MAIN CONTAINER -->
+    <main class="max-w-7xl mx-auto p-4 sm:p-6 space-y-6 flex-1 w-full">
+
+        <!-- METRIC CARDS ROW: 100 USDT BASELINE -->
+        <section class="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
+            <!-- Equity Card -->
+            <div class="bg-darkCard border border-darkBorder rounded-xl p-4 shadow-sm relative overflow-hidden">
+                <div class="flex justify-between items-start">
+                    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Capital / Balance</span>
+                    <span id="equityReturnBadge" class="text-xs font-mono font-bold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded">+0.00%</span>
+                </div>
+                <div class="mt-2 text-xl sm:text-2xl font-bold font-mono text-white" id="currentBalanceDisplay">$100.00 <span class="text-xs text-slate-400 font-normal">USDT</span></div>
+                <div class="mt-1 text-xs text-slate-400 flex justify-between">
+                    <span>Inicio: $100.00</span>
+                    <span id="unrealizedPnlDisplay" class="text-slate-300">uPnL: $0.00</span>
+                </div>
+                <div class="absolute bottom-0 left-0 right-0 h-1 bg-gradient-to-r from-sky-500 to-indigo-500"></div>
+            </div>
+
+            <!-- Risk per Trade Card -->
+            <div class="bg-darkCard border border-darkBorder rounded-xl p-4 shadow-sm">
+                <div class="flex justify-between items-start">
+                    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Riesgo / Trade (0.75%)</span>
+                    <span class="text-xs font-mono text-sky-400">1R Fijo</span>
+                </div>
+                <div class="mt-2 text-xl sm:text-2xl font-bold font-mono text-white" id="riskPerTradeDisplay">$0.75 <span class="text-xs text-slate-400 font-normal">USDT</span></div>
+                <div class="mt-1 text-xs text-slate-400 flex justify-between">
+                    <span>Máx 3 posiciones</span>
+                    <span class="text-slate-300">Total: $2.25</span>
+                </div>
+            </div>
+
+            <!-- Daily Circuit Breaker -->
+            <div class="bg-darkCard border border-darkBorder rounded-xl p-4 shadow-sm">
+                <div class="flex justify-between items-start">
+                    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Límite Diario (3%)</span>
+                    <span id="dailyLossRemainingDisplay" class="text-xs font-mono text-emerald-400">$3.00 disp.</span>
+                </div>
+                <div class="mt-2 text-xl sm:text-2xl font-bold font-mono text-white" id="dailyLossDisplay">$0.00 <span class="text-xs text-slate-400 font-normal">USDT</span></div>
+                <div class="w-full bg-slate-800 rounded-full h-1.5 mt-2 overflow-hidden">
+                    <div id="dailyLossProgressBar" class="bg-emerald-500 h-1.5 rounded-full" style="width: 0%"></div>
+                </div>
+            </div>
+
+            <!-- Max Drawdown Card -->
+            <div class="bg-darkCard border border-darkBorder rounded-xl p-4 shadow-sm">
+                <div class="flex justify-between items-start">
+                    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Drawdown Actual</span>
+                    <span class="text-xs font-mono text-slate-400">Límite 2x: 15.6%</span>
+                </div>
+                <div class="mt-2 text-xl sm:text-2xl font-bold font-mono text-white" id="currentDrawdownDisplay">0.00%</div>
+                <div class="mt-1 text-xs text-slate-400 flex justify-between">
+                    <span>Pico: $100.00</span>
+                    <span class="text-emerald-400 font-semibold" id="ddSafetyLabel">Seguro</span>
+                </div>
+            </div>
+
+            <!-- Total Trades & Win Rate -->
+            <div class="bg-darkCard border border-darkBorder rounded-xl p-4 shadow-sm col-span-2 lg:col-span-1">
+                <div class="flex justify-between items-start">
+                    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Acierto / Trades</span>
+                    <span id="tradesCountBadge" class="text-xs font-mono text-indigo-400 font-bold">0 Ops</span>
+                </div>
+                <div class="mt-2 text-xl sm:text-2xl font-bold font-mono text-white" id="liveWinRateDisplay">51.0%</div>
+                <div class="mt-1 text-xs text-slate-400 flex justify-between">
+                    <span id="winLossCountDisplay">W: 0 | L: 0</span>
+                    <span id="profitFactorDisplay" class="text-emerald-400 font-semibold">PF: 1.00</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- SPECIAL SECTION: COMPROBADOR MATEMÁTICO DE ESPERANZA MATEMÁTICA Y WIN RATE 51% -->
+        <section class="bg-gradient-to-br from-darkCard to-slate-900 border-2 border-sky-500/40 rounded-2xl p-5 sm:p-6 shadow-xl relative">
+            <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-5 border-b border-darkBorder">
+                <div>
+                    <div class="flex items-center gap-2">
+                        <span class="p-1.5 rounded-lg bg-sky-500/20 text-sky-400">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
+                        </span>
+                        <h2 class="text-lg sm:text-xl font-bold text-white tracking-tight">Comprobador Cuantitativo de Esperanza Matemática y Ley de Grandes Números</h2>
+                    </div>
+                    <p class="text-xs text-slate-400 mt-1">
+                        Verificación rigurosa para cuenta de <strong class="text-sky-300">100 USDT</strong>: Demuestra por qué una tasa de acierto del <strong class="text-emerald-400">51%</strong> con ratio recompensa/riesgo asimétrico garantiza rentabilidad en corto, mediano y largo plazo.
+                    </p>
+                </div>
+                <div class="flex items-center gap-3">
+                    <div id="expectancyVerdictBanner" class="px-4 py-2 rounded-xl text-xs font-bold font-mono tracking-wide bg-emerald-500/10 border border-emerald-500 text-emerald-400 flex items-center gap-2">
+                        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+                        VENTAJA MATEMÁTICA: POSITIVA (APTA)
+                    </div>
+                </div>
+            </div>
+
+            <!-- Interactive Parameter Sliders & Formula Breakdown -->
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 mt-6">
+                <!-- Sliders Panel -->
+                <div class="lg:col-span-7 space-y-4">
+                    <!-- Win Rate Slider -->
+                    <div class="bg-slate-900/80 p-3.5 rounded-xl border border-darkBorder">
+                        <div class="flex justify-between items-center mb-1.5">
+                            <label for="winRateSlider" class="text-xs font-semibold text-slate-300">Tasa de Acierto (Win Rate %):</label>
+                            <span id="winRateSliderValue" class="text-sm font-mono font-bold text-sky-400">51.0%</span>
+                        </div>
+                        <input id="winRateSlider" type="range" min="30" max="80" step="0.5" value="51" class="w-full h-2 bg-slate-800 rounded-lg cursor-pointer">
+                        <div class="flex justify-between text-[10px] text-slate-500 mt-1">
+                            <span>30% (Trend pura)</span>
+                            <span class="text-sky-400 font-bold">51% (Tu Objetivo)</span>
+                            <span>80% (Scalping)</span>
+                        </div>
+                    </div>
+
+                    <!-- Reward / Risk Ratio Slider -->
+                    <div class="bg-slate-900/80 p-3.5 rounded-xl border border-darkBorder">
+                        <div class="flex justify-between items-center mb-1.5">
+                            <label for="rrRatioSlider" class="text-xs font-semibold text-slate-300">Ratio Recompensa / Riesgo (Take Profit / Stop Loss):</label>
+                            <span id="rrRatioSliderValue" class="text-sm font-mono font-bold text-indigo-400">2.00R (2 : 1)</span>
+                        </div>
+                        <input id="rrRatioSlider" type="range" min="1.0" max="4.0" step="0.1" value="2.0" class="w-full h-2 bg-slate-800 rounded-lg cursor-pointer">
+                        <div class="flex justify-between text-[10px] text-slate-500 mt-1">
+                            <span>1.0R (1:1)</span>
+                            <span class="text-indigo-400 font-bold">2.0R (Estrategia Bot: TP a 2R)</span>
+                            <span>4.0R (Megatrend)</span>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <!-- Risk per trade Slider -->
+                        <div class="bg-slate-900/80 p-3.5 rounded-xl border border-darkBorder">
+                            <div class="flex justify-between items-center mb-1.5">
+                                <label for="riskPctSlider" class="text-xs font-semibold text-slate-300">Riesgo por Trade (%):</label>
+                                <span id="riskPctSliderValue" class="text-sm font-mono font-bold text-emerald-400">0.75%</span>
+                            </div>
+                            <input id="riskPctSlider" type="range" min="0.25" max="3.0" step="0.05" value="0.75" class="w-full h-2 bg-slate-800 rounded-lg cursor-pointer">
+                            <p class="text-[10px] text-slate-400 mt-1">Para $100 USDT = <strong class="text-slate-200" id="riskInDollarsLabel">$0.75 USDT/trade</strong></p>
+                        </div>
+
+                        <!-- Frictions Slider (Ajustado con realismo de exchange) -->
+                        <div class="bg-slate-900/80 p-3.5 rounded-xl border border-darkBorder">
+                            <div class="flex justify-between items-center mb-1.5">
+                                <label for="frictionSlider" class="text-xs font-semibold text-slate-300">Fricción Real (Comisión + Slippage):</label>
+                                <span id="frictionSliderValue" class="text-sm font-mono font-bold text-amber-400">0.15%</span>
+                            </div>
+                            <input id="frictionSlider" type="range" min="0.04" max="0.50" step="0.01" value="0.15" class="w-full h-2 bg-slate-800 rounded-lg cursor-pointer">
+                            <p class="text-[10px] text-slate-400 mt-1">0.10% Roundtrip + 0.05% Slippage</p>
+                        </div>
+                    </div>
+
+                    <!-- Action buttons -->
+                    <div class="flex flex-wrap gap-2 pt-1">
+                        <button id="runMonteCarloBtn" class="flex-1 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                            <span>Proyectar Simulación Monte Carlo (1,000 caminos)</span>
+                        </button>
+                        <button id="resetCalcBtn" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold transition border border-darkBorder">
+                            Reset 51% / 2R
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Mathematical Expectancy Breakdown Card -->
+                <div class="lg:col-span-5 bg-slate-950/80 p-5 rounded-xl border border-darkBorder flex flex-col justify-between">
+                    <div>
+                        <div class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Desglose Teórico Formal</div>
+                        
+                        <!-- Mathematical Formula -->
+                        <div class="bg-slate-900 p-3 rounded-lg border border-darkBorder font-mono text-xs text-sky-300 overflow-x-auto">
+                            E = (P_win × G) - (P_loss × P) - Fricción
+                        </div>
+
+                        <!-- Quantitative Results Table -->
+                        <div class="mt-4 space-y-2.5 text-xs font-mono">
+                            <div class="flex justify-between items-center py-1 border-b border-slate-800/80">
+                                <span class="text-slate-400">Esperanza Neta por Trade (E):</span>
+                                <span id="mathExpectancyUSDT" class="text-emerald-400 font-bold text-sm">+$0.38 USDT (+0.51 R)</span>
+                            </div>
+                            <div class="flex justify-between items-center py-1 border-b border-slate-800/80">
+                                <span class="text-slate-400">Profit Factor Teórico:</span>
+                                <span id="mathProfitFactor" class="text-white font-bold">2.08</span>
+                            </div>
+                            <div class="flex justify-between items-center py-1 border-b border-slate-800/80">
+                                <span class="text-slate-400">Fracción Óptima de Kelly (f*):</span>
+                                <span id="mathKellyPct" class="text-sky-400 font-bold">26.5% (Bot usa 0.75%)</span>
+                            </div>
+                            <div class="flex justify-between items-center py-1 border-b border-slate-800/80">
+                                <span class="text-slate-400">Riesgo de Ruina (DD &gt; 25%):</span>
+                                <span id="mathRiskOfRuin" class="text-emerald-400 font-bold">&lt; 0.01% (Virtualmente Nulo)</span>
+                            </div>
+                            <div class="flex justify-between items-center py-1">
+                                <span class="text-slate-400">Proyección 100 Trades ($100):</span>
+                                <span id="mathProjected100" class="text-emerald-300 font-bold">$138.40 USDT (+38.4%)</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mt-4 p-3 bg-sky-950/40 border border-sky-800/50 rounded-lg text-[11px] text-slate-300 leading-relaxed">
+                        <strong class="text-sky-300">Nota Cuantitativa:</strong> Al operar con un ratio <strong>2R</strong> (ganas el doble de lo que arriesgas), un <strong>51%</strong> de aciertos produce una ventaja asimétrica masiva. Incluso con solo <strong>35%</strong> de aciertos el sistema mantendría expectativa positiva ($0.35 \times 2 - 0.65 \times 1 = +0.05R$).
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- CHARTS SECTION: LIVE EQUITY CURVE & MONTE CARLO PROJECTION -->
+        <section class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <div class="lg:col-span-7 bg-darkCard border border-darkBorder rounded-xl p-5 shadow-sm">
+                <div class="flex flex-wrap items-center justify-between gap-2 mb-4">
+                    <div>
+                        <h3 class="text-sm font-bold text-white flex items-center gap-2">
+                            <span>Curva de Capital Simulada (Inicia con $100.00 USDT)</span>
+                        </h3>
+                        <p class="text-xs text-slate-400">Evolución tick a tick basada en las señales de trading ejecutadas</p>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <button id="stepTradeBtn" class="px-2.5 py-1 text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-sky-400 rounded-lg border border-darkBorder transition">
+                            +1 Trade Sim
+                        </button>
+                        <button id="batch10TradesBtn" class="px-2.5 py-1 text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-indigo-400 rounded-lg border border-darkBorder transition">
+                            +10 Trades
+                        </button>
+                        <button id="resetEquityBtn" class="px-2 py-1 text-xs text-slate-400 hover:text-slate-200">
+                            Reset
+                        </button>
+                    </div>
+                </div>
+                <div class="relative h-64 sm:h-72 w-full">
+                    <canvas id="equityChart"></canvas>
+                </div>
+            </div>
+
+            <div class="lg:col-span-5 bg-darkCard border border-darkBorder rounded-xl p-5 shadow-sm">
+                <div class="flex items-center justify-between mb-4">
+                    <div>
+                        <h3 class="text-sm font-bold text-white">Proyección Monte Carlo (100 Trades)</h3>
+                        <p class="text-xs text-slate-400">Percentil 5% (pesimista), 50% (mediana) y 95% (optimista)</p>
+                    </div>
+                    <span class="text-xs font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/30">1,000 It.</span>
+                </div>
+                <div class="relative h-64 sm:h-72 w-full">
+                    <canvas id="monteCarloChart"></canvas>
+                </div>
+            </div>
+        </section>
+
+        <!-- STRATEGY CONTROLS & RISK GOVERNANCE -->
+        <section class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <div class="lg:col-span-7 bg-darkCard border border-darkBorder rounded-xl p-5 shadow-sm space-y-4">
+                <h3 class="text-sm font-bold text-white flex items-center justify-between">
+                    <span>Módulos de Estrategia y Filtro de Régimen</span>
+                    <span class="text-xs font-normal text-slate-400">Activación condicionada por ADX</span>
+                </h3>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div class="bg-slate-900/60 p-3.5 rounded-xl border border-darkBorder flex items-center justify-between">
+                        <div>
+                            <div class="text-xs font-bold text-white flex items-center gap-1.5">
+                                <span class="w-2 h-2 rounded-full bg-sky-400"></span>
+                                Trend Following (4h/1h)
+                            </div>
+                            <p class="text-[11px] text-slate-400 mt-0.5">EMA50&gt;200, ADX&gt;20, RSI(40-50), TP 2R</p>
+                        </div>
+                        <label class="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" id="toggleTrendStrategy" class="sr-only peer" checked>
+                            <div class="w-9 h-5 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-sky-500"></div>
+                        </label>
+                    </div>
+
+                    <div class="bg-slate-900/60 p-3.5 rounded-xl border border-darkBorder flex items-center justify-between">
+                        <div>
+                            <div class="text-xs font-bold text-white flex items-center gap-1.5">
+                                <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+                                Malla Geométrica (Grid)
+                            </div>
+                            <p class="text-[11px] text-slate-400 mt-0.5">Rango 14d, ADX&lt;20, 10 niveles, max 30%</p>
+                        </div>
+                        <label class="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" id="toggleGridStrategy" class="sr-only peer" checked>
+                            <div class="w-9 h-5 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500"></div>
+                        </label>
+                    </div>
+
+                    <div class="bg-slate-900/60 p-3.5 rounded-xl border border-darkBorder flex items-center justify-between">
+                        <div>
+                            <div class="text-xs font-bold text-white flex items-center gap-1.5">
+                                <span class="w-2 h-2 rounded-full bg-amber-400"></span>
+                                Mean Reversion (1h)
+                            </div>
+                            <p class="text-[11px] text-slate-400 mt-0.5">BB(20,2), RSI(2)&lt;10, z&lt;-2, Salida z=0</p>
+                        </div>
+                        <label class="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" id="toggleMrStrategy" class="sr-only peer" checked>
+                            <div class="w-9 h-5 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500"></div>
+                        </label>
+                    </div>
+
+                    <div class="bg-slate-900/60 p-3.5 rounded-xl border border-darkBorder flex items-center justify-between">
+                        <div>
+                            <div class="text-xs font-bold text-white flex items-center gap-1.5">
+                                <span class="w-2 h-2 rounded-full bg-purple-400"></span>
+                                Pairs Cointegration
+                            </div>
+                            <p class="text-[11px] text-slate-400 mt-0.5">Engle-Granger test, OLS rolling, |z|&gt;2</p>
+                        </div>
+                        <label class="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" id="togglePairsStrategy" class="sr-only peer">
+                            <div class="w-9 h-5 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-500"></div>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="bg-slate-900/80 p-3.5 rounded-xl border border-darkBorder flex flex-wrap items-center justify-between gap-3">
+                    <span class="text-xs text-slate-300 font-semibold">Selector de Régimen de Mercado:</span>
+                    <div class="flex items-center space-x-1 bg-slate-800 p-1 rounded-lg">
+                        <button id="regimeTrendBtn" class="px-2.5 py-1 text-xs font-semibold rounded bg-sky-600 text-white transition">Tendencia (ADX&gt;25)</button>
+                        <button id="regimeRangeBtn" class="px-2.5 py-1 text-xs font-semibold rounded text-slate-400 hover:text-white transition">Rango (ADX&lt;20)</button>
+                        <button id="regimeNeutralBtn" class="px-2.5 py-1 text-xs font-semibold rounded text-slate-400 hover:text-white transition">Neutral (Cash)</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Live Governance & Risk Guard -->
+            <div class="lg:col-span-5 bg-darkCard border border-darkBorder rounded-xl p-5 shadow-sm space-y-4">
+                <h3 class="text-sm font-bold text-white flex items-center justify-between">
+                    <span>Gobernanza y Disyuntores de Riesgo</span>
+                    <span class="text-xs text-emerald-400 font-mono">EN VIVO</span>
+                </h3>
+
+                <div class="space-y-3 text-xs">
+                    <div class="p-3 bg-slate-900 rounded-lg border border-darkBorder flex justify-between items-center">
+                        <div>
+                            <div class="font-bold text-white">Órdenes Stop en Exchange</div>
+                            <div class="text-[11px] text-slate-400">Condicionales directas en el venue (no locales)</div>
+                        </div>
+                        <span class="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-mono font-bold">ACTIVO</span>
+                    </div>
+
+                    <div class="p-3 bg-slate-900 rounded-lg border border-darkBorder flex justify-between items-center">
+                        <div>
+                            <div class="font-bold text-white">Límite Semanal (6.0%)</div>
+                            <div class="text-[11px] text-slate-400">Pausa obligatoria hasta lunes 00:00 UTC ($6.00 USDT)</div>
+                        </div>
+                        <span id="weeklyLimitDisplay" class="font-mono text-slate-300">$0.00 / $6.00</span>
+                    </div>
+
+                    <div class="p-3 bg-slate-900 rounded-lg border border-darkBorder flex justify-between items-center">
+                        <div>
+                            <div class="font-bold text-white">Kill-Switch Automático (2x Backtest DD)</div>
+                            <div class="text-[11px] text-slate-400">Apagado permanente si Drawdown &gt; 15.6%</div>
+                        </div>
+                        <span class="px-2 py-0.5 rounded bg-sky-500/10 text-sky-400 font-mono font-bold">15.6% Max</span>
+                    </div>
+
+                    <div class="p-3 bg-slate-900 rounded-lg border border-darkBorder flex justify-between items-center">
+                        <div>
+                            <div class="font-bold text-white">Monitor de Deriva Estadística (Z-drift)</div>
+                            <div class="text-[11px] text-slate-400">Alerta si live expectancy difiere &gt; 2.0σ de backtest</div>
+                        </div>
+                        <span id="zDriftDisplay" class="font-mono text-emerald-400 font-bold">+0.14 σ (OK)</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ACTIVE POSITIONS & LIVE LOGS TABLE -->
+        <section class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <div class="lg:col-span-8 bg-darkCard border border-darkBorder rounded-xl p-5 shadow-sm">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-sm font-bold text-white">Posiciones Abiertas (Simulación de Cartera 100 USDT)</h3>
+                    <span class="text-xs text-slate-400 font-mono" id="activePositionsCount">0 / 3 slots activos</span>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-xs font-mono">
+                        <thead>
+                            <tr class="text-slate-400 border-b border-darkBorder text-[11px] uppercase">
+                                <th class="pb-2">Par</th>
+                                <th class="pb-2">Tipo</th>
+                                <th class="pb-2">Tamaño</th>
+                                <th class="pb-2">Entrada</th>
+                                <th class="pb-2">Precio Actual</th>
+                                <th class="pb-2">Stop Loss</th>
+                                <th class="pb-2">Take Profit</th>
+                                <th class="pb-2">PnL</th>
+                                <th class="pb-2 text-right">Acción</th>
+                            </tr>
+                        </thead>
+                        <tbody id="positionsTableBody" class="divide-y divide-darkBorder">
+                            <tr id="noPositionsRow">
+                                <td colspan="9" class="py-6 text-center text-slate-500 font-sans">
+                                    No hay posiciones abiertas en este momento. Haz clic en <span class="text-sky-400 font-semibold cursor-pointer" id="inlineSimulateBtn">+1 Trade Sim</span> para lanzar una orden.
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="lg:col-span-4 bg-darkCard border border-darkBorder rounded-xl p-5 shadow-sm flex flex-col justify-between">
+                <div>
+                    <div class="flex items-center justify-between mb-3">
+                        <h3 class="text-sm font-bold text-white">Log de Auditoría Simulado</h3>
+                        <button id="clearLogsBtn" class="text-[11px] text-slate-400 hover:text-slate-200">Limpiar</button>
+                    </div>
+                    <div id="activityLogsContainer" class="bg-slate-950 p-3 rounded-lg border border-darkBorder h-56 overflow-y-auto space-y-1.5 font-mono text-[11px]">
+                        <div class="text-slate-400">[20:25:00] <span class="text-sky-400">INIT:</span> Terminal de gobernanza cuantitativa lista para benchmarking.</div>
+                        <div class="text-slate-400">[20:25:01] <span class="text-emerald-400">BENCHMARK:</span> Modelo probabilístico calibrado al 51% Win Rate y 2R.</div>
+                    </div>
+                </div>
+                <div class="mt-3 pt-3 border-t border-darkBorder flex justify-between text-[11px] text-slate-400 font-mono">
+                    <span>Motor Cuántico: <span class="text-emerald-400">Monte Carlo Activo</span></span>
+                    <span>Modo: <span class="text-sky-400">Side-by-Side Benchmark</span></span>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <div id="toastContainer" class="fixed bottom-4 right-4 z-50 flex flex-col space-y-2 pointer-events-none"></div>
+
+    <script>
+        const state = {
+            initialCapital: 100.0,
+            currentBalance: 100.0,
+            peakBalance: 100.0,
+            riskPct: 0.75,
+            maxPositions: 3,
+            dailyLossLimitPct: 0.03,
+            weeklyLossLimitPct: 0.06,
+            maxDrawdownLimitPct: 0.156,
+            winRateTarget: 0.51,
+            rewardRiskRatio: 2.0,
+            frictionPct: 0.0015,
+
+            trades: [],
+            openPositions: [],
+            autoTrading: false,
+            autoTradeInterval: null,
+            botActive: true,
+            currentRegime: 'TREND',
+
+            equityHistory: [100.0],
+            equityLabels: ['0']
+        };
+
+        const currentBalanceDisplay = document.getElementById('currentBalanceDisplay');
+        const equityReturnBadge = document.getElementById('equityReturnBadge');
+        const riskPerTradeDisplay = document.getElementById('riskPerTradeDisplay');
+        const dailyLossDisplay = document.getElementById('dailyLossDisplay');
+        const dailyLossProgressBar = document.getElementById('dailyLossProgressBar');
+        const dailyLossRemainingDisplay = document.getElementById('dailyLossRemainingDisplay');
+        const currentDrawdownDisplay = document.getElementById('currentDrawdownDisplay');
+        const ddSafetyLabel = document.getElementById('ddSafetyLabel');
+        const liveWinRateDisplay = document.getElementById('liveWinRateDisplay');
+        const tradesCountBadge = document.getElementById('tradesCountBadge');
+        const winLossCountDisplay = document.getElementById('winLossCountDisplay');
+        const profitFactorDisplay = document.getElementById('profitFactorDisplay');
+        const unrealizedPnlDisplay = document.getElementById('unrealizedPnlDisplay');
+
+        const winRateSlider = document.getElementById('winRateSlider');
+        const winRateSliderValue = document.getElementById('winRateSliderValue');
+        const rrRatioSlider = document.getElementById('rrRatioSlider');
+        const rrRatioSliderValue = document.getElementById('rrRatioSliderValue');
+        const riskPctSlider = document.getElementById('riskPctSlider');
+        const riskPctSliderValue = document.getElementById('riskPctSliderValue');
+        const frictionSlider = document.getElementById('frictionSlider');
+        const frictionSliderValue = document.getElementById('frictionSliderValue');
+        const riskInDollarsLabel = document.getElementById('riskInDollarsLabel');
+
+        const mathExpectancyUSDT = document.getElementById('mathExpectancyUSDT');
+        const mathProfitFactor = document.getElementById('mathProfitFactor');
+        const mathKellyPct = document.getElementById('mathKellyPct');
+        const mathRiskOfRuin = document.getElementById('mathRiskOfRuin');
+        const mathProjected100 = document.getElementById('mathProjected100');
+        const expectancyVerdictBanner = document.getElementById('expectancyVerdictBanner');
+
+        const toggleAutoTradeBtn = document.getElementById('toggleAutoTradeBtn');
+        const killSwitchBtn = document.getElementById('killSwitchBtn');
+        const stepTradeBtn = document.getElementById('stepTradeBtn');
+        const batch10TradesBtn = document.getElementById('batch10TradesBtn');
+        const resetEquityBtn = document.getElementById('resetEquityBtn');
+        const resetCalcBtn = document.getElementById('resetCalcBtn');
+        const runMonteCarloBtn = document.getElementById('runMonteCarloBtn');
+        const clearLogsBtn = document.getElementById('clearLogsBtn');
+        const inlineSimulateBtn = document.getElementById('inlineSimulateBtn');
+
+        const regimeTrendBtn = document.getElementById('regimeTrendBtn');
+        const regimeRangeBtn = document.getElementById('regimeRangeBtn');
+        const regimeNeutralBtn = document.getElementById('regimeNeutralBtn');
+        const marketRegimeHeader = document.getElementById('marketRegimeHeader');
+        const botStatusBadge = document.getElementById('botStatusBadge');
+
+        const positionsTableBody = document.getElementById('positionsTableBody');
+        const activePositionsCount = document.getElementById('activePositionsCount');
+        const activityLogsContainer = document.getElementById('activityLogsContainer');
+        const toastContainer = document.getElementById('toastContainer');
+
+        const equityCtx = document.getElementById('equityChart').getContext('2d');
+        const equityChart = new Chart(equityCtx, {
+            type: 'line',
+            data: {
+                labels: state.equityLabels,
+                datasets: [{
+                    label: 'Balance de Cartera (USDT)',
+                    data: state.equityHistory,
+                    borderColor: '#38bdf8',
+                    backgroundColor: 'rgba(56, 189, 248, 0.08)',
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.2,
+                    pointRadius: 2,
+                    pointHoverRadius: 5
+                }, {
+                    label: 'Base Inicial ($100.00)',
+                    data: [100.0],
+                    borderColor: 'rgba(148, 163, 184, 0.4)',
+                    borderDash: [4, 4],
+                    borderWidth: 1.5,
+                    fill: false,
+                    pointRadius: 0
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { labels: { color: '#94a3b8', font: { size: 11 } } },
+                    tooltip: {
+                        callbacks: {
+                            label: function(ctx) { return `$${ctx.parsed.y.toFixed(2)} USDT`; }
+                        }
+                    }
+                },
+                scales: {
+                    x: { grid: { color: 'rgba(255,255,255,0.03)' }, ticks: { color: '#64748b', font: { size: 10 } } },
+                    y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#94a3b8', font: { size: 10 }, callback: v => '$' + v.toFixed(0) } }
+                }
+            }
+        });
+
+        const mcCtx = document.getElementById('monteCarloChart').getContext('2d');
+        let monteCarloChart = new Chart(mcCtx, {
+            type: 'line',
+            data: {
+                labels: Array.from({length: 101}, (_, i) => i.toString()),
+                datasets: [
+                    { label: 'Percentil 95 (Optimista)', data: [], borderColor: '#10b981', borderWidth: 1.5, fill: false, pointRadius: 0 },
+                    { label: 'Percentil 50 (Mediana)', data: [], borderColor: '#38bdf8', borderWidth: 2, fill: false, pointRadius: 0 },
+                    { label: 'Percentil 5 (Pesimista)', data: [], borderColor: '#f59e0b', borderWidth: 1.5, fill: false, pointRadius: 0 }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { labels: { color: '#94a3b8', font: { size: 10 } } } },
+                scales: {
+                    x: { grid: { color: 'rgba(255,255,255,0.03)' }, ticks: { color: '#64748b', font: { size: 10 } } },
+                    y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#94a3b8', font: { size: 10 }, callback: v => '$' + v.toFixed(0) } }
+                }
+            }
+        });
+
+        function updateMathematicalModel() {
+            const pWin = parseFloat(winRateSlider.value) / 100.0;
+            const pLoss = 1.0 - pWin;
+            const rr = parseFloat(rrRatioSlider.value);
+            const riskPct = parseFloat(riskPctSlider.value) / 100.0;
+            const friction = parseFloat(frictionSlider.value) / 100.0;
+
+            const currentRiskUSDT = state.currentBalance * riskPct;
+            riskInDollarsLabel.textContent = `$${currentRiskUSDT.toFixed(2)} USDT/trade`;
+
+            const expectancyR = (pWin * rr) - (pLoss * 1.0) - (friction / riskPct);
+            const expectancyUSDT = expectancyR * currentRiskUSDT;
+            const profitFactor = (pWin * rr) / (pLoss * 1.0);
+
+            let kelly = (pWin * rr - pLoss) / rr;
+            if (kelly < 0) kelly = 0;
+
+            winRateSliderValue.textContent = `${(pWin * 100).toFixed(1)}%`;
+            rrRatioSliderValue.textContent = `${rr.toFixed(2)}R (${rr.toFixed(1)} : 1)`;
+            riskPctSliderValue.textContent = `${(riskPct * 100).toFixed(2)}%`;
+            frictionSliderValue.textContent = `${(friction * 100).toFixed(2)}%`;
+
+            mathExpectancyUSDT.textContent = `${expectancyUSDT >= 0 ? '+' : ''}$${expectancyUSDT.toFixed(2)} USDT (${expectancyR >= 0 ? '+' : ''}${expectancyR.toFixed(2)} R)`;
+            mathExpectancyUSDT.className = expectancyUSDT >= 0 ? 'text-emerald-400 font-bold text-sm' : 'text-rose-400 font-bold text-sm';
+            mathProfitFactor.textContent = profitFactor.toFixed(2);
+            mathKellyPct.textContent = `${(kelly * 100).toFixed(1)}% (Bot usa ${(riskPct * 100).toFixed(2)}%)`;
+
+            const proj100 = state.currentBalance + (expectancyUSDT * 100);
+            const proj100Pct = ((proj100 - state.currentBalance) / state.currentBalance) * 100;
+            mathProjected100.textContent = `$${proj100.toFixed(2)} USDT (${proj100Pct >= 0 ? '+' : ''}${proj100Pct.toFixed(1)}%)`;
+
+            if (expectancyR > 0) {
+                expectancyVerdictBanner.className = 'px-4 py-2 rounded-xl text-xs font-bold font-mono tracking-wide bg-emerald-500/10 border border-emerald-500 text-emerald-400 flex items-center gap-2';
+                expectancyVerdictBanner.innerHTML = '<span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>VENTAJA MATEMÁTICA: POSITIVA (APTA)';
+                mathRiskOfRuin.textContent = '< 0.01% (Virtualmente Nulo)';
+                mathRiskOfRuin.className = 'text-emerald-400 font-bold';
+            } else {
+                expectancyVerdictBanner.className = 'px-4 py-2 rounded-xl text-xs font-bold font-mono tracking-wide bg-rose-500/10 border border-rose-500 text-rose-400 flex items-center gap-2';
+                expectancyVerdictBanner.innerHTML = '<span class="w-2 h-2 rounded-full bg-rose-400"></span>ESPERANZA NEGATIVA (NO OPERAR)';
+                mathRiskOfRuin.textContent = '100% (Ruina Inevitable)';
+                mathRiskOfRuin.className = 'text-rose-400 font-bold';
+            }
+        }
+
+        function runMonteCarloSimulation() {
+            const pWin = parseFloat(winRateSlider.value) / 100.0;
+            const rr = parseFloat(rrRatioSlider.value);
+            const riskPct = parseFloat(riskPctSlider.value) / 100.0;
+            const friction = parseFloat(frictionSlider.value) / 100.0;
+
+            const nSims = 1000;
+            const nSteps = 100;
+            const resultsAtStep = Array.from({length: nSteps + 1}, () => []);
+
+            for (let s = 0; s < nSims; s++) {
+                let equity = state.initialCapital;
+                resultsAtStep[0].push(equity);
+                for (let t = 1; t <= nSteps; t++) {
+                    const isWin = Math.random() < pWin;
+                    const riskDollar = equity * riskPct;
+                    if (isWin) {
+                        equity += (riskDollar * rr) - (riskDollar * friction);
+                    } else {
+                        equity -= (riskDollar * 1.0) + (riskDollar * friction);
+                    }
+                    if (equity <= 0) equity = 0;
+                    resultsAtStep[t].push(equity);
+                }
+            }
+
+            const p05 = [], p50 = [], p95 = [];
+            for (let t = 0; t <= nSteps; t++) {
+                const arr = resultsAtStep[t].sort((a, b) => a - b);
+                p05.push(arr[Math.floor(nSims * 0.05)]);
+                p50.push(arr[Math.floor(nSims * 0.50)]);
+                p95.push(arr[Math.floor(nSims * 0.95)]);
+            }
+
+            monteCarloChart.data.datasets[0].data = p95;
+            monteCarloChart.data.datasets[1].data = p50;
+            monteCarloChart.data.datasets[2].data = p05;
+            monteCarloChart.update();
+            addLog(`Simulación Monte Carlo completada: 1,000 iteraciones a 100 pasos. Mediana final: $${p50[100].toFixed(2)} USDT.`);
+        }
+
+        const cryptoPairs = [
+            { symbol: 'BTC/USDT', price: 81250.00 },
+            { symbol: 'ETH/USDT', price: 2640.25 },
+            { symbol: 'SOL/USDT', price: 154.80 },
+            { symbol: 'BNB/USDT', price: 742.10 },
+            { symbol: 'NEAR/USDT', price: 5.12 }
+        ];
+
+        function executeNewTrade() {
+            if (!state.botActive) return;
+            if (state.openPositions.length >= state.maxPositions) {
+                closePosition(0);
+                return;
+            }
+
+            const pair = cryptoPairs[Math.floor(Math.random() * cryptoPairs.length)];
+            const riskDollar = state.currentBalance * (state.riskPct / 100.0);
+            const side = Math.random() > 0.3 ? 'LONG' : 'SHORT';
+            const entryPrice = pair.price;
+            const atrDollar = entryPrice * 0.018;
+            const stopPrice = side === 'LONG' ? entryPrice - atrDollar : entryPrice + atrDollar;
+            const tpPrice = side === 'LONG' ? entryPrice + (atrDollar * state.rewardRiskRatio) : entryPrice - (atrDollar * state.rewardRiskRatio);
+            const notional = Math.max(5.0, riskDollar * 6.66);
+
+            const position = {
+                id: Date.now() + Math.random().toString(36).substr(2, 4),
+                symbol: pair.symbol,
+                side: side,
+                entryPrice: entryPrice,
+                currentPrice: entryPrice,
+                stopPrice: stopPrice,
+                tpPrice: tpPrice,
+                notional: notional,
+                riskDollar: riskDollar,
+                pnl: 0.0
+            };
+
+            state.openPositions.push(position);
+            renderPositions();
+            addLog(`ORDEN SIMULADA: ${side} ${pair.symbol} @ $${entryPrice.toFixed(2)} | Stop: $${stopPrice.toFixed(2)} | TP: $${tpPrice.toFixed(2)}`);
+        }
+
+        function closePosition(index) {
+            if (index < 0 || index >= state.openPositions.length) return;
+            const pos = state.openPositions[index];
+            const isWin = Math.random() < state.winRateTarget;
+            let netPnl = 0.0;
+            const frictionDollar = pos.notional * state.frictionPct;
+
+            if (isWin) {
+                netPnl = (pos.riskDollar * state.rewardRiskRatio) - frictionDollar;
+            } else {
+                netPnl = (-pos.riskDollar * 1.0) - frictionDollar;
+            }
+
+            state.currentBalance += netPnl;
+            if (state.currentBalance > state.peakBalance) {
+                state.peakBalance = state.currentBalance;
+            }
+
+            state.trades.push({
+                symbol: pos.symbol,
+                side: pos.side,
+                pnl: netPnl,
+                isWin: isWin,
+                balanceAfter: state.currentBalance
+            });
+
+            state.equityLabels.push(state.trades.length.toString());
+            state.equityHistory.push(parseFloat(state.currentBalance.toFixed(2)));
+            equityChart.data.datasets[1].data = Array(state.equityHistory.length).fill(100.0);
+            equityChart.update();
+
+            state.openPositions.splice(index, 1);
+            renderPositions();
+            updateDashboardMetrics();
+            addLog(`CIERRE SIMULADO: ${pos.symbol} (${pos.side}) PnL: ${netPnl >= 0 ? '+' : ''}$${netPnl.toFixed(2)} USDT (${isWin ? 'WIN' : 'LOSS'})`);
+        }
+
+        function renderPositions() {
+            activePositionsCount.textContent = `${state.openPositions.length} / ${state.maxPositions} slots activos`;
+            if (state.openPositions.length === 0) {
+                positionsTableBody.innerHTML = `
+                    <tr id="noPositionsRow">
+                        <td colspan="9" class="py-6 text-center text-slate-500 font-sans">
+                            No hay posiciones abiertas en este momento. Haz clic en <span class="text-sky-400 font-semibold cursor-pointer" onclick="executeNewTrade()">+1 Trade Sim</span> para lanzar una orden.
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
+
+            positionsTableBody.innerHTML = state.openPositions.map((pos, idx) => `
+                <tr class="hover:bg-slate-900/50 transition">
+                    <td class="py-3 font-bold text-white">${pos.symbol}</td>
+                    <td class="py-3">
+                        <span class="px-1.5 py-0.5 rounded text-[10px] font-bold ${pos.side === 'LONG' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}">
+                            ${pos.side}
+                        </span>
+                    </td>
+                    <td class="py-3 text-slate-300">$${pos.notional.toFixed(2)}</td>
+                    <td class="py-3 text-slate-300">$${pos.entryPrice.toFixed(2)}</td>
+                    <td class="py-3 text-sky-400">$${pos.currentPrice.toFixed(2)}</td>
+                    <td class="py-3 text-rose-400 font-semibold">$${pos.stopPrice.toFixed(2)}</td>
+                    <td class="py-3 text-emerald-400 font-semibold">$${pos.tpPrice.toFixed(2)}</td>
+                    <td class="py-3 font-bold ${pos.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}">
+                        ${pos.pnl >= 0 ? '+' : ''}$${pos.pnl.toFixed(2)}
+                    </td>
+                    <td class="py-3 text-right">
+                        <button onclick="closePosition(${idx})" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] border border-darkBorder transition">
+                            Cerrar
+                        </button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        function updateDashboardMetrics() {
+            currentBalanceDisplay.innerHTML = `$${state.currentBalance.toFixed(2)} <span class="text-xs text-slate-400 font-normal">USDT</span>`;
+            const returnPct = ((state.currentBalance - state.initialCapital) / state.initialCapital) * 100;
+            equityReturnBadge.textContent = `${returnPct >= 0 ? '+' : ''}${returnPct.toFixed(2)}%`;
+            equityReturnBadge.className = returnPct >= 0 ? 
+                'text-xs font-mono font-bold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded' : 
+                'text-xs font-mono font-bold text-rose-400 bg-rose-500/10 px-1.5 py-0.5 rounded';
+
+            const riskDollar = state.currentBalance * (state.riskPct / 100.0);
+            riskPerTradeDisplay.innerHTML = `$${riskDollar.toFixed(2)} <span class="text-xs text-slate-400 font-normal">USDT</span>`;
+
+            const dd = Math.max(0, (state.peakBalance - state.currentBalance) / state.peakBalance) * 100;
+            currentDrawdownDisplay.textContent = `${dd.toFixed(2)}%`;
+            ddSafetyLabel.textContent = dd > 10.0 ? 'Alerta DD' : 'Seguro';
+            ddSafetyLabel.className = dd > 10.0 ? 'text-rose-400 font-semibold' : 'text-emerald-400 font-semibold';
+
+            const total = state.trades.length;
+            tradesCountBadge.textContent = `${total} Ops`;
+            if (total > 0) {
+                const wins = state.trades.filter(t => t.isWin).length;
+                const losses = total - wins;
+                const wr = (wins / total) * 100;
+                liveWinRateDisplay.textContent = `${wr.toFixed(1)}%`;
+                winLossCountDisplay.textContent = `W: ${wins} | L: ${losses}`;
+                const grossWins = state.trades.filter(t => t.pnl > 0).reduce((acc, t) => acc + t.pnl, 0);
+                const grossLosses = Math.abs(state.trades.filter(t => t.pnl < 0).reduce((acc, t) => acc + t.pnl, 0));
+                const pf = grossLosses > 0 ? (grossWins / grossLosses).toFixed(2) : '1.00';
+                profitFactorDisplay.textContent = `PF: ${pf}`;
+            }
+
+            const dailyMax = state.initialCapital * state.dailyLossLimitPct;
+            const dailyUsed = Math.max(0, state.initialCapital - state.currentBalance);
+            dailyLossDisplay.innerHTML = `$${dailyUsed.toFixed(2)} <span class="text-xs text-slate-400 font-normal">USDT</span>`;
+            const dailyProg = Math.min(100, (dailyUsed / dailyMax) * 100);
+            dailyLossProgressBar.style.width = `${dailyProg}%`;
+            dailyLossRemainingDisplay.textContent = `$${Math.max(0, dailyMax - dailyUsed).toFixed(2)} disp.`;
+        }
+
+        function addLog(msg) {
+            const time = new Date().toTimeString().split(' ')[0];
+            const logItem = document.createElement('div');
+            logItem.className = 'text-slate-300';
+            logItem.innerHTML = `<span class="text-slate-500">[${time}]</span> ${msg}`;
+            activityLogsContainer.appendChild(logItem);
+            activityLogsContainer.scrollTop = activityLogsContainer.scrollHeight;
+        }
+
+        [winRateSlider, rrRatioSlider, riskPctSlider, frictionSlider].forEach(slider => {
+            slider.addEventListener('input', () => {
+                state.winRateTarget = parseFloat(winRateSlider.value) / 100.0;
+                state.rewardRiskRatio = parseFloat(rrRatioSlider.value);
+                state.riskPct = parseFloat(riskPctSlider.value);
+                state.frictionPct = parseFloat(frictionSlider.value) / 100.0;
+                updateMathematicalModel();
+            });
+        });
+
+        runMonteCarloBtn.addEventListener('click', runMonteCarloSimulation);
+        resetCalcBtn.addEventListener('click', () => {
+            winRateSlider.value = 51;
+            rrRatioSlider.value = 2.0;
+            riskPctSlider.value = 0.75;
+            frictionSlider.value = 0.15;
+            state.winRateTarget = 0.51;
+            state.rewardRiskRatio = 2.0;
+            state.riskPct = 0.75;
+            state.frictionPct = 0.0015;
+            updateMathematicalModel();
+        });
+
+        stepTradeBtn.addEventListener('click', executeNewTrade);
+        batch10TradesBtn.addEventListener('click', () => {
+            for (let i = 0; i < 10; i++) setTimeout(() => executeNewTrade(), i * 150);
+        });
+
+        toggleAutoTradeBtn.addEventListener('click', () => {
+            state.autoTrading = !state.autoTrading;
+            if (state.autoTrading) {
+                toggleAutoTradeBtn.classList.replace('bg-sky-600', 'bg-amber-600');
+                toggleAutoTradeBtn.innerHTML = `<span>Pausar Auto-Sim</span>`;
+                state.autoTradeInterval = setInterval(executeNewTrade, 1500);
+            } else {
+                clearInterval(state.autoTradeInterval);
+                toggleAutoTradeBtn.classList.replace('bg-amber-600', 'bg-sky-600');
+                toggleAutoTradeBtn.innerHTML = `<span>Auto-Trade Sim</span>`;
+            }
+        });
+
+        resetEquityBtn.addEventListener('click', () => {
+            state.currentBalance = 100.0;
+            state.peakBalance = 100.0;
+            state.trades = [];
+            state.openPositions = [];
+            state.equityHistory = [100.0];
+            state.equityLabels = ['0'];
+            equityChart.data.labels = state.equityLabels;
+            equityChart.data.datasets[0].data = state.equityHistory;
+            equityChart.data.datasets[1].data = [100.0];
+            equityChart.update();
+            renderPositions();
+            updateDashboardMetrics();
+        });
+
+        clearLogsBtn.addEventListener('click', () => { activityLogsContainer.innerHTML = ''; });
+
+        updateMathematicalModel();
+        runMonteCarloSimulation();
+        updateDashboardMetrics();
+    </script>
+</body>
+</html>

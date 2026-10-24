@@ -1048,12 +1048,13 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict, settings: Optional[Dict] = 
         else:
             break
 
-    # Filtro de Sobreextensión / Agotamiento (Anti-FOMO en el techo)
+    # Filtro de Sobreextensión / Agotamiento (Anti-FOMO en el techo tardío)
+    # Permite la ignición inicial (velas 1 y 2), pero bloquea cuando el rally ya lleva 4+ velas o RSI extremo > 78
     is_overextended = (
-        rsi_15m >= 70.0
-        or rsi_5m >= 74.0
-        or dev_15m_ema20 >= 3.0
-        or consecutive_greens >= 4
+        rsi_15m >= 78.0
+        or rsi_5m >= 80.0
+        or (consecutive_greens >= 4 and rsi_15m >= 68.0)
+        or (dev_15m_ema20 >= 3.8 and consecutive_greens >= 3)
     )
 
     # Micro-Base Saludable: precio consolidando cerca de la EMA20 sin estar en euforia
@@ -1079,6 +1080,7 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict, settings: Optional[Dict] = 
     body = abs(last_c[4] - last_c[1])
     full_range = last_c[2] - last_c[3]
     body_ratio = (body / full_range) if full_range > 0 else 0.0
+    close_pos = ((last_c[4] - last_c[3]) / full_range) if full_range > 0 else 0.0
 
     # --- Momentum: Las últimas 2 velas de 15m son verdes ---
     prev_green = c_15m[-2][4] > c_15m[-2][1] if len(c_15m) >= 2 else False
@@ -1095,6 +1097,25 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict, settings: Optional[Dict] = 
         coin_chg_1h = 0.0
     rs_vs_btc = coin_chg_1h - btc_ctx["change_1h"]
 
+    # --- DETECTOR DE IGNICIÓN DE MOMENTUM (arXiv:2602.11708 Trend-Following Engine) ---
+    # Vela de expansión direccional institucional:
+    # 1. Volumen agresivo (>= 2.0x promedio de 20 periodos)
+    # 2. Rango expandido (Rango de la vela >= 1.20x ATR 15m)
+    # 3. Vela dominante verde (Cuerpo >= 55% del rango total)
+    # 4. Cierre en zona alta (Cierre en el 70%+ superior del rango)
+    # 5. Fuerza relativa sólida frente a BTC (>= +0.8pp)
+    # 6. Sin sobreextensión extrema previa ni cuchillo cayendo
+    is_momentum_ignition = bool(
+        is_green
+        and vol_spike >= 2.0
+        and full_range >= (1.20 * atr_15m)
+        and body_ratio >= 0.55
+        and close_pos >= 0.70
+        and rs_vs_btc >= 0.8
+        and not is_falling_knife
+        and not is_overextended
+    )
+
     # --- Parámetros de Trade Asimétricos con Piso Defensivo (1.20% min) y Techo (2.20% max) ---
     min_stop_pct = 0.0120  # Piso mínimo 1.20%: Erradica la muerte por micro-stops y ruido blanco
     max_stop_pct = 0.0220  # Techo máximo 2.20%: Preserva el capital ante cisnes negros
@@ -1103,8 +1124,12 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict, settings: Optional[Dict] = 
     stop_pct = stop_distance / curr_p
     stop_price = round(curr_p - stop_distance, 6)
 
-    # Target asimétrico: Mínimo 2.2x el stop real para garantizar Payoff positivo (>2.2:1)
-    target_distance = max(target_mult * atr_15m, stop_distance * 2.2)
+    # Target asimétrico:
+    # Si hay Ignición de Momentum institucional, anclamos el target al ratio institucional de 3.4R
+    if is_momentum_ignition:
+        target_distance = max(target_mult * atr_15m, stop_distance * 3.4)
+    else:
+        target_distance = max(target_mult * atr_15m, stop_distance * 2.2)
     target_pct = target_distance / curr_p
     target_price = round(curr_p + target_distance, 6)
     rr_ratio = round(target_pct / max(stop_pct, 0.001), 2)
@@ -1146,6 +1171,10 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict, settings: Optional[Dict] = 
     if has_healthy_base:
         score += 15.0
 
+    # H. Bonus Ignición de Momentum Institucional (+35 pts)
+    if is_momentum_ignition:
+        score += 35.0
+
     # Penalizaciones:
     if is_falling_knife:
         score -= 40.0
@@ -1157,8 +1186,8 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict, settings: Optional[Dict] = 
         score -= 15.0
 
     is_trigger_ready = (
-        score >= min_score_target
-        and breakout_confirmed
+        (score >= min_score_target or is_momentum_ignition)
+        and (breakout_confirmed or is_momentum_ignition)
         and is_green
         and vol_spike >= 1.0
         and not is_falling_knife
@@ -1168,6 +1197,8 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict, settings: Optional[Dict] = 
 
     if is_overextended:
         status_str = "⚠️ SOBREEXTENDIDO (Enfriando)"
+    elif is_momentum_ignition and is_trigger_ready:
+        status_str = f"🚀 IGNICIÓN MOMENTUM ({rr_ratio}R)"
     elif is_trigger_ready:
         status_str = "🟢 RUPTURA CONFIRMADA"
     elif breakout_confirmed and score >= 50:
@@ -1201,6 +1232,7 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict, settings: Optional[Dict] = 
         "rr_ratio": rr_ratio,
         "score": round(score, 1),
         "trigger_ready": is_trigger_ready,
+        "is_momentum_ignition": is_momentum_ignition,
         "status": status_str
     }
 
@@ -1260,11 +1292,18 @@ def execute_swing_paper_entry(bot: SwingBot, opp: Dict):
     bot.active_trades[sym] = trade
     tier = bot.get_tier_name()
     rs_info = f"RS vs BTC: {opp.get('rs_vs_btc', 0):+.1f}pp"
-    bot.add_log(f"🎯 DISPARO V2 #{order_id}: {sym} @ ${curr_p:.4f} | {rs_info} | Ruptura 15m + Vol {opp.get('vol_spike', 0):.1f}x | ${trade_capital:.2f} USDT | Target: ${target_p:.4f} (+{target_pct*100:.2f}%) | Stop: ${stop_p:.4f} (-{stop_pct*100:.2f}%) | R:R {rr}:1", "trade")
+    is_ign = opp.get("is_momentum_ignition", False)
+    if is_ign:
+        bot.add_log(f"🚀 [IGNICIÓN MOMENTUM] OLA INSTITUCIONAL en {sym}: Vol {opp.get('vol_spike', 0):.1f}x | {rs_info} | ${trade_capital:.2f} USDT | Target 3.4R: ${target_p:.4f} (+{target_pct*100:.2f}%) | Stop: ${stop_p:.4f} (-{stop_pct*100:.2f}%) | R:R {rr}:1", "trade")
+        entry_note = f"🚀 Ignición Momentum #{order_id} (R:R {rr}:1 | Vol {opp.get('vol_spike', 0):.1f}x | RS {opp.get('rs_vs_btc', 0):+.1f}pp)"
+    else:
+        bot.add_log(f"🎯 DISPARO V2 #{order_id}: {sym} @ ${curr_p:.4f} | {rs_info} | Ruptura 15m + Vol {opp.get('vol_spike', 0):.1f}x | ${trade_capital:.2f} USDT | Target: ${target_p:.4f} (+{target_pct*100:.2f}%) | Stop: ${stop_p:.4f} (-{stop_pct*100:.2f}%) | R:R {rr}:1", "trade")
+        entry_note = f"V2 Entry #{order_id} (R:R {rr}:1 | ATR 15m {atr_p:.2f}% | RS {opp.get('rs_vs_btc', 0):+.1f}pp)"
+
     bot.db.log_trade(
         symbol=sym, side="BUY", price=curr_p, amount=amount, capital=trade_capital,
         pnl=0.0, fee=entry_fee, order_id=order_id, target_price=target_p, stop_price=stop_p,
-        note=f"V2 Entry #{order_id} (R:R {rr}:1 | ATR 15m {atr_p:.2f}% | RS {opp.get('rs_vs_btc', 0):+.1f}pp)"
+        note=entry_note
     )
     bot.save_state()
 
@@ -1893,7 +1932,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 <h1>🦅 THE QUANT SNIPER & GRID DESK</h1>
                 <div class="title-sub">Dual Architecture: Malla Spot Pionex (Real) + Asymmetric Swing 1H/4H (Paper)</div>
             </div>
-            <div style="display: flex; gap: 10px; align-items: center;">
+            <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                <a href="/quantum" style="text-decoration: none; padding: 5px 12px; background: #131b2e; border: 1px solid #38bdf8; border-radius: 6px; color: #38bdf8; font-size: 11px; font-weight: bold; font-family: monospace; transition: all 0.2s;" target="_blank">⚛️ Comparador Cuántico (Monte Carlo) ↗</a>
                 <span class="badge-live">● SISTEMA OPERATIVO</span>
                 <span style="font-size: 12px; color: var(--text-dim); font-family: monospace;">Refresco 3s</span>
             </div>
@@ -2461,12 +2501,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                         const inPos = activeMap[c.symbol];
                         const rsSign = (c.rs_vs_btc >= 0 ? '+' : '');
                         const rsColor = c.rs_vs_btc >= 1.0 ? '#3fb950' : (c.rs_vs_btc >= 0 ? '#58a6ff' : '#f85149');
-                        const brkTag = c.breakout ? '<span class="tag tag-green">RUPTURA</span>' : '<span class="tag tag-gray">NO</span>';
+                        const brkTag = c.is_momentum_ignition ? '<span class="tag tag-purple" style="font-weight:bold; background:rgba(187,128,255,0.25); border:1px solid #bc8cff; color:#d2a8ff;">🚀 IGNICIÓN</span>' : (c.breakout ? '<span class="tag tag-green">RUPTURA</span>' : '<span class="tag tag-gray">NO</span>');
                         const volColor = c.vol_spike >= 1.3 ? '#3fb950' : (c.vol_spike >= 1.0 ? '#d29922' : '#8b949e');
                         const candleTag = c.double_green ? '<span style="color:#3fb950; font-weight:600;">2 Verdes</span>' : (c.is_green ? '<span style="color:#3fb950;">1 Verde</span>' : '<span style="color:#f85149;">Roja</span>');
                         const trendTag = c.trend_1h ? '<span class="tag tag-green">ALCISTA</span>' : '<span class="tag tag-gray">BAJISTA</span>';
                         
-                        let statusBadge = `<span class="tag ${c.trigger_ready ? 'tag-green' : (c.score >= 50 ? 'tag-yellow' : 'tag-gray')}">${c.status}</span>`;
+                        let statusBadge = `<span class="tag ${c.is_momentum_ignition ? 'tag-purple' : (c.trigger_ready ? 'tag-green' : (c.score >= 50 ? 'tag-yellow' : 'tag-gray'))}">${c.status}</span>`;
                         let trStyle = '';
                         if (inPos) {
                             const pnlSign = inPos.unrealized_pnl >= 0 ? '+' : '';
@@ -2529,6 +2569,17 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             self.wfile.write(DASHBOARD_HTML.encode("utf-8"))
+        elif self.path == "/quantum" or self.path == "/quantum.html":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            quantum_path = os.path.join(BASE_DIR, "quantum_terminal.html")
+            if os.path.exists(quantum_path):
+                with open(quantum_path, "r", encoding="utf-8") as f:
+                    self.wfile.write(f.read().encode("utf-8"))
+            else:
+                self.wfile.write(b"<h1>Quantum Terminal no encontrada</h1>")
         elif self.path == "/api/autopsies":
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")

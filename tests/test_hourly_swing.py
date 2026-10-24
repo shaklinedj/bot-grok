@@ -467,7 +467,59 @@ def test_bounded_grid_harvest_profit(test_bot, monkeypatch):
     assert stats["pnl"] > 0
 
 
+def test_momentum_ignition_detection_and_3_4r_target(monkeypatch):
+    """Verifica que el detector de Ignición de Momentum detecte la vela institucional y fije 3.4R."""
+    # 23 velas de 15m en rango base consolidando (100.0 - 100.5) con RSI neutral (~50)
+    c_15m = []
+    for i in range(23):
+        if i % 2 == 0:
+            c_15m.append([1000 + i * 900, 100.2, 100.5, 99.8, 100.0, 1000.0])
+        else:
+            c_15m.append([1000 + i * 900, 100.0, 100.4, 99.9, 100.3, 1000.0])
+    # Vela 24: Vela preparatoria
+    c_15m.append([1000 + 23 * 900, 100.2, 100.6, 100.1, 100.5, 1200.0])
+    # Vela 25: Ignición institucional que rompe la resistencia de 100.6 hacia 102.8 con 4.5x volumen
+    c_15m.append([1000 + 24 * 900, 100.5, 102.8, 100.4, 102.6, 4500.0])
 
+    c_1h = []
+    for i in range(20):
+        if i % 2 == 0:
+            c_1h.append([1000 + i * 3600, 100.0, 100.8, 99.5, 100.2, 5000.0])
+        else:
+            c_1h.append([1000 + i * 3600, 100.2, 100.9, 99.8, 100.1, 5000.0])
+    c_1h[-1] = [1000 + 19 * 3600, 100.1, 102.8, 99.9, 102.6, 12000.0]
 
+    c_5m = []
+    for i in range(25):
+        if i % 2 == 0:
+            c_5m.append([1000 + i * 300, 101.5, 102.2, 101.2, 101.8, 800.0])
+        else:
+            c_5m.append([1000 + i * 300, 101.8, 102.6, 101.6, 102.5, 1200.0])
 
+    def mock_fetch_ohlcv(sym, tf, limit=60):
+        if tf == "15m":
+            return c_15m
+        elif tf == "1h":
+            return c_1h
+        elif tf == "5m":
+            return c_5m
+        return []
 
+    monkeypatch.setattr("hourly_swing_agent.fetch_ohlcv_cached", mock_fetch_ohlcv)
+
+    btc_ctx = {
+        "regime": "NEUTRAL_TRANSITION",
+        "change_1h": 0.20,
+        "change_4h": 0.50,
+        "price": 80000.0,
+        "can_trade_alts": True
+    }
+
+    res = analyze_breakout_15m("SOL/USDT", btc_ctx)
+
+    assert res is not None
+    assert res["is_momentum_ignition"] is True
+    assert res["vol_spike"] >= 2.0
+    assert res["rr_ratio"] >= 3.4
+    assert res["trigger_ready"] is True
+    assert "IGNICIÓN MOMENTUM" in res["status"]
