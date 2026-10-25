@@ -1616,10 +1616,13 @@ def scan_bounded_grid_candidates(bot: SwingBot) -> Optional[BoundedMicroGrid]:
         return None
 
     now = time.time()
-    # WHITELIST INSTITUCIONAL ESTRICTA PARA MALLAS ACOTADAS:
-    # Las mallas de reversión a la media están terminantemente prohibidas en altcoins especulativas o memes (PUMP, ENA).
-    # ÚNICAMENTE se permiten Blue-Chips con profundidad institucional y reversión comprobada:
-    symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT"]
+    # UNIVERSO DE ALTA REPUTACIÓN Y LIQUIDEZ PARA MALLAS:
+    # Monedas consolidadas con profundidad de mercado real (evita memes efímeros):
+    symbols = [
+        "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT",
+        "XRP/USDT", "LTC/USDT", "ADA/USDT", "XLM/USDT",
+        "NEAR/USDT", "LINK/USDT", "AVAX/USDT", "DOT/USDT", "SUI/USDT"
+    ]
 
     best_candidate = None
     lowest_hurst = 0.50
@@ -1632,6 +1635,20 @@ def scan_bounded_grid_candidates(bot: SwingBot) -> Optional[BoundedMicroGrid]:
             if len(candles) < 24:
                 continue
             closes = [c[4] for c in candles]
+            curr_p = closes[-1]
+
+            # 1. Filtro Multi-Timeframe 1H (Anti-Banderín Bajista):
+            # Asegura que el canal de 15m no sea una pausa dentro de un desplome de 1H
+            candles_1h = fetch_ohlcv_cached(sym, "1h", limit=24)
+            if len(candles_1h) >= 12:
+                closes_1h = [c[4] for c in candles_1h]
+                chg_1h_24h = (closes_1h[-1] - closes_1h[0]) / closes_1h[0] * 100.0
+                ema20_1h = calc_ema(closes_1h, min(len(closes_1h), 20))
+                # Si la moneda ha caído más de 3.5% y cotiza bajo la EMA20 de 1H,
+                # es una caída activa con pausas (falsos canales), NO reversión a la media:
+                if chg_1h_24h < -3.5 and curr_p < ema20_1h * 0.99:
+                    continue
+
             h = calc_hurst_exponent(closes)
             if h >= 0.46:  # No califica si es tendencial
                 continue
@@ -1645,7 +1662,7 @@ def scan_bounded_grid_candidates(bot: SwingBot) -> Optional[BoundedMicroGrid]:
 
             if h < lowest_hurst:
                 lowest_hurst = h
-                best_candidate = (sym, chan, h, closes[-1])
+                best_candidate = (sym, chan, h, curr_p)
         except Exception:
             continue
 
