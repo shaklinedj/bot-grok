@@ -1633,12 +1633,10 @@ def scan_bounded_grid_candidates(bot: SwingBot) -> Optional[BoundedMicroGrid]:
         return None
 
     now = time.time()
-    movers = scan_market_top_movers()
-    symbols = [m["symbol"] for m in movers[:15] if m["symbol"] not in IGNORE_SYMBOLS]
-    priority_pairs = ["BNB/USDT", "SOL/USDT", "DOGE/USDT", "XRP/USDT", "NEAR/USDT", "ADA/USDT", "SUI/USDT"]
-    for p in priority_pairs:
-        if p not in symbols:
-            symbols.append(p)
+    # WHITELIST INSTITUCIONAL ESTRICTA PARA MALLAS ACOTADAS:
+    # Las mallas de reversión a la media están terminantemente prohibidas en altcoins especulativas o memes (PUMP, ENA).
+    # ÚNICAMENTE se permiten Blue-Chips con profundidad institucional y reversión comprobada:
+    symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT"]
 
     best_candidate = None
     lowest_hurst = 0.50
