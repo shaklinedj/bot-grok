@@ -8,7 +8,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from hourly_swing_agent import (
     SwingBot, SwingTrade, SwingDatabase, execute_swing_paper_entry, manage_active_swing_trade,
     analyze_breakout_15m, MIN_SCORE_V2, POST_STOP_EXTRA_SCORE,
-    calc_hurst_exponent, detect_horizontal_channel, BoundedMicroGrid, GridLevel, manage_active_bounded_grid
+    calc_hurst_exponent, detect_horizontal_channel, BoundedMicroGrid, GridLevel, manage_active_bounded_grid,
+    fetch_order_flow_confirmation
 )
 
 
@@ -523,3 +524,42 @@ def test_momentum_ignition_detection_and_3_4r_target(monkeypatch):
     assert res["rr_ratio"] >= 3.4
     assert res["trigger_ready"] is True
     assert "IGNICIÓN MOMENTUM" in res["status"]
+
+
+def test_order_flow_centinela_confirm():
+    """Verifica que el Centinela de Order Flow confirme la entrada cuando hay OBI positivo y compras agresivas."""
+    class MockExchange:
+        def fetch_order_book(self, symbol, limit=20):
+            # Bids superan a Asks (OBI positivo)
+            return {
+                "bids": [[100.0, 50.0], [99.9, 40.0]],
+                "asks": [[100.1, 20.0], [100.2, 10.0]]
+            }
+        def fetch_trades(self, symbol, limit=50):
+            # 70% de compras agresivas a mercado
+            return [{"side": "buy", "amount": 7.0}] * 10 + [{"side": "sell", "amount": 3.0}] * 10
+
+    flow = fetch_order_flow_confirmation("SOL/USDT", ex=MockExchange())
+    assert flow["confirmed"] is True
+    assert flow["obi"] > 0.0
+    assert flow["buy_ratio_pct"] == 70.0
+    assert flow["spread_pct"] < 0.25
+
+
+def test_order_flow_centinela_veto_blocks_trade(test_bot):
+    """Verifica que el Centinela de Order Flow vete la entrada si hay presión vendedora en la cinta."""
+    class MockVetoExchange:
+        def fetch_order_book(self, symbol, limit=20):
+            return {
+                "bids": [[100.0, 10.0]],
+                "asks": [[100.1, 50.0]]  # Asks masivos
+            }
+        def fetch_trades(self, symbol, limit=50):
+            # 80% de ventas agresivas a mercado (solo 20% compras)
+            return [{"side": "buy", "amount": 2.0}] * 10 + [{"side": "sell", "amount": 8.0}] * 10
+
+    # Test directo de veto
+    flow = fetch_order_flow_confirmation("SOL/USDT", ex=MockVetoExchange())
+    assert flow["confirmed"] is False
+    assert flow["buy_ratio_pct"] < 45.0
+    assert "Ventas agresivas" in flow["reason"] or "Muro de venta" in flow["reason"]

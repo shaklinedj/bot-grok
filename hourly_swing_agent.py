@@ -329,7 +329,8 @@ class SwingTrade:
     def __init__(self, trade_id: str, symbol: str, entry_price: float, amount: float,
                  capital: float, target_price: float, stop_price: float, initial_stop: float,
                  target_pct: float, stop_pct: float, atr_pct: float, rr_ratio: float,
-                 entry_time: float, entry_fee: float = 0.0):
+                 entry_time: float, entry_fee: float = 0.0, of_obi: float = 0.0,
+                 of_buy_ratio: float = 50.0):
         self.trade_id = trade_id
         self.symbol = symbol
         self.entry_price = entry_price
@@ -344,6 +345,8 @@ class SwingTrade:
         self.rr_ratio = rr_ratio
         self.entry_time = entry_time
         self.entry_fee = entry_fee
+        self.of_obi = of_obi
+        self.of_buy_ratio = of_buy_ratio
         self.is_be_active = False        # Break-Even Shield activado (+0.20%)
         self.is_trailing_active = False  # Trailing Stop ATR activado
         self.highest_price = entry_price
@@ -369,6 +372,8 @@ class SwingTrade:
             "rr_ratio": self.rr_ratio,
             "entry_time": self.entry_time,
             "entry_fee": self.entry_fee,
+            "of_obi": getattr(self, "of_obi", 0.0),
+            "of_buy_ratio": getattr(self, "of_buy_ratio", 50.0),
             "is_be_active": self.is_be_active,
             "is_trailing_active": self.is_trailing_active,
             "highest_price": self.highest_price,
@@ -395,7 +400,9 @@ class SwingTrade:
             atr_pct=d.get("atr_pct", 1.5),
             rr_ratio=d.get("rr_ratio", 3.0),
             entry_time=d.get("entry_time", time.time()),
-            entry_fee=d.get("entry_fee", 0.0)
+            entry_fee=d.get("entry_fee", 0.0),
+            of_obi=d.get("of_obi", 0.0),
+            of_buy_ratio=d.get("of_buy_ratio", 50.0)
         )
         st.is_be_active = d.get("is_be_active", False)
         st.is_trailing_active = d.get("is_trailing_active", False)
@@ -1237,6 +1244,105 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict, settings: Optional[Dict] = 
     }
 
 
+# ====================== CENTINELA DE ORDER FLOW L2 & TAPE ======================
+def fetch_order_flow_confirmation(symbol: str, ex=exchange) -> Dict:
+    """
+    CENTINELA DE ORDER FLOW (Microestructura L2 & Tape).
+    Filtro final ejecutado en el milisegundo antes de disparar un trade.
+    1. Order Book Imbalance (OBI): Verifica la asimetría de liquidez pasiva en los 20 mejores niveles.
+    2. Taker Volume Delta: Verifica la agresividad en los últimos 50 trades a mercado.
+    3. Spread Real: Veta si el spread es excesivo (> 0.25%).
+    """
+    try:
+        # 1. Order Book L2:
+        ob = ex.fetch_order_book(symbol, limit=20)
+        bids = ob.get("bids", [])
+        asks = ob.get("asks", [])
+        if not bids or not asks:
+            return {
+                "confirmed": True,
+                "obi": 0.0,
+                "buy_ratio_pct": 50.0,
+                "delta": 0.0,
+                "spread_pct": 0.05,
+                "reason": "Libro sin profundidad (permitido fallback defensivo)"
+            }
+
+        bid_vol = sum(float(b[1]) for b in bids)
+        ask_vol = sum(float(a[1]) for a in asks)
+        tot_ob = bid_vol + ask_vol
+        obi = (bid_vol - ask_vol) / tot_ob if tot_ob > 0 else 0.0
+
+        best_bid = float(bids[0][0])
+        best_ask = float(asks[0][0])
+        spread_pct = ((best_ask - best_bid) / best_bid * 100.0) if best_bid > 0 else 0.0
+
+        # 2. Taker Trades (Tape):
+        trades = ex.fetch_trades(symbol, limit=50)
+        if trades:
+            taker_buy_vol = sum(float(t.get("amount", 0.0) or 0.0) for t in trades if t.get("side") == "buy")
+            taker_sell_vol = sum(float(t.get("amount", 0.0) or 0.0) for t in trades if t.get("side") == "sell")
+            tot_taker = taker_buy_vol + taker_sell_vol
+            buy_ratio_pct = (taker_buy_vol / tot_taker * 100.0) if tot_taker > 0 else 50.0
+            delta = taker_buy_vol - taker_sell_vol
+        else:
+            buy_ratio_pct = 50.0
+            delta = 0.0
+
+        # Criterios de Validación Institucionales:
+        # Veto 1: Spread excesivo (trampa de baja liquidez o slippage)
+        if spread_pct > 0.25:
+            return {
+                "confirmed": False,
+                "obi": round(obi, 3),
+                "buy_ratio_pct": round(buy_ratio_pct, 1),
+                "delta": round(delta, 2),
+                "spread_pct": round(spread_pct, 3),
+                "reason": f"Spread excesivo ({spread_pct:.2f}% > 0.25%)"
+            }
+
+        # Veto 2: Muro masivo de venta en el Ask asfixiando el libro (OBI muy negativo)
+        if obi < -0.25:
+            return {
+                "confirmed": False,
+                "obi": round(obi, 3),
+                "buy_ratio_pct": round(buy_ratio_pct, 1),
+                "delta": round(delta, 2),
+                "spread_pct": round(spread_pct, 3),
+                "reason": f"Muro de venta institucional en Asks (OBI {obi:+.2f} < -0.25)"
+            }
+
+        # Veto 3: Agresión vendedora activa en la cinta (Taker sellers dominan > 55%)
+        if buy_ratio_pct < 45.0:
+            return {
+                "confirmed": False,
+                "obi": round(obi, 3),
+                "buy_ratio_pct": round(buy_ratio_pct, 1),
+                "delta": round(delta, 2),
+                "spread_pct": round(spread_pct, 3),
+                "reason": f"Ventas agresivas en cinta (Solo {buy_ratio_pct:.1f}% compras)"
+            }
+
+        return {
+            "confirmed": True,
+            "obi": round(obi, 3),
+            "buy_ratio_pct": round(buy_ratio_pct, 1),
+            "delta": round(delta, 2),
+            "spread_pct": round(spread_pct, 3),
+            "reason": "Order Flow Confirmado (Compradores activos sin muros de bloqueo)"
+        }
+    except Exception as e:
+        # Fallback defensivo si el exchange tiene microcorte
+        return {
+            "confirmed": True,
+            "obi": 0.0,
+            "buy_ratio_pct": 50.0,
+            "delta": 0.0,
+            "spread_pct": 0.05,
+            "reason": f"Excepción en telemetría OF ({e})"
+        }
+
+
 # ====================== GESTOR DE EJECUCIÓN V2 PAPER ======================
 def execute_swing_paper_entry(bot: SwingBot, opp: Dict):
     """Abre una posición con confirmación de ruptura 15m + Interés Compuesto."""
@@ -1249,6 +1355,17 @@ def execute_swing_paper_entry(bot: SwingBot, opp: Dict):
     curr_p = opp["price"]
     trade_capital = bot.calculate_trade_capital()
     if trade_capital < 15.0 or curr_p <= 0 or bot.cash < trade_capital:
+        return
+
+    # --- FILTRO CENTINELA DE ORDER FLOW (Microestructura L2 & Tape) ---
+    flow = fetch_order_flow_confirmation(sym, exchange)
+    if not flow.get("confirmed", True):
+        bot.add_log(
+            f"🛡️ [VETO ORDER FLOW] Disparo cancelado en {sym}: {flow['reason']} "
+            f"(OBI: {flow['obi']:+.2f} | Compras: {flow['buy_ratio_pct']:.1f}% | Spread: {flow['spread_pct']:.2f}%)",
+            "info"
+        )
+        bot.cooldowns[sym] = time.time() + 180  # Cooldown 3m para re-evaluar
         return
 
     # Precision de tamaño adaptada al valor del activo
@@ -1287,18 +1404,21 @@ def execute_swing_paper_entry(bot: SwingBot, opp: Dict):
         atr_pct=atr_p,
         rr_ratio=rr,
         entry_time=time.time(),
-        entry_fee=entry_fee
+        entry_fee=entry_fee,
+        of_obi=flow.get("obi", 0.0),
+        of_buy_ratio=flow.get("buy_ratio_pct", 50.0)
     )
     bot.active_trades[sym] = trade
     tier = bot.get_tier_name()
     rs_info = f"RS vs BTC: {opp.get('rs_vs_btc', 0):+.1f}pp"
+    of_info = f"OF: OBI {flow['obi']:+.2f}, Compras {flow['buy_ratio_pct']:.1f}%"
     is_ign = opp.get("is_momentum_ignition", False)
     if is_ign:
-        bot.add_log(f"🚀 [IGNICIÓN MOMENTUM] OLA INSTITUCIONAL en {sym}: Vol {opp.get('vol_spike', 0):.1f}x | {rs_info} | ${trade_capital:.2f} USDT | Target 3.4R: ${target_p:.4f} (+{target_pct*100:.2f}%) | Stop: ${stop_p:.4f} (-{stop_pct*100:.2f}%) | R:R {rr}:1", "trade")
-        entry_note = f"🚀 Ignición Momentum #{order_id} (R:R {rr}:1 | Vol {opp.get('vol_spike', 0):.1f}x | RS {opp.get('rs_vs_btc', 0):+.1f}pp)"
+        bot.add_log(f"🚀 [IGNICIÓN MOMENTUM] OLA INSTITUCIONAL en {sym}: Vol {opp.get('vol_spike', 0):.1f}x | {rs_info} | {of_info} | ${trade_capital:.2f} USDT | Target 3.4R: ${target_p:.4f} (+{target_pct*100:.2f}%) | Stop: ${stop_p:.4f} (-{stop_pct*100:.2f}%) | R:R {rr}:1", "trade")
+        entry_note = f"🚀 Ignición Momentum #{order_id} (R:R {rr}:1 | Vol {opp.get('vol_spike', 0):.1f}x | {of_info})"
     else:
-        bot.add_log(f"🎯 DISPARO V2 #{order_id}: {sym} @ ${curr_p:.4f} | {rs_info} | Ruptura 15m + Vol {opp.get('vol_spike', 0):.1f}x | ${trade_capital:.2f} USDT | Target: ${target_p:.4f} (+{target_pct*100:.2f}%) | Stop: ${stop_p:.4f} (-{stop_pct*100:.2f}%) | R:R {rr}:1", "trade")
-        entry_note = f"V2 Entry #{order_id} (R:R {rr}:1 | ATR 15m {atr_p:.2f}% | RS {opp.get('rs_vs_btc', 0):+.1f}pp)"
+        bot.add_log(f"🎯 DISPARO V2 #{order_id}: {sym} @ ${curr_p:.4f} | {rs_info} | {of_info} | Ruptura 15m + Vol {opp.get('vol_spike', 0):.1f}x | ${trade_capital:.2f} USDT | Target: ${target_p:.4f} (+{target_pct*100:.2f}%) | Stop: ${stop_p:.4f} (-{stop_pct*100:.2f}%) | R:R {rr}:1", "trade")
+        entry_note = f"V2 Entry #{order_id} (R:R {rr}:1 | {of_info} | RS {opp.get('rs_vs_btc', 0):+.1f}pp)"
 
     bot.db.log_trade(
         symbol=sym, side="BUY", price=curr_p, amount=amount, capital=trade_capital,
