@@ -16,9 +16,7 @@ from hourly_swing_agent import (
 @pytest.fixture
 def test_bot(tmp_path, monkeypatch):
     db_file = os.path.join(tmp_path, "test_swing.db")
-    state_file = os.path.join(tmp_path, "test_state.json")
     monkeypatch.setattr("hourly_swing_agent.SWING_DB_FILE", db_file)
-    monkeypatch.setattr("hourly_swing_agent.SWING_STATE_FILE", state_file)
     
     bot = SwingBot(db_file)
     bot.cash = 70.00

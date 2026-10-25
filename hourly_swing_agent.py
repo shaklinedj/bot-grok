@@ -42,8 +42,6 @@ SWING_LOGS_DIR = os.path.join(BASE_DIR, "swing_logs", "paper")
 os.makedirs(SWING_LOGS_DIR, exist_ok=True)
 
 SWING_DB_FILE = os.path.join(SWING_LOGS_DIR, "swing_vault.db")
-SWING_STATE_FILE = os.path.join(SWING_LOGS_DIR, "swing_live_state.json")
-SWING_SETTINGS_FILE = os.path.join(SWING_LOGS_DIR, "swing_settings.json")
 SWING_HTTP_PORT = 8900
 
 # Parámetros Cuantitativos y Calibración en Caliente
@@ -642,11 +640,6 @@ class SwingBot:
     def save_settings(self):
         try:
             self.db.save_all_settings(self.settings)
-            # Respaldo secundario en JSON
-            tmp = SWING_SETTINGS_FILE + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(self.settings, f, indent=2)
-            os.replace(tmp, SWING_SETTINGS_FILE)
         except Exception as e:
             self.add_log(f"Error guardando settings en SQLite: {e}", "error")
 
@@ -724,11 +717,6 @@ class SwingBot:
     def load_state(self):
         try:
             d = self.db.load_bot_state()
-            if not d and os.path.exists(SWING_STATE_FILE):
-                with open(SWING_STATE_FILE, "r", encoding="utf-8") as f:
-                    d = json.load(f)
-                self.db.save_bot_state(d)  # Migración automática inicial a SQLite
-
             if d:
                 self.cash = float(d.get("cash", PAPER_INITIAL_CAPITAL))
                 self.active_trades.clear()
@@ -769,15 +757,10 @@ class SwingBot:
             "updated_at": time.time()
         }
         try:
-            # 1. Persistencia primaria en Base de Datos SQLite WAL
+            # Persistencia atómica única en Base de Datos SQLite WAL
             self.db.save_bot_state(d)
-
-            # 2. Respaldo secundario en JSON
-            tmp = SWING_STATE_FILE + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(d, f, indent=2)
-            os.replace(tmp, SWING_STATE_FILE)
         except Exception as e:
+            self.add_log(f"Error guardando estado en SQLite: {e}", "error")
             self.add_log(f"Error guardando estado en SQLite: {e}", "error")
 
 
