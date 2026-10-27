@@ -223,6 +223,37 @@ class SwingDatabase:
             rows = conn.execute("SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
             return [dict(r) for r in rows]
 
+    def get_full_history(self) -> Dict[str, Any]:
+        """Recupera el historial completo de operaciones y la curva de patrimonio acumulada."""
+        with self._get_connection() as conn:
+            rows = conn.execute("SELECT * FROM trades ORDER BY id DESC").fetchall()
+            all_trades = [dict(r) for r in rows]
+
+            asc_rows = conn.execute("SELECT * FROM trades ORDER BY id ASC").fetchall()
+            eq = 70.0
+            curve = [{"idx": 0, "time": "Inicio", "equity": 70.0, "pnl": 0.0, "symbol": "CASH", "side": "INIT", "note": "Capital Inicial"}]
+            for r in asc_rows:
+                pnl = float(r["pnl"] or 0.0)
+                if pnl != 0.0:
+                    eq += pnl
+                    ts = r["timestamp"]
+                    ts_short = ts[5:16].replace("T", " ") if ts else ""
+                    curve.append({
+                        "id": r["id"],
+                        "time": ts_short,
+                        "equity": round(eq, 2),
+                        "pnl": round(pnl, 4),
+                        "symbol": r["symbol"],
+                        "side": r["side"],
+                        "mode": r["mode"] or "PAPER_SWING",
+                        "note": r["note"] or ""
+                    })
+            return {
+                "trades": all_trades,
+                "equity_curve": curve,
+                "stats": self.get_stats()
+            }
+
     def get_last_closed_trade(self) -> Optional[Dict]:
         """Recupera el último trade cerrado (SELL) para mostrar el resultado en el dashboard."""
         with self._get_connection() as conn:
@@ -1806,8 +1837,12 @@ def manage_active_bounded_grid(bot: SwingBot):
                 )
                 bot.save_state()
 
-    # 3. COSECHA DE GANANCIAS (Take Profit / Reversión a la Resistencia del Canal):
-    if total_inv > 0 and (curr_p >= grid.channel_resistance or (curr_p >= avg_entry * 1.018 and curr_p >= grid.midpoint)):
+    # 3. COSECHA DE GANANCIAS (Take Profit / Reversión a la Media del Canal):
+    # Cosecha si el precio toca la resistencia, O si supera el punto medio del canal
+    # con ganancia neta superior a comisiones (>= +0.30%), liberando capital de inmediato:
+    is_above_midpoint_with_profit = (curr_p >= grid.midpoint and curr_p >= avg_entry * 1.0030)
+    is_resistance_hit = (curr_p >= grid.channel_resistance)
+    if total_inv > 0 and (is_resistance_hit or is_above_midpoint_with_profit):
         exit_fee = (curr_p * total_inv) * FEE_RATE
         gross_pnl = (curr_p - avg_entry) * total_inv
         net_pnl = gross_pnl - exit_fee
@@ -2040,6 +2075,179 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             border-color: #30363d;
             color: #8b949e;
         }
+
+        /* Botón de Historial en Header y Modales */
+        .btn-history {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 12px;
+            background: #1c2128;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            color: #58a6ff;
+            font-size: 11px;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-history:hover {
+            background: #30363d;
+            border-color: #58a6ff;
+            color: #ffffff;
+            box-shadow: 0 0 10px rgba(88, 166, 255, 0.25);
+        }
+        
+        /* Modal Glassmorphism */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(4, 7, 13, 0.85);
+            backdrop-filter: blur(6px);
+            -webkit-backdrop-filter: blur(6px);
+            z-index: 9999;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .modal-overlay.active {
+            display: flex;
+        }
+        .modal-box {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 12px;
+            width: 100%;
+            max-width: 1100px;
+            max-height: 88vh;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.7);
+            overflow: hidden;
+            animation: modalFadeIn 0.2s ease-out;
+        }
+        @keyframes modalFadeIn {
+            from { opacity: 0; transform: scale(0.97); }
+            to { opacity: 1; transform: scale(1); }
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 20px;
+            border-bottom: 1px solid #21262d;
+            background: #0d1117;
+        }
+        .modal-title {
+            font-size: 15px;
+            font-weight: 800;
+            color: #ffffff;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .modal-close {
+            background: transparent;
+            border: none;
+            color: #8b949e;
+            font-size: 20px;
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 4px;
+            transition: all 0.15s;
+        }
+        .modal-close:hover {
+            color: #f85149;
+            background: rgba(248, 81, 73, 0.1);
+        }
+        .modal-toolbar {
+            padding: 12px 20px;
+            background: #11161d;
+            border-bottom: 1px solid #21262d;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .filter-group {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        .filter-btn {
+            background: #1c2128;
+            border: 1px solid #30363d;
+            color: #8b949e;
+            padding: 5px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .filter-btn:hover {
+            color: #ffffff;
+            border-color: #58a6ff;
+        }
+        .filter-btn.active {
+            background: rgba(88, 166, 255, 0.18);
+            border-color: #58a6ff;
+            color: #58a6ff;
+            font-weight: 700;
+        }
+        .search-input {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            color: #ffffff;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            outline: none;
+            min-width: 220px;
+        }
+        .search-input:focus {
+            border-color: #58a6ff;
+            box-shadow: 0 0 5px rgba(88, 166, 255, 0.3);
+        }
+        .modal-body {
+            overflow-y: auto;
+            flex: 1;
+            padding: 0;
+        }
+        .modal-footer {
+            padding: 12px 20px;
+            background: #0d1117;
+            border-top: 1px solid #21262d;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            color: #8b949e;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        /* Canvas Tooltip */
+        #equityTooltip {
+            position: absolute;
+            display: none;
+            pointer-events: none;
+            background: #161b22;
+            border: 1px solid #58a6ff;
+            border-radius: 6px;
+            padding: 8px 12px;
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            color: #ffffff;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.8);
+            z-index: 1000;
+            white-space: nowrap;
+        }
     </style>
 </head>
 <body>
@@ -2051,6 +2259,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 <div class="title-sub">Dual Architecture: Malla Spot Pionex (Real) + Asymmetric Swing 1H/4H (Paper)</div>
             </div>
             <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                <button onclick="openHistoryModal()" class="btn-history">
+                    📜 Historial Operaciones (<span id="btn-total-trades">--</span>)
+                </button>
                 <a href="/quantum" style="text-decoration: none; padding: 5px 12px; background: #131b2e; border: 1px solid #38bdf8; border-radius: 6px; color: #38bdf8; font-size: 11px; font-weight: bold; font-family: monospace; transition: all 0.2s;" target="_blank">⚛️ Comparador Cuántico (Monte Carlo) ↗</a>
                 <span class="badge-live">● SISTEMA OPERATIVO</span>
                 <span style="font-size: 12px; color: var(--text-dim); font-family: monospace;">Refresco 3s</span>
@@ -2154,6 +2365,60 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 <div style="margin-top: 8px; font-size: 11px; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; display: flex; align-items: center; gap: 6px;">
                     <span style="color: #f0883e;">📡</span> <span id="radar-live-status">Iniciando radar...</span>
                 </div>
+            </div>
+        </div>
+
+        <!-- PANORAMA Y CURVA DE PATRIMONIO HISTÓRICA -->
+        <div class="card" style="margin-bottom: 24px; border-left: 4px solid #38bdf8;">
+            <div class="card-header" style="flex-wrap: wrap; gap: 10px;">
+                <div class="card-title" style="color: #38bdf8;">
+                    <span>📈 EVOLUCIÓN HISTÓRICA DEL PATRIMONIO (PANORAMA DESDE EL INICIO)</span>
+                </div>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <button onclick="openHistoryModal()" class="btn-history" style="padding: 4px 10px; font-size: 10px;">
+                        🔍 Ver Lista de Movimientos
+                    </button>
+                    <span style="font-size: 11px; color: var(--text-dim); font-family: monospace;" id="chart-point-count">-- Cierres</span>
+                </div>
+            </div>
+            
+            <div class="metric-box" style="grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); margin-bottom: 12px;">
+                <div class="metric" style="padding: 8px 12px;">
+                    <div class="metric-label" style="font-size: 10px;">Capital Inicial</div>
+                    <div class="metric-value" style="font-size: 14px;" id="pan-init">$70.00</div>
+                </div>
+                <div class="metric" style="padding: 8px 12px;">
+                    <div class="metric-label" style="font-size: 10px;">Patrimonio Actual</div>
+                    <div class="metric-value" style="font-size: 14px; color: #58a6ff;" id="pan-current">--</div>
+                </div>
+                <div class="metric" style="padding: 8px 12px;">
+                    <div class="metric-label" style="font-size: 10px;">PnL Acumulado</div>
+                    <div class="metric-value" style="font-size: 14px;" id="pan-pnl">--</div>
+                </div>
+                <div class="metric" style="padding: 8px 12px;">
+                    <div class="metric-label" style="font-size: 10px;">Max Drawdown</div>
+                    <div class="metric-value" style="font-size: 14px; color: #f85149;" id="pan-dd">--</div>
+                </div>
+                <div class="metric" style="padding: 8px 12px;">
+                    <div class="metric-label" style="font-size: 10px;">Efectividad (Winrate)</div>
+                    <div class="metric-value" style="font-size: 14px; color: #3fb950;" id="pan-winrate">--%</div>
+                </div>
+            </div>
+
+            <!-- Canvas Container with Tooltip -->
+            <div style="position: relative; width: 100%; height: 160px;">
+                <canvas id="equityCanvas" style="width: 100%; height: 160px; display: block; border-radius: 6px; background: #0c1017; border: 1px solid #21262d;"></canvas>
+                <div id="equityTooltip"></div>
+            </div>
+
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-size: 10px; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; flex-wrap: wrap; gap: 8px;">
+                <div style="display: flex; gap: 14px;">
+                    <span><span style="color: #38bdf8;">━</span> Curva de Patrimonio</span>
+                    <span><span style="color: #8b949e; border-bottom: 1px dashed #8b949e;">┅</span> Base Inicial ($70.00)</span>
+                    <span><span style="color: #3fb950;">●</span> Trade Ganador</span>
+                    <span><span style="color: #f85149;">●</span> Trade Perdedor</span>
+                </div>
+                <div>💡 Pasa el cursor sobre los puntos para ver el detalle de cada trade.</div>
             </div>
         </div>
 
@@ -2277,6 +2542,62 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             </div>
             <div class="terminal" id="terminal-feed">
                 <div class="log-row"><span class="log-time">[--:--:--]</span> <span class="log-info">Iniciando terminal Swing Sniper...</span></div>
+            </div>
+        </div>
+
+        <!-- MODAL HISTORIAL DE OPERACIONES (COMPACTO / VENTANA EMERGENTE) -->
+        <div id="history-modal" class="modal-overlay" onclick="handleModalOverlayClick(event)">
+            <div class="modal-box" onclick="event.stopPropagation()">
+                <div class="modal-header">
+                    <div class="modal-title">
+                        <span>📜 HISTORIAL COMPLETO DE OPERACIONES REGISTRADAS</span>
+                        <span class="tag tag-blue" id="modal-trade-count">0 Operaciones</span>
+                    </div>
+                    <button class="modal-close" onclick="closeHistoryModal()" title="Cerrar ventana">✕</button>
+                </div>
+                
+                <div class="modal-toolbar">
+                    <div class="filter-group">
+                        <button class="filter-btn active" onclick="setHistoryFilter('all', this)">Todos</button>
+                        <button class="filter-btn" onclick="setHistoryFilter('closed', this)">Solo Cierres (PnL)</button>
+                        <button class="filter-btn" onclick="setHistoryFilter('win', this)">Ganadores 🟢</button>
+                        <button class="filter-btn" onclick="setHistoryFilter('loss', this)">Perdedores 🔴</button>
+                        <button class="filter-btn" onclick="setHistoryFilter('swing', this)">Swings</button>
+                        <button class="filter-btn" onclick="setHistoryFilter('grid', this)">Mallas</button>
+                    </div>
+                    <input type="text" id="history-search" class="search-input" placeholder="🔍 Filtrar por par, modo o motivo..." oninput="filterHistoryTable()">
+                </div>
+
+                <div class="modal-body">
+                    <table style="margin: 0;">
+                        <thead style="position: sticky; top: 0; background: #161b22; z-index: 2;">
+                            <tr>
+                                <th style="width: 45px;">#ID</th>
+                                <th>Fecha/Hora</th>
+                                <th>Par</th>
+                                <th>Modo</th>
+                                <th>Lado</th>
+                                <th>Precio</th>
+                                <th>Capital</th>
+                                <th>PnL Neto</th>
+                                <th>Nota / Motivo</th>
+                            </tr>
+                        </thead>
+                        <tbody id="history-tbody">
+                            <tr><td colspan="9" style="text-align: center; color: var(--text-dim); padding: 24px;">Cargando historial de SQLite...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="modal-footer">
+                    <div>
+                        Filtrados: <b id="modal-filtered-count" style="color: #ffffff;">--</b> de <span id="modal-total-count">--</span> registros
+                    </div>
+                    <div>
+                        PnL Cierres: <b id="modal-sum-pnl" style="color: #ffffff;">$0.00</b> | Winrate: <b id="modal-sum-wr" style="color: #3fb950;">--%</b>
+                    </div>
+                    <button onclick="closeHistoryModal()" class="filter-btn" style="background: #21262d; color: #ffffff;">Cerrar [ESC]</button>
+                </div>
             </div>
         </div>
     </div>
@@ -2665,7 +2986,422 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             } catch (e) {
                 console.error("Dashboard poll error:", e);
             }
+
+            // Refresco periódico del historial (cada 9 segundos)
+            historyPollCycle++;
+            if (!fullHistory || historyPollCycle % 3 === 0) {
+                loadHistoryData();
+            }
         }
+
+        // ==========================================
+        // GESTIÓN DE HISTORIAL Y CURVA DE PATRIMONIO
+        // ==========================================
+        let fullHistory = null;
+        let activeHistoryFilter = 'all';
+        let chartDataPoints = [];
+        let historyPollCycle = 0;
+
+        async function loadHistoryData() {
+            try {
+                const res = await fetch('/api/history');
+                if (!res.ok) return;
+                fullHistory = await res.json();
+                
+                // Actualizar contador en botón de Header
+                const totalBtnCount = document.getElementById('btn-total-trades');
+                if (totalBtnCount && fullHistory.trades) {
+                    totalBtnCount.innerText = fullHistory.trades.length;
+                }
+
+                // Renderizar Curva de Patrimonio Panorama
+                if (fullHistory.equity_curve && fullHistory.equity_curve.length > 0) {
+                    renderEquityChart(fullHistory.equity_curve);
+                    updatePanoramaStats(fullHistory);
+                }
+
+                // Si el modal está abierto, sincronizar su tabla
+                const modal = document.getElementById('history-modal');
+                if (modal && modal.classList.contains('active')) {
+                    renderHistoryTable();
+                }
+            } catch (err) {
+                console.error("Error al cargar historial:", err);
+            }
+        }
+
+        function updatePanoramaStats(data) {
+            const curve = data.equity_curve || [];
+            if (curve.length === 0) return;
+            const initEq = 70.0;
+            const lastPt = curve[curve.length - 1];
+            const currEq = lastPt.equity;
+            const netPnl = currEq - initEq;
+            const pnlPct = (netPnl / initEq) * 100.0;
+
+            // Calcular Max Drawdown histórico
+            let peak = initEq;
+            let maxDd = 0.0;
+            curve.forEach(pt => {
+                if (pt.equity > peak) peak = pt.equity;
+                const dd = (pt.equity - peak) / peak * 100.0;
+                if (dd < maxDd) maxDd = dd;
+            });
+
+            // Winrate y estadísticas de trades cerrados
+            let wins = 0;
+            let closedCount = 0;
+            curve.slice(1).forEach(pt => {
+                closedCount++;
+                if (pt.pnl > 0) wins++;
+            });
+            const wr = closedCount > 0 ? (wins / closedCount * 100.0).toFixed(1) : '0.0';
+
+            const initEl = document.getElementById('pan-init');
+            if (initEl) initEl.innerText = '$' + initEq.toFixed(2);
+
+            const curEl = document.getElementById('pan-current');
+            if (curEl) {
+                curEl.innerText = '$' + currEq.toFixed(2);
+                curEl.style.color = currEq >= initEq ? '#3fb950' : '#58a6ff';
+            }
+
+            const pnlEl = document.getElementById('pan-pnl');
+            if (pnlEl) {
+                const sign = netPnl >= 0 ? '+' : '';
+                pnlEl.innerText = `${sign}$${netPnl.toFixed(2)} (${sign}${pnlPct.toFixed(1)}%)`;
+                pnlEl.style.color = netPnl >= 0 ? '#3fb950' : '#f85149';
+            }
+
+            const ddEl = document.getElementById('pan-dd');
+            if (ddEl) ddEl.innerText = maxDd.toFixed(1) + '%';
+
+            const wrEl = document.getElementById('pan-winrate');
+            if (wrEl) wrEl.innerText = `${wr}% (${wins}W / ${closedCount - wins}L)`;
+
+            const countEl = document.getElementById('chart-point-count');
+            if (countEl) countEl.innerText = `${closedCount} Cierres Registrados`;
+        }
+
+        function renderEquityChart(curve) {
+            const canvas = document.getElementById('equityCanvas');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            const rect = canvas.getBoundingClientRect();
+            if (rect.width === 0) return;
+
+            const dpr = window.devicePixelRatio || 1;
+            canvas.width = rect.width * dpr;
+            canvas.height = rect.height * dpr;
+            ctx.scale(dpr, dpr);
+
+            const w = rect.width;
+            const h = rect.height;
+            const padLeft = 55;
+            const padRight = 20;
+            const padTop = 20;
+            const padBottom = 25;
+            const plotW = w - padLeft - padRight;
+            const plotH = h - padTop - padBottom;
+
+            ctx.clearRect(0, 0, w, h);
+            if (curve.length === 0) return;
+
+            let equities = curve.map(p => p.equity);
+            let minE = Math.min(...equities, 60.0);
+            let maxE = Math.max(...equities, 76.0);
+            const margin = (maxE - minE) * 0.12 || 2.0;
+            minE -= margin;
+            maxE += margin;
+
+            function getX(i) {
+                if (curve.length === 1) return padLeft + plotW / 2;
+                return padLeft + (i / (curve.length - 1)) * plotW;
+            }
+            function getY(eq) {
+                return padTop + (1 - (eq - minE) / (maxE - minE)) * plotH;
+            }
+
+            chartDataPoints = curve.map((pt, i) => ({
+                x: getX(i),
+                y: getY(pt.equity),
+                data: pt
+            }));
+
+            // Cuadrícula y etiquetas del Eje Y
+            const steps = 4;
+            ctx.font = '10px "JetBrains Mono", monospace';
+            ctx.fillStyle = '#6e7681';
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'middle';
+            for (let s = 0; s <= steps; s++) {
+                const val = minE + (s / steps) * (maxE - minE);
+                const y = getY(val);
+                ctx.strokeStyle = '#21262d';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(padLeft, y);
+                ctx.lineTo(w - padRight, y);
+                ctx.stroke();
+                ctx.fillText('$' + val.toFixed(1), padLeft - 6, y);
+            }
+
+            // Línea Base $70.00
+            const y70 = getY(70.0);
+            if (y70 >= padTop && y70 <= padTop + plotH) {
+                ctx.strokeStyle = 'rgba(201, 209, 217, 0.45)';
+                ctx.setLineDash([4, 4]);
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(padLeft, y70);
+                ctx.lineTo(w - padRight, y70);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.fillStyle = 'rgba(201, 209, 217, 0.7)';
+                ctx.textAlign = 'left';
+                ctx.fillText('Base $70.00', w - padRight - 65, y70 - 7);
+            }
+
+            // Degradado bajo la curva
+            const grad = ctx.createLinearGradient(0, padTop, 0, padTop + plotH);
+            grad.addColorStop(0, 'rgba(56, 189, 248, 0.35)');
+            grad.addColorStop(1, 'rgba(56, 189, 248, 0.01)');
+
+            ctx.beginPath();
+            ctx.moveTo(chartDataPoints[0].x, padTop + plotH);
+            chartDataPoints.forEach(pt => ctx.lineTo(pt.x, pt.y));
+            ctx.lineTo(chartDataPoints[chartDataPoints.length - 1].x, padTop + plotH);
+            ctx.closePath();
+            ctx.fillStyle = grad;
+            ctx.fill();
+
+            // Línea continua de Patrimonio
+            ctx.strokeStyle = '#38bdf8';
+            ctx.lineWidth = 2.2;
+            ctx.lineJoin = 'round';
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            chartDataPoints.forEach((pt, i) => {
+                if (i === 0) ctx.moveTo(pt.x, pt.y);
+                else ctx.lineTo(pt.x, pt.y);
+            });
+            ctx.stroke();
+
+            // Puntos de Cierre (Verde Ganador / Rojo Perdedor)
+            chartDataPoints.forEach((pt, i) => {
+                ctx.beginPath();
+                if (i === 0) {
+                    ctx.arc(pt.x, pt.y, 3, 0, Math.PI * 2);
+                    ctx.fillStyle = '#8b949e';
+                    ctx.fill();
+                } else {
+                    const isWin = pt.data.pnl > 0;
+                    ctx.arc(pt.x, pt.y, 4, 0, Math.PI * 2);
+                    ctx.fillStyle = isWin ? '#3fb950' : '#f85149';
+                    ctx.fill();
+                    ctx.strokeStyle = '#0d1117';
+                    ctx.lineWidth = 1.5;
+                    ctx.stroke();
+                }
+            });
+        }
+
+        // Configuración de Hover Tooltip en Canvas
+        function initEquityCanvasEvents() {
+            const canvas = document.getElementById('equityCanvas');
+            const tooltip = document.getElementById('equityTooltip');
+            if (!canvas || !tooltip) return;
+
+            canvas.addEventListener('mousemove', (e) => {
+                if (!chartDataPoints || chartDataPoints.length === 0) return;
+                const rect = canvas.getBoundingClientRect();
+                const mouseX = e.clientX - rect.left;
+                const mouseY = e.clientY - rect.top;
+
+                let nearest = null;
+                let minDist = 25;
+                chartDataPoints.forEach(pt => {
+                    const dist = Math.hypot(pt.x - mouseX, pt.y - mouseY);
+                    if (dist < minDist) {
+                        minDist = dist;
+                        nearest = pt;
+                    }
+                });
+
+                if (nearest) {
+                    const d = nearest.data;
+                    const sign = d.pnl >= 0 ? '+' : '';
+                    const col = d.pnl > 0 ? '#3fb950' : (d.pnl < 0 ? '#f85149' : '#8b949e');
+                    const tradeIdStr = d.id ? `#${d.id} ` : '';
+                    tooltip.innerHTML = `
+                        <div style="font-weight:bold; color:#58a6ff; margin-bottom:2px;">
+                            ${tradeIdStr}${d.symbol} <span style="font-size:10px; color:var(--text-dim);">(${d.time})</span>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; gap:12px;">
+                            <span>Patrimonio: <b style="color:#ffffff;">$${Number(d.equity).toFixed(2)}</b></span>
+                            <span>PnL: <b style="color:${col};">${sign}$${Number(d.pnl).toFixed(4)}</b></span>
+                        </div>
+                        ${d.note ? `<div style="color:var(--text-dim); font-size:10px; margin-top:2px; max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:normal;">${d.note}</div>` : ''}
+                    `;
+                    tooltip.style.display = 'block';
+
+                    let left = nearest.x + 12;
+                    if (left + 240 > rect.width) left = nearest.x - 250;
+                    let top = nearest.y - 20;
+                    if (top < 0) top = 10;
+                    tooltip.style.left = left + 'px';
+                    tooltip.style.top = top + 'px';
+                } else {
+                    tooltip.style.display = 'none';
+                }
+            });
+
+            canvas.addEventListener('mouseleave', () => {
+                tooltip.style.display = 'none';
+            });
+        }
+
+        window.addEventListener('resize', () => {
+            if (fullHistory && fullHistory.equity_curve) {
+                renderEquityChart(fullHistory.equity_curve);
+            }
+        });
+
+        // CONTROL DEL MODAL
+        function openHistoryModal() {
+            const modal = document.getElementById('history-modal');
+            if (modal) {
+                modal.classList.add('active');
+                document.body.style.overflow = 'hidden';
+                loadHistoryData();
+                renderHistoryTable();
+            }
+        }
+
+        function closeHistoryModal() {
+            const modal = document.getElementById('history-modal');
+            if (modal) {
+                modal.classList.remove('active');
+                document.body.style.overflow = '';
+            }
+        }
+
+        function handleModalOverlayClick(e) {
+            if (e.target && e.target.id === 'history-modal') {
+                closeHistoryModal();
+            }
+        }
+
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeHistoryModal();
+        });
+
+        function setHistoryFilter(filter, btn) {
+            activeHistoryFilter = filter;
+            const buttons = document.querySelectorAll('.modal-toolbar .filter-btn');
+            buttons.forEach(b => b.classList.remove('active'));
+            if (btn) btn.classList.add('active');
+            renderHistoryTable();
+        }
+
+        function filterHistoryTable() {
+            renderHistoryTable();
+        }
+
+        function renderHistoryTable() {
+            if (!fullHistory || !fullHistory.trades) return;
+            const tbody = document.getElementById('history-tbody');
+            if (!tbody) return;
+
+            const query = (document.getElementById('history-search')?.value || '').toLowerCase().trim();
+            const trades = fullHistory.trades;
+
+            let filtered = trades.filter(t => {
+                const pnl = Number(t.pnl || 0);
+                const side = (t.side || '').toUpperCase();
+                const mode = (t.mode || '').toUpperCase();
+                const note = (t.note || '').toLowerCase();
+                const symbol = (t.symbol || '').toLowerCase();
+
+                if (activeHistoryFilter === 'closed' && side !== 'SELL' && pnl === 0) return false;
+                if (activeHistoryFilter === 'win' && pnl <= 0) return false;
+                if (activeHistoryFilter === 'loss' && pnl >= 0) return false;
+                if (activeHistoryFilter === 'swing' && mode !== 'PAPER_SWING' && !note.includes('swing')) return false;
+                if (activeHistoryFilter === 'grid' && mode !== 'BOUNDED_GRID' && !note.includes('malla') && !note.includes('grid')) return false;
+
+                if (query) {
+                    const matchText = `${t.id} ${symbol} ${side} ${mode} ${note}`.toLowerCase();
+                    if (!matchText.includes(query)) return false;
+                }
+                return true;
+            });
+
+            const countBadge = document.getElementById('modal-trade-count');
+            if (countBadge) countBadge.innerText = `${trades.length} Operaciones`;
+            const totEl = document.getElementById('modal-total-count');
+            if (totEl) totEl.innerText = trades.length;
+            const filtEl = document.getElementById('modal-filtered-count');
+            if (filtEl) filtEl.innerText = filtered.length;
+
+            let sumPnl = 0.0;
+            let wins = 0;
+            let closes = 0;
+            filtered.forEach(t => {
+                const pnl = Number(t.pnl || 0);
+                if (t.side === 'SELL' || pnl !== 0) {
+                    sumPnl += pnl;
+                    closes++;
+                    if (pnl > 0) wins++;
+                }
+            });
+            const wr = closes > 0 ? (wins / closes * 100.0).toFixed(1) : '0.0';
+            const sumPnlEl = document.getElementById('modal-sum-pnl');
+            if (sumPnlEl) {
+                const sign = sumPnl >= 0 ? '+' : '';
+                sumPnlEl.innerText = `${sign}$${sumPnl.toFixed(4)} USDT`;
+                sumPnlEl.style.color = sumPnl >= 0 ? '#3fb950' : '#f85149';
+            }
+            const wrEl = document.getElementById('modal-sum-wr');
+            if (wrEl) wrEl.innerText = `${wr}% (${wins}W / ${closes - wins}L)`;
+
+            if (filtered.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; color:var(--text-dim); padding:24px;">No se encontraron operaciones con los filtros aplicados.</td></tr>`;
+                return;
+            }
+
+            let html = '';
+            filtered.forEach(t => {
+                const pnl = Number(t.pnl || 0);
+                const hasPnl = t.side === 'SELL' || pnl !== 0;
+                const pnlCol = pnl > 0 ? '#3fb950' : (pnl < 0 ? '#f85149' : '#8b949e');
+                const pnlSign = pnl >= 0 ? '+' : '';
+                const pnlStr = hasPnl ? `<b style="color:${pnlCol};">${pnlSign}$${pnl.toFixed(4)}</b>` : `<span style="color:var(--text-dim);">-</span>`;
+                
+                const sideBadge = t.side === 'BUY' ? '<span class="tag tag-green">BUY</span>' : '<span class="tag tag-yellow">SELL</span>';
+                const modeBadge = (t.mode === 'BOUNDED_GRID' || (t.note || '').includes('Malla'))
+                    ? '<span class="tag tag-purple">MALLA</span>'
+                    : '<span class="tag tag-blue">SWING</span>';
+
+                const ts = t.timestamp ? t.timestamp.replace('T', ' ').substring(0, 16) : '--';
+
+                html += `<tr>
+                    <td style="color:var(--text-dim); font-size:11px;">#${t.id}</td>
+                    <td style="font-size:11px; color:#c9d1d9;">${ts}</td>
+                    <td><b style="color:#ffffff;">${t.symbol}</b></td>
+                    <td>${modeBadge}</td>
+                    <td>${sideBadge}</td>
+                    <td>$${Number(t.price).toFixed(4)}</td>
+                    <td style="color:var(--text-dim);">$${Number(t.capital || 0).toFixed(2)}</td>
+                    <td>${pnlStr}</td>
+                    <td style="font-size:11px; color:#8b949e; max-width:320px; word-break:break-word;">${t.note || '--'}</td>
+                </tr>`;
+            });
+            tbody.innerHTML = html;
+        }
+
+        // Inicializar eventos de tooltip y carga inicial
+        initEquityCanvasEvents();
+        loadHistoryData();
         setInterval(updateDashboard, 3000);
         updateDashboard();
     </script>
@@ -2705,6 +3441,13 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             autopsies = self.bot.db.get_recent_autopsies(20)
             self.wfile.write(json.dumps(autopsies).encode("utf-8"))
+        elif self.path == "/api/history":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            history_data = self.bot.db.get_full_history()
+            self.wfile.write(json.dumps(history_data).encode("utf-8"))
         elif self.path == "/api/status":
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")

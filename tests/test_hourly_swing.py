@@ -561,3 +561,52 @@ def test_order_flow_centinela_veto_blocks_trade(test_bot):
     assert flow["confirmed"] is False
     assert flow["buy_ratio_pct"] < 45.0
     assert "Ventas agresivas" in flow["reason"] or "Muro de venta" in flow["reason"]
+
+
+def test_database_get_full_history(test_bot):
+    """Verifica que get_full_history calcule correctamente la curva de patrimonio acumulada."""
+    db = test_bot.db
+    # Registrar trade BUY inicial
+    db.log_trade("BTC/USDT", "BUY", 80000.0, 0.0005, 40.0, 0.0, "Entrada test", "PAPER_SWING")
+    # Registrar trade SELL con PnL +2.50
+    db.log_trade("BTC/USDT", "SELL", 85000.0, 0.0005, 42.5, 2.50, "Salida con target", "PAPER_SWING")
+    # Registrar trade SELL con PnL -1.20
+    db.log_trade("ETH/USDT", "SELL", 2500.0, 0.01, 25.0, -1.20, "Stop loss", "PAPER_SWING")
+
+    history = db.get_full_history()
+    assert len(history["trades"]) == 3
+    # Curva debe tener punto 0 (Init $70.0) + 2 cierres con PnL != 0
+    assert len(history["equity_curve"]) == 3
+    assert history["equity_curve"][0]["equity"] == 70.0
+    assert history["equity_curve"][1]["equity"] == 72.5
+    assert history["equity_curve"][2]["equity"] == 71.3
+
+
+def test_bounded_grid_midpoint_profit_harvest(test_bot, monkeypatch):
+    """Verifica que la malla acotada se coseche al cruzar el midpoint con ganancia neta >= +0.30%."""
+    grid = BoundedMicroGrid(
+        grid_id="GRID_TEST",
+        symbol="BTC/USDT",
+        channel_support=80000.0,
+        channel_resistance=81000.0,
+        midpoint=80500.0,
+        hurst_exponent=0.38,
+        kill_switch_price=79500.0,
+        total_capital=45.0
+    )
+    grid.levels = [
+        GridLevel(level_idx=0, price=80100.0, capital=15.0, amount=15.0/80100.0, status="FILLED"),
+        GridLevel(level_idx=1, price=80200.0, capital=15.0, amount=15.0/80200.0, status="FILLED"),
+        GridLevel(level_idx=2, price=80300.0, capital=15.0, amount=15.0/80300.0, status="FILLED"),
+    ]
+    test_bot.active_grid = grid
+    test_bot.cash = 10.0
+
+    # Precio actual a $80,550 (> midpoint $80,500 y ganancia +0.43% > +0.30%)
+    monkeypatch.setattr("hourly_swing_agent.exchange.fetch_ticker", lambda s: {"last": 80550.0})
+    manage_active_bounded_grid(test_bot)
+
+    # Debe haberse cosechado
+    assert test_bot.active_grid is None
+    # Capital liberado a cash (> 10.0 + 45.0)
+    assert test_bot.cash > 55.0
