@@ -1738,17 +1738,22 @@ def scan_bounded_grid_candidates(bot: SwingBot) -> Optional[BoundedMicroGrid]:
     lvl2 = GridLevel(1, p2, get_amt(p2), level_cap)
     lvl3 = GridLevel(2, p3, get_amt(p3), level_cap)
 
-    if curr_p <= p1:
-        lvl1.status = "FILLED"
-        lvl1.fill_price = curr_p
-        lvl1.fill_time = time.time()
-        bot.cash -= level_cap
-        bot.db.log_trade(
-            symbol=sym, side="BUY", price=curr_p, amount=lvl1.amount, capital=level_cap,
-            pnl=0.0, fee=level_cap * FEE_RATE, order_id=f"{grid_id}_L1",
-            target_price=res, stop_price=kill_switch_p,
-            note=f"📥 MALLA FILL N1/3 {sym} (Canal {chan['width_pct']}% | H: {h})", mode="BOUNDED_GRID"
-        )
+    # EXIGENCIA DE EJECUCIÓN INMEDIATA:
+    # Solo se activa la malla si el precio actual está en el suelo de compra (<= p1),
+    # garantizando que el Nivel 1 se llene en el segundo 0 y no queden órdenes fantasma inalcanzables:
+    if curr_p > p1:
+        return None
+
+    lvl1.status = "FILLED"
+    lvl1.fill_price = curr_p
+    lvl1.fill_time = time.time()
+    bot.cash -= level_cap
+    bot.db.log_trade(
+        symbol=sym, side="BUY", price=curr_p, amount=lvl1.amount, capital=level_cap,
+        pnl=0.0, fee=level_cap * FEE_RATE, order_id=f"{grid_id}_L1",
+        target_price=res, stop_price=kill_switch_p,
+        note=f"📥 MALLA FILL N1/3 {sym} (Canal {chan['width_pct']}% | H: {h})", mode="BOUNDED_GRID"
+    )
 
     grid.levels = [lvl1, lvl2, lvl3]
     bot.active_grid = grid
@@ -1791,6 +1796,15 @@ def manage_active_bounded_grid(bot: SwingBot):
     else:
         grid.unrealized_pnl = 0.0
         unrealized_pct = 0.0
+
+    # 0. AUTO-CANCELACIÓN DE MALLAS FANTASMA (Sin inventario real ejecutado):
+    if total_inv == 0:
+        if curr_p >= grid.midpoint or (time.time() - grid.created_at > 600):
+            bot.add_log(f"⚪ MALLA FANTASMA CANCELADA: {sym} cotiza a ${curr_p:.4f} sin retroceso a niveles de compra. Bot liberado al 100%.", "info")
+            bot.active_grid = None
+            bot.active_mode = "SWING_SNIPER"
+            bot.save_state()
+            return
 
     # 1. KILL-SWITCH ESTRICTO (Garantía Anti-Atrapamiento):
     if curr_p <= grid.kill_switch_price:
