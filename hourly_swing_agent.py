@@ -57,7 +57,7 @@ DEFAULT_SETTINGS = {
     "be_stop_pct": 0.0020,               # +0.20% asegura comisiones en BE
     "stop_atr_mult": 1.2,                # Stop Loss: Multiplicador ATR base
     "target_atr_mult": 3.0,              # Target: 3.0x ATR 15m (R:R ~ 2.5:1)
-    "trail_distance_atr": 0.8,           # Trailing persigue el máximo menos distancia ATR
+    "trail_distance_atr": 1.5,           # Trailing persigue el máximo a 1.5x ATR (Oxígeno para buscar +3.0x ATR)
     "min_score": 70.0,                   # Score mínimo base
     "vol_spike_min": 1.2,                # Pico de volumen mínimo (1.2x media)
     "post_stop_cooldown_s": 180,         # Cooldown base tras stop
@@ -1570,16 +1570,17 @@ def manage_active_swing_trade(bot: SwingBot):
                 bot.add_log(f"🛡️ BREAK-EVEN [{mode_lbl}] en {sym}: +{gain_pct*100:.2f}% (Umbral {be_threshold*100:.2f}%). Stop -> ${new_stop:.4f} (+{be_stop*100:.2f}%). Riesgo CERO.", "trade")
                 bot.save_state()
 
-        # 2. Trailing: Desde +1.5x ATR 15m, persigue el máximo menos distancia ATR configurada
-        trail_dist_mult = getattr(bot, "settings", {}).get("trail_distance_atr", 1.6)
-        trailing_trigger = (tr.atr_pct / 100.0) * 1.5
+        # 2. Trailing: Se activa al alcanzar >= +1.8% o 1.8x ATR (evita asfixiar al trade en el arranque),
+        # y mantiene una holgura amplia (1.5x ATR) para dejar correr la posición hacia el Target (+3.0x a +4.0x):
+        trail_dist_mult = getattr(bot, "settings", {}).get("trail_distance_atr", 1.5)
+        trailing_trigger = max(0.018, (tr.atr_pct / 100.0) * 1.8)
         if gain_pct >= trailing_trigger:
             trail_stop = round(tr.highest_price - (trail_dist_mult * atr_val_abs), 6)
             if trail_stop > tr.stop_price:
                 old_stop = tr.stop_price
                 tr.stop_price = trail_stop
                 tr.is_trailing_active = True
-                bot.add_log(f"📈 TRAILING en {sym}: Max ${tr.highest_price:.4f}. Stop ${old_stop:.4f} -> ${trail_stop:.4f} ({trail_dist_mult}x ATR)", "trade")
+                bot.add_log(f"📈 TRAILING [Oxígeno {trail_dist_mult}x ATR] en {sym}: Max ${tr.highest_price:.4f}. Stop ${old_stop:.4f} -> ${trail_stop:.4f}", "trade")
                 bot.save_state()
 
         # 3. Cierre por Target:
@@ -2485,10 +2486,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 <div class="fader-group">
                     <div class="fader-header">
                         <span class="fader-label">📈 Distancia Trailing (ATR 15m):</span>
-                        <span class="fader-val" id="val-trail-atr">0.8x ATR</span>
+                        <span class="fader-val" id="val-trail-atr">1.5x ATR</span>
                     </div>
-                    <input type="range" id="slider-trail-atr" min="0.4" max="2.0" step="0.1" value="0.8" oninput="updateFaderUI('trail_distance_atr', this.value)" onchange="sendSettingsUpdate()">
-                    <div class="fader-sub">Margen detrás del máximo para perseguir beneficios en subida.</div>
+                    <input type="range" id="slider-trail-atr" min="0.5" max="2.5" step="0.1" value="1.5" oninput="updateFaderUI('trail_distance_atr', this.value)" onchange="sendSettingsUpdate()">
+                    <div class="fader-sub">Holgura detrás del máximo para dejar correr ganancias hacia +3.0x ATR.</div>
                 </div>
 
                 <!-- Fader 5: Score Mínimo -->
@@ -2679,7 +2680,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 payload.be_trigger_pct = 0.016;
                 payload.stop_atr_mult = 1.2;
                 payload.target_atr_mult = 3.0;
-                payload.trail_distance_atr = 0.8;
+                payload.trail_distance_atr = 1.5;
                 payload.min_score = 70.0;
                 payload.post_stop_cooldown_s = 180;
             }

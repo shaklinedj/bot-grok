@@ -136,25 +136,25 @@ def test_swing_trade_trailing_profit(test_bot, monkeypatch):
     )
     test_bot.active_trade = trade
 
-    # 1. El precio sube a $104.00 (+4.0% > trailing trigger 3.0%)
+    # 1. El precio sube a $104.00 (+4.0% > trailing trigger 3.6%)
     monkeypatch.setattr("hourly_swing_agent.exchange.fetch_ticker", lambda s: {"last": 104.00})
     manage_active_swing_trade(test_bot)
 
-    # Trailing Stop V2: Highest ($104.00) - 0.8x ATR ($1.60) = $102.40 (+2.4% asegurado)
+    # Trailing Stop V2 con Oxígeno: Highest ($104.00) - 1.5x ATR ($3.00) = $101.00 (+1.0% asegurado)
     assert trade.is_trailing_active is True
-    assert trade.stop_price == pytest.approx(102.40)
+    assert trade.stop_price == pytest.approx(101.00)
     assert trade.highest_price == pytest.approx(104.00)
 
     # 2. El precio sube aún más a $106.00
     monkeypatch.setattr("hourly_swing_agent.exchange.fetch_ticker", lambda s: {"last": 106.00})
     manage_active_swing_trade(test_bot)
 
-    # Stop debe subir a Highest ($106.00) - 0.8x ATR ($1.60) = $104.40
-    assert trade.stop_price == pytest.approx(104.40)
+    # Stop debe subir a Highest ($106.00) - 1.5x ATR ($3.00) = $103.00
+    assert trade.stop_price == pytest.approx(103.00)
     assert trade.highest_price == pytest.approx(106.00)
 
-    # 3. El precio retrocede a $104.00 (choca contra el trailing stop de $104.40)
-    monkeypatch.setattr("hourly_swing_agent.exchange.fetch_ticker", lambda s: {"last": 104.00})
+    # 3. El precio retrocede a $102.50 (choca contra el trailing stop de $103.00)
+    monkeypatch.setattr("hourly_swing_agent.exchange.fetch_ticker", lambda s: {"last": 102.50})
     manage_active_swing_trade(test_bot)
 
     # El trade debe cerrarse con ganancia asegurada por el trailing stop
@@ -162,7 +162,7 @@ def test_swing_trade_trailing_profit(test_bot, monkeypatch):
     stats = test_bot.db.get_stats()
     assert stats["total"] == 1
     assert stats["wins"] == 1
-    assert stats["pnl"] > 1.0  # Ganancia positiva asegurada por Trailing Stop
+    assert stats["pnl"] > 0.5  # Ganancia positiva asegurada por Trailing Stop
 
 
 def test_swing_compound_and_multi_trade_tiering(test_bot):
