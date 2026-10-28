@@ -9,8 +9,8 @@ Este proyecto es un **sistema de trading cuantitativo determinista y matemático
 
 A diferencia de bots basados en grillas ingenuas que acumulan pérdidas en caídas o agentes lentos dependientes de llamadas LLM por tick, este motor ejecuta **lógica pura de microestructura, order flow y conmutación dinámica de régimen** en milisegundos.
 
-### 🚫 Cero Dependencia de Pandas (Ligero, Rápido y Robusto)
-El núcleo operativo del bot prescinde por completo de librerías pesadas o lentas como `pandas`. Todos los cálculos de series temporales, matrices de regresión, exponente de Hurst y canales se resuelven mediante **NumPy vectorizado y la biblioteca estándar de Python**, garantizando tiempos de respuesta ultrarrápidos, consumo de memoria mínimo (< 45 MB) e instalación libre de conflictos de compilación.
+### 📊 Stack Cuantitativo Completo (Pandas + NumPy + CCXT)
+El repositorio combina **Pandas** para análisis exploratorio de datos, estimación de procesos Ornstein-Uhlenbeck, meta-labeling y pipelines de backtesting intensivo, junto con **NumPy vectorizado y CCXT** para el motor de ejecución en tiempo real de baja latencia, garantizando consistencia matemática y robustez en la toma de decisiones.
 
 ---
 
@@ -86,7 +86,7 @@ bot grok/
 ├── database.py                # SwingDatabase: persistencia SQLite WAL y parent_trade_id
 ├── hourly_swing_agent.py      # Fachada y punto de entrada principal
 ├── quantum_terminal.html      # Terminal de simulación cuántica Monte Carlo (1,000 runs)
-├── requirements.txt           # Dependencias reales (sin Pandas)
+├── requirements.txt           # Dependencias completas del ecosistema (Pandas, NumPy, CCXT, etc.)
 ├── engine/
 │   ├── bot_models.py          # Dataclasses: SwingTrade, GridLevel, BoundedMicroGrid
 │   ├── swing_bot.py           # Contenedor de estado, telemetría y persistencia
@@ -121,7 +121,7 @@ bot grok/
 pip install -r requirements.txt
 ```
 
-*(Dependencias reales: `ccxt`, `numpy`, `python-dotenv`, `requests`, `pytest` — **Sin Pandas**).*
+*(Dependencias clave: `ccxt`, `numpy`, `pandas`, `python-dotenv`, `requests`, `pytest`).*
 
 ### 2. Ejecutar el Bot en Producción
 ```bash
