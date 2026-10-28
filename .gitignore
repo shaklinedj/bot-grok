@@ -27,6 +27,13 @@ paper_logs/*
 !paper_logs/.gitkeep
 scalper_logs/*
 !scalper_logs/.gitkeep
+swing_logs/*
+!swing_logs/.gitkeep
+reversion_logs/*
+!reversion_logs/.gitkeep
+*.db
+*.db-shm
+*.db-wal
 paper_logs_backup_*/
 *.log
 *.db-shm
