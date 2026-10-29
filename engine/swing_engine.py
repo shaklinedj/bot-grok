@@ -36,6 +36,8 @@ def execute_swing_paper_entry(bot: SwingBot, opp: Dict[str, Any]):
         return
     if len(bot.active_trades) >= bot.get_max_concurrent_trades():
         return
+    if getattr(bot, "global_cooldown_until", 0.0) > time.time():
+        return
 
     curr_p = opp["price"]
     trade_capital = bot.calculate_trade_capital()
@@ -223,6 +225,13 @@ def run_hourly_swing():
 
             # 2. Conmutación de Régimen y Ejecución Dual
             if not has_active_swing and not has_active_grid:
+                # Pausa portfolio-wide si está activo el enfriamiento global post-stop
+                if getattr(bot, "global_cooldown_until", 0.0) > now_ts:
+                    remaining = int(bot.global_cooldown_until - now_ts)
+                    bot.status_msg = f"🛡️ ENFRIAMIENTO GLOBAL POST-STOP ({remaining}s): Pausa preventiva para asentar volatilidad..."
+                    time.sleep(2.5)
+                    continue
+
                 # Régimen 1: Expansión alcista o consolidación normal -> MODO SWING SNIPER
                 if btc_regime in ("BULLISH_EXPANSION", "NEUTRAL_TRANSITION"):
                     bot.active_mode = "SWING_SNIPER"

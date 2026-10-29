@@ -210,10 +210,9 @@ def test_v2_breakout_detection(monkeypatch):
     # 30 velas de 1h con tendencia alcista y fuerza relativa vs BTC
     mock_1h = []
     for i in range(30):
-        p = 9.8 + i * 0.03
+        p = 9.2 + i * 0.04
         mock_1h.append([base_ts + i * 3600000, p - 0.02, p + 0.05, p - 0.05, p, 5000.0])
-    # Última vela 1h con buen avance para dar alta fuerza relativa
-    mock_1h[-1][4] = 10.65
+    mock_1h[-1][4] = 10.45
 
     mock_5m = [list(c) for c in mock_15m[:25]]
 

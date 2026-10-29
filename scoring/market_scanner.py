@@ -5,6 +5,7 @@ import time
 import json
 import shutil
 import subprocess
+import re
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
@@ -15,6 +16,8 @@ from config import (
     MIN_VOLUME_USDT
 )
 from scoring.indicators import calc_ema
+
+TICKER_VALID_REGEX = re.compile(r'^[A-Z0-9]{2,10}/USDT$')
 
 
 # Cache global para llamadas de red ligeras
@@ -164,6 +167,8 @@ def scan_market_top_movers() -> List[Dict[str, Any]]:
     candidates = []
     for sym, t in tickers.items():
         if not sym.endswith("/USDT"):
+            continue
+        if not TICKER_VALID_REGEX.match(sym):
             continue
         if sym in IGNORE_SYMBOLS:
             continue

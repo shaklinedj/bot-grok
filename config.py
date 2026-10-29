@@ -45,7 +45,8 @@ TURBO_FAST_BE_PCT = 0.0080   # +0.80% activa Break-Even inmediato en modo x2
 
 # Filtros de Escáner de Mercado
 RS_MIN_THRESHOLD = 1.0
-MIN_VOLUME_USDT = 3_000_000  # $3M mínimo para evitar iliquidez
+MIN_VOLUME_USDT = 15_000_000  # $15M mínimo para evitar iliquidez y trampas de volatilidad
+GLOBAL_STOP_COOLDOWN_S = 300  # 5 minutos de pausa portfolio-wide tras cualquier stop loss
 IGNORE_SYMBOLS = [
     "USDC/USDT", "FDUSD/USDT", "TUSD/USDT", "EUR/USDT", "BUSD/USDT",
     "USDP/USDT", "AEUR/USDT"
@@ -60,10 +61,11 @@ DEFAULT_SETTINGS = {
     "target_atr_mult": 3.6,              # Target ampliado: 3.6x ATR 15m (R:R ~ 3.0:1 a 3.8:1)
     "trail_distance_atr": 1.5,           # Trailing holgado 1.5x ATR (Oxígeno para buscar rallies)
     "cash_allocation_pct": 0.80,         # Asignación base (modificable a 0.95 en vivo)
-    "min_score": 70.0,                   # Score mínimo base
+    "min_score": 80.0,                   # Score mínimo base elevado a 80 (filtro estricto)
     "vol_spike_min": 1.2,                # Pico de volumen mínimo (1.2x media)
-    "post_stop_cooldown_s": 180,         # Cooldown base tras stop
-    "post_stop_extra_score": 15.0        # Penalización temporal tras stop
+    "post_stop_cooldown_s": 300,         # Cooldown base tras stop (5 min)
+    "post_stop_extra_score": 12.0,       # Penalización temporal tras stop (+12 pts = 92 min)
+    "global_stop_cooldown_s": 300        # Pausa global tras stop loss
 }
 
 # Constantes Derivadas

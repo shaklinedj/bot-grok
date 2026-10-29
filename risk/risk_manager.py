@@ -175,6 +175,14 @@ def manage_active_swing_trade(bot):
             cd_sec = getattr(bot, "settings", {}).get("post_stop_cooldown_s", POST_STOP_COOLDOWN_S)
             bot.cooldowns[sym] = time.time() + cd_sec
             bot.last_stop_time = time.time()
+            if not tr.is_trailing_active and not tr.is_be_active:
+                # Pérdida real en stop loss: Pausa portfolio-wide para evitar el efecto ametralladora
+                global_cd = getattr(bot, "settings", {}).get("global_stop_cooldown_s", 300)
+                bot.global_cooldown_until = time.time() + global_cd
+                bot.add_log(
+                    f"⏸️ [ENFRIAMIENTO GLOBAL POST-STOP] Pausa obligatoria de {global_cd}s para evitar sobreoperar en mercado adverso.",
+                    "info"
+                )
             bot.active_trades.pop(sym, None)
             bot.save_state()
             continue

@@ -3,7 +3,7 @@ Módulo de Detección de Rupturas (Breakouts) y Momentum Ignition en temporalida
 """
 from typing import Dict, List, Optional, Any
 
-from config import DEFAULT_SETTINGS, RS_MIN_THRESHOLD
+from config import DEFAULT_SETTINGS, RS_MIN_THRESHOLD, MIN_SCORE_V2
 from scoring.indicators import calc_ema, calc_rsi, calc_atr
 from scoring.market_scanner import fetch_ohlcv_cached
 
@@ -17,7 +17,7 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict[str, Any], settings: Optiona
     stop_mult = cfg.get("stop_atr_mult", 1.2)
     target_mult = cfg.get("target_atr_mult", 3.0)
     vol_min = cfg.get("vol_spike_min", 1.2)
-    min_score_target = cfg.get("min_score", 70.0)
+    min_score_target = cfg.get("min_score", MIN_SCORE_V2)
 
     c_15m = fetch_ohlcv_cached(symbol, "15m", limit=40)
     c_1h = fetch_ohlcv_cached(symbol, "1h", limit=30)

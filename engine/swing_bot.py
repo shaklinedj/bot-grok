@@ -29,6 +29,7 @@ class SwingBot:
         self.real_grid_stats: Dict[str, Any] = {}
         self.cooldowns: Dict[str, float] = {}
         self.last_stop_time: float = 0.0
+        self.global_cooldown_until: float = 0.0
         self.settings: Dict[str, Any] = dict(DEFAULT_SETTINGS)
         self.status_msg = "Iniciando Hourly Swing Sniper..."
         self.data_lock = threading.Lock()

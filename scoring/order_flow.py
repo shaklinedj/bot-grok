@@ -50,38 +50,39 @@ def fetch_order_flow_confirmation(symbol: str, ex=exchange) -> Dict[str, Any]:
             buy_ratio_pct = 50.0
             delta = 0.0
 
-        # Criterios de Validación Institucionales:
-        # Veto 1: Spread excesivo (trampa de baja liquidez o slippage)
-        if spread_pct > 0.25:
+        # Criterios de Validación Institucionales Ajustados (Filtro Estricto Anti-Churn):
+        # Veto 1: Spread excesivo (> 0.12% en majors/high-vol altcoins indica slippage o baja liquidez)
+        if spread_pct > 0.12:
             return {
                 "confirmed": False,
                 "obi": round(obi, 3),
                 "buy_ratio_pct": round(buy_ratio_pct, 1),
                 "delta": round(delta, 2),
                 "spread_pct": round(spread_pct, 3),
-                "reason": f"Spread excesivo ({spread_pct:.2f}% > 0.25%)"
+                "reason": f"Spread excesivo ({spread_pct:.2f}% > 0.12%)"
             }
 
-        # Veto 2: Muro masivo de venta en el Ask asfixiando el libro (OBI muy negativo)
-        if obi < -0.25:
+        # Veto 2: Falta de soporte comprador pasivo o muro de venta (OBI < +0.10)
+        # Exige que el volumen en Bids supere al de Asks en al menos un 10% neto
+        if obi < 0.10:
             return {
                 "confirmed": False,
                 "obi": round(obi, 3),
                 "buy_ratio_pct": round(buy_ratio_pct, 1),
                 "delta": round(delta, 2),
                 "spread_pct": round(spread_pct, 3),
-                "reason": f"Muro de venta institucional en Asks (OBI {obi:+.2f} < -0.25)"
+                "reason": f"Muro de venta o falta de soporte pasivo en Bids (OBI {obi:+.2f} < +0.10)"
             }
 
-        # Veto 3: Agresión vendedora activa en la cinta (Taker sellers dominan > 55%)
-        if buy_ratio_pct < 45.0:
+        # Veto 3: Agresión compradora insuficiente en cinta (Taker buyers deben ser >= 55%)
+        if buy_ratio_pct < 55.0:
             return {
                 "confirmed": False,
                 "obi": round(obi, 3),
                 "buy_ratio_pct": round(buy_ratio_pct, 1),
                 "delta": round(delta, 2),
                 "spread_pct": round(spread_pct, 3),
-                "reason": f"Ventas agresivas en cinta (Solo {buy_ratio_pct:.1f}% compras)"
+                "reason": f"Ventas agresivas en cinta o falta de convicción compradora (Solo {buy_ratio_pct:.1f}% compras < 55%)"
             }
 
         return {
