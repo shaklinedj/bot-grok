@@ -10,7 +10,8 @@ from typing import Dict, List, Optional, Any
 from config import (
     SWING_DB_FILE,
     PAPER_INITIAL_CAPITAL,
-    DEFAULT_SETTINGS
+    DEFAULT_SETTINGS,
+    CASH_ALLOCATION_PCT
 )
 from database import SwingDatabase
 from engine.bot_models import SwingTrade, BoundedMicroGrid
@@ -112,16 +113,17 @@ class SwingBot:
         return "Mono-Sniper (<$120: Interés Compuesto Concentrado)"
 
     def calculate_trade_capital(self) -> float:
-        """Calcula el tamaño del trade con interés compuesto dinámico (sin topes fijos)."""
+        """Calcula el tamaño del trade con interés compuesto dinámico (Modo Sniper 80%-95% capital)."""
         eq = self.total_equity()
         max_trades = self.get_max_concurrent_trades()
+        alloc = self.settings.get("cash_allocation_pct", CASH_ALLOCATION_PCT)
         if max_trades == 1:
-            target_cap = self.cash * 0.80
+            target_cap = self.cash * alloc
         elif max_trades == 2:
             target_cap = eq * 0.45
         else:
             target_cap = eq * 0.30
-        return max(0.0, min(self.cash * 0.95, target_cap))
+        return max(0.0, min(self.cash * 0.98, target_cap))
 
     def add_log(self, msg: str, event_type: str = "info"):
         print(f"[{datetime.now().strftime('%H:%M:%S')}] [{event_type.upper()}] {msg}", flush=True)

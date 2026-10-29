@@ -35,6 +35,13 @@ REAL_DOGE_GRID_BOT_ID = "215617258385481728"
 # Comisiones y Asignación de Capital
 FEE_RATE = 0.00075  # 0.075% Binance Spot con BNB / standard
 MAX_CONCURRENT_TRADES = 1  # 1 trade simultáneo para cuentas < $120 USDT
+CASH_ALLOCATION_PCT = 0.95  # 95% del efectivo en Mono-Sniper (antes 80%)
+
+# Parámetros del Modo Turbo A+ (Apalancamiento x2 & Fast Time-Stop)
+TURBO_LEVERAGE = 2.0         # x2 sólo en setups de convicción extrema (Score >= 88)
+TURBO_MIN_SCORE = 88.0       # Calificación A+ para activar x2
+TURBO_TIME_STOP_S = 1500     # 25 minutos: Salida rápida si el momentum explosivo no continúa
+TURBO_FAST_BE_PCT = 0.0080   # +0.80% activa Break-Even inmediato en modo x2
 
 # Filtros de Escáner de Mercado
 RS_MIN_THRESHOLD = 1.0
@@ -44,14 +51,15 @@ IGNORE_SYMBOLS = [
     "USDP/USDT", "AEUR/USDT"
 ]
 
-# Calibración Cuantitativa por Defecto (Opción B: Asimetría con Oxígeno)
+# Calibración Cuantitativa por Defecto (Asimetría con Alta Convicción)
 DEFAULT_SETTINGS = {
     "auto_atr_mode": True,               # Modo Automático ATR ON/OFF
-    "be_trigger_pct": 0.016,             # +1.60% activa Break-Even
+    "be_trigger_pct": 0.016,             # +1.60% activa Break-Even en trades normales
     "be_stop_pct": 0.0020,               # +0.20% asegura comisiones en BE
     "stop_atr_mult": 1.2,                # Stop Loss: Multiplicador ATR base
-    "target_atr_mult": 3.0,              # Target: 3.0x ATR 15m (R:R ~ 2.5:1)
-    "trail_distance_atr": 1.5,           # Trailing holgado 1.5x ATR (Oxígeno para buscar +3.0x)
+    "target_atr_mult": 3.6,              # Target ampliado: 3.6x ATR 15m (R:R ~ 3.0:1 a 3.8:1)
+    "trail_distance_atr": 1.5,           # Trailing holgado 1.5x ATR (Oxígeno para buscar rallies)
+    "cash_allocation_pct": 0.80,         # Asignación base (modificable a 0.95 en vivo)
     "min_score": 70.0,                   # Score mínimo base
     "vol_spike_min": 1.2,                # Pico de volumen mínimo (1.2x media)
     "post_stop_cooldown_s": 180,         # Cooldown base tras stop

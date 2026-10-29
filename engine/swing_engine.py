@@ -11,7 +11,9 @@ from config import (
     FEE_RATE,
     SWING_HTTP_PORT,
     MIN_SCORE_V2,
-    POST_STOP_EXTRA_SCORE
+    POST_STOP_EXTRA_SCORE,
+    TURBO_LEVERAGE,
+    TURBO_MIN_SCORE
 )
 from engine.bot_models import SwingTrade
 from engine.swing_bot import SwingBot
@@ -51,14 +53,20 @@ def execute_swing_paper_entry(bot: SwingBot, opp: Dict[str, Any]):
         bot.cooldowns[sym] = time.time() + 180  # Cooldown 3m para re-evaluar
         return
 
-    # Precision de tamaño adaptada al valor del activo
+    # --- CLASIFICACIÓN DE CONVICCIÓN GRADE A+ (APALANCAMIENTO x2) ---
+    is_grade_a = opp.get("is_grade_a_turbo", False)
+    flow_confirmed = (flow.get("buy_ratio_pct", 50.0) >= 60.0 and flow.get("obi", 0.0) >= 0.15)
+    is_turbo = is_grade_a and flow_confirmed and (opp.get("score", 0.0) >= TURBO_MIN_SCORE)
+    leverage = TURBO_LEVERAGE if is_turbo else 1.0
+
+    # Capital efectivo con apalancamiento x2 (Notional)
+    effective_cap = trade_capital * leverage
     if curr_p >= 1000:
-        amount = round(trade_capital / curr_p, 6)
+        amount = round(effective_cap / curr_p, 6)
     elif curr_p >= 1:
-        amount = round(trade_capital / curr_p, 4)
+        amount = round(effective_cap / curr_p, 4)
     else:
-        amount = round(trade_capital / curr_p, 2)
-    trade_capital = round(amount * curr_p, 2)
+        amount = round(effective_cap / curr_p, 2)
 
     target_p = opp["target_price"]
     stop_p = opp["stop_price"]
@@ -71,7 +79,7 @@ def execute_swing_paper_entry(bot: SwingBot, opp: Dict[str, Any]):
     order_id = f"SWING_{bot.sim_order_seq}"
 
     bot.cash -= trade_capital
-    entry_fee = trade_capital * FEE_RATE
+    entry_fee = effective_cap * FEE_RATE
 
     trade = SwingTrade(
         trade_id=order_id,
@@ -89,16 +97,27 @@ def execute_swing_paper_entry(bot: SwingBot, opp: Dict[str, Any]):
         entry_time=time.time(),
         entry_fee=entry_fee,
         of_obi=flow.get("obi", 0.0),
-        of_buy_ratio=flow.get("buy_ratio_pct", 50.0)
+        of_buy_ratio=flow.get("buy_ratio_pct", 50.0),
+        leverage=leverage,
+        is_turbo=is_turbo
     )
     bot.active_trades[sym] = trade
     rs_info = f"RS vs BTC: {opp.get('rs_vs_btc', 0):+.1f}pp"
     of_info = f"OF: OBI {flow['obi']:+.2f}, Compras {flow['buy_ratio_pct']:.1f}%"
     is_ign = opp.get("is_momentum_ignition", False)
-    if is_ign:
+
+    if is_turbo:
+        bot.add_log(
+            f"⚡ [GRADE A+ HYPER-SNIPER x2] OLA DE ALTA CONVICCIÓN en {sym}: Vol {opp.get('vol_spike', 0):.1f}x | {rs_info} | {of_info} | "
+            f"Margen: ${trade_capital:.2f} USDT (Notional x2: ${effective_cap:.2f}) | Target 3.8R: ${target_p:.4f} (+{target_pct*100:.2f}%) | "
+            f"Stop: ${stop_p:.4f} (-{stop_pct*100:.2f}%) | Time-Stop: 25m",
+            "trade"
+        )
+        entry_note = f"⚡ Turbo A+ x2 #{order_id} (Notional ${effective_cap:.2f} | R:R {rr}:1 | Vol {opp.get('vol_spike', 0):.1f}x | {of_info})"
+    elif is_ign:
         bot.add_log(
             f"🚀 [IGNICIÓN MOMENTUM] OLA INSTITUCIONAL en {sym}: Vol {opp.get('vol_spike', 0):.1f}x | {rs_info} | {of_info} | "
-            f"${trade_capital:.2f} USDT | Target 3.4R: ${target_p:.4f} (+{target_pct*100:.2f}%) | "
+            f"${trade_capital:.2f} USDT | Target 3.8R: ${target_p:.4f} (+{target_pct*100:.2f}%) | "
             f"Stop: ${stop_p:.4f} (-{stop_pct*100:.2f}%) | R:R {rr}:1",
             "trade"
         )

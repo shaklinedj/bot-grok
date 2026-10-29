@@ -127,6 +127,15 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict[str, Any], settings: Optiona
         coin_chg_1h = 0.0
     rs_vs_btc = coin_chg_1h - btc_ctx.get("change_1h", 0.0)
 
+    # --- INSPECCIÓN CLÍNICA DEL INTERIOR DE LAS VELAS (Microestructura 15m & 5m) ---
+    # 1. Sin mechas de rechazo superior (absorción vendedora en el techo):
+    upper_wick = (last_c[2] - max(last_c[1], last_c[4])) if full_range > 0 else 0.0
+    upper_wick_ratio = (upper_wick / full_range) if full_range > 0 else 0.0
+    # 2. Dominancia compradora interna (cuerpo masivo y cierre en el extremo alto):
+    has_dominant_bull_body = (body_ratio >= 0.68) and (close_pos >= 0.80) and (upper_wick_ratio <= 0.20)
+    # 3. Continuidad 5m:
+    is_5m_bullish = (c_5m[-1][4] > c_5m[-1][1]) if (c_5m and len(c_5m) >= 2) else True
+
     # --- DETECTOR DE IGNICIÓN DE MOMENTUM (arXiv:2602.11708 Trend-Following Engine) ---
     is_momentum_ignition = bool(
         is_green
@@ -139,6 +148,16 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict[str, Any], settings: Optiona
         and not is_overextended
     )
 
+    # --- FILTRO EXCLUSIVO GRADE A+ (Candidato a Apalancamiento x2 & Salida Rápida) ---
+    is_grade_a_turbo = bool(
+        is_momentum_ignition
+        and has_dominant_bull_body
+        and is_5m_bullish
+        and vol_spike >= 2.5
+        and rs_vs_btc >= 1.4
+        and double_green
+    )
+
     # --- Parámetros de Trade Asimétricos con Piso Defensivo (1.20% min) y Techo (2.20% max) ---
     min_stop_pct = 0.0120  # Piso mínimo 1.20%: Erradica la muerte por micro-stops y ruido blanco
     max_stop_pct = 0.0220  # Techo máximo 2.20%: Preserva el capital ante cisnes negros
@@ -147,11 +166,13 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict[str, Any], settings: Optiona
     stop_pct = stop_distance / curr_p
     stop_price = round(curr_p - stop_distance, 6)
 
-    # Target asimétrico:
-    if is_momentum_ignition:
+    # Target asimétrico (ampliado a 3.8R para dejar correr rallies con oxígeno):
+    if is_grade_a_turbo:
+        target_distance = max(target_mult * atr_15m, stop_distance * 3.8)
+    elif is_momentum_ignition:
         target_distance = max(target_mult * atr_15m, stop_distance * 3.4)
     else:
-        target_distance = max(target_mult * atr_15m, stop_distance * 2.2)
+        target_distance = max(target_mult * atr_15m, stop_distance * 2.4)
     target_pct = target_distance / curr_p
     target_price = round(curr_p + target_distance, 6)
     rr_ratio = round(target_pct / max(stop_pct, 0.001), 2)
@@ -197,6 +218,10 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict[str, Any], settings: Optiona
     if is_momentum_ignition:
         score += 35.0
 
+    # I. Bonus Ultra-Convicción Grado A+ (Interior de Vela Sólido) (+20 pts adicionales)
+    if is_grade_a_turbo:
+        score += 20.0
+
     # Penalizaciones:
     if is_falling_knife:
         score -= 40.0
@@ -219,6 +244,8 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict[str, Any], settings: Optiona
 
     if is_overextended:
         status_str = "⚠️ SOBREEXTENDIDO (Enfriando)"
+    elif is_grade_a_turbo and is_trigger_ready:
+        status_str = f"🚀 IGNICIÓN MOMENTUM [GRADE A+ x2] ({rr_ratio}R)"
     elif is_momentum_ignition and is_trigger_ready:
         status_str = f"🚀 IGNICIÓN MOMENTUM ({rr_ratio}R)"
     elif is_trigger_ready:
@@ -255,5 +282,7 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict[str, Any], settings: Optiona
         "score": round(score, 1),
         "trigger_ready": is_trigger_ready,
         "is_momentum_ignition": is_momentum_ignition,
+        "is_grade_a_turbo": is_grade_a_turbo,
+        "upper_wick_ratio": round(upper_wick_ratio, 3),
         "status": status_str
     }

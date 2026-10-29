@@ -78,7 +78,7 @@ def scan_bounded_grid_candidates(bot) -> Optional[BoundedMicroGrid]:
     res = chan["resistance"]
     mid = chan["midpoint"]
 
-    total_grid_cap = min(bot.cash * 0.85, 54.0)
+    total_grid_cap = min(bot.cash * 0.92, 59.0)
     level_cap = round(total_grid_cap / 3.0, 2)
 
     half_width = (mid - supp)

@@ -12,7 +12,8 @@ class SwingTrade:
                  stop_pct: float, atr_pct: float, rr_ratio: float, entry_time: float,
                  entry_fee: float, initial_stop: Optional[float] = None,
                  of_obi: float = 0.0, of_buy_ratio: float = 50.0,
-                 parent_trade_id: Optional[str] = None):
+                 parent_trade_id: Optional[str] = None,
+                 leverage: float = 1.0, is_turbo: bool = False):
         self.trade_id = trade_id
         self.symbol = symbol
         self.entry_price = entry_price
@@ -30,6 +31,8 @@ class SwingTrade:
         self.of_obi = of_obi
         self.of_buy_ratio = of_buy_ratio
         self.parent_trade_id = parent_trade_id
+        self.leverage = leverage
+        self.is_turbo = is_turbo
         self.is_be_active = False        # Break-Even Shield activado (+0.20%)
         self.is_trailing_active = False  # Trailing Stop ATR activado
         self.highest_price = entry_price
@@ -58,6 +61,8 @@ class SwingTrade:
             "of_obi": getattr(self, "of_obi", 0.0),
             "of_buy_ratio": getattr(self, "of_buy_ratio", 50.0),
             "parent_trade_id": getattr(self, "parent_trade_id", None),
+            "leverage": getattr(self, "leverage", 1.0),
+            "is_turbo": getattr(self, "is_turbo", False),
             "is_be_active": self.is_be_active,
             "is_trailing_active": self.is_trailing_active,
             "highest_price": self.highest_price,
@@ -87,7 +92,9 @@ class SwingTrade:
             initial_stop=d.get("initial_stop", d["stop_price"]),
             of_obi=d.get("of_obi", 0.0),
             of_buy_ratio=d.get("of_buy_ratio", 50.0),
-            parent_trade_id=d.get("parent_trade_id")
+            parent_trade_id=d.get("parent_trade_id"),
+            leverage=d.get("leverage", 1.0),
+            is_turbo=d.get("is_turbo", False)
         )
         st.is_be_active = d.get("is_be_active", False)
         st.is_trailing_active = d.get("is_trailing_active", False)
