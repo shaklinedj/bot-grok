@@ -607,9 +607,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 <div class="fader-group">
                     <div class="fader-header">
                         <span class="fader-label">⚡ Score Mínimo Entrada:</span>
-                        <span class="fader-val" id="val-min-score">70 pts</span>
+                        <span class="fader-val" id="val-min-score">80 pts</span>
                     </div>
-                    <input type="range" id="slider-min-score" min="50" max="90" step="1" value="70" oninput="updateFaderUI('min_score', this.value)" onchange="sendSettingsUpdate()">
+                    <input type="range" id="slider-min-score" min="50" max="95" step="1" value="80" oninput="updateFaderUI('min_score', this.value)" onchange="sendSettingsUpdate()">
                     <div class="fader-sub">Puntaje de convicción mínima (ruptura + volumen + RS + velas).</div>
                 </div>
 
@@ -617,9 +617,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 <div class="fader-group">
                     <div class="fader-header">
                         <span class="fader-label">⏱️ Cooldown Anti-Ametralladora:</span>
-                        <span class="fader-val" id="val-cooldown">180 seg</span>
+                        <span class="fader-val" id="val-cooldown">300 seg</span>
                     </div>
-                    <input type="range" id="slider-cooldown" min="30" max="600" step="15" value="180" oninput="updateFaderUI('post_stop_cooldown_s', this.value)" onchange="sendSettingsUpdate()">
+                    <input type="range" id="slider-cooldown" min="30" max="900" step="15" value="300" oninput="updateFaderUI('post_stop_cooldown_s', this.value)" onchange="sendSettingsUpdate()">
                     <div class="fader-sub">Tiempo de enfriamiento en el par tras tocar Stop Loss.</div>
                 </div>
             </div>
@@ -792,8 +792,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 payload.stop_atr_mult = 1.2;
                 payload.target_atr_mult = 3.0;
                 payload.trail_distance_atr = 1.5;
-                payload.min_score = 70.0;
-                payload.post_stop_cooldown_s = 180;
+                payload.min_score = 80.0;
+                payload.post_stop_cooldown_s = 300;
             }
             try {
                 await fetch('/api/settings', {
