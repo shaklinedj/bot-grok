@@ -1,8 +1,8 @@
 """
 BUDA.COM - DIGITAL DOLLAR MARKET MAKER SIMULATOR (USDT/CLP)
 Simulador Cuantitativo de Casa de Cambio Pasiva (Maker) con Datos en Vivo de Buda.com.
-Calcula spreads reales, comisiones oficiales de Buda (0.40% Maker) y valida fills
-directamente contra la cinta de transacciones ejecutadas por usuarios en Chile.
+Comisiones oficiales de BudaPro para Stablecoins (USDT/USDC): 0.20% Maker (Tier 0).
+Abono y retiro en Pesos Chilenos por transferencia bancaria: GRATIS.
 """
 import os
 import sys
@@ -23,10 +23,11 @@ BUDA_API_BASE = "https://www.buda.com/api/v2"
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "buda_sim_state.json")
 
 # Configuración Inicial ($100 USD en CLP al tipo de cambio de arranque)
-INITIAL_CLP_CASH = 50000.0   # $50,000 CLP para comprar USDT
-INITIAL_USDT_INV = 50.0      # 50.00 USDT en inventario para vender
-BUDA_MAKER_FEE = 0.0040      # 0.40% comisión Maker oficial de Buda (Tier 0)
-MIN_PROFITABLE_SPREAD = 0.0085  # 0.85% spread mínimo para asegurar ganancia tras comisiones (0.80%)
+INITIAL_CLP_CASH = 50000.0      # $50,000 CLP para comprar USDT
+INITIAL_USDT_INV = 50.0         # 50.00 USDT en inventario para vender
+BUDA_MAKER_FEE = 0.0020         # 0.20% comisión Maker oficial de BudaPro para Stablecoins (US$0 a US$1,000)
+ROUNDTRIP_FEE = BUDA_MAKER_FEE * 2  # 0.40% total compra + venta
+MIN_PROFITABLE_SPREAD = 0.0048  # 0.48% spread mínimo para asegurar al menos +0.08% de ganancia neta
 
 
 class BudaMarketMakerSim:
@@ -35,14 +36,15 @@ class BudaMarketMakerSim:
         self.clp_balance = INITIAL_CLP_CASH
         self.usdt_balance = INITIAL_USDT_INV
         self.initial_equity_clp = 0.0
+        self.realized_pnl_clp = 0.0
         self.trades_completed = 0
         self.total_volume_clp = 0.0
         self.last_seen_trade_id = 0
+        self.avg_cost_price = 0.0
         self.my_bid_price = 0.0
         self.my_ask_price = 0.0
         self.my_bid_amount = 0.0
         self.my_ask_amount = 0.0
-        self.history: List[Dict[str, Any]] = []
         self.best_bid = 0.0
         self.best_ask = 0.0
         self.mid_price = 0.0
@@ -50,8 +52,7 @@ class BudaMarketMakerSim:
         self.spread_pct = 0.0
         self.current_equity_clp = 0.0
         self.current_equity_usd = 0.0
-        self.pnl_clp = 0.0
-        self.pnl_pct = 0.0
+        self.history: List[Dict[str, Any]] = []
         self.load_state()
 
     def fetch_api(self, endpoint: str) -> Optional[Dict[str, Any]]:
@@ -71,14 +72,17 @@ class BudaMarketMakerSim:
                     self.clp_balance = float(d.get("clp_balance", INITIAL_CLP_CASH))
                     self.usdt_balance = float(d.get("usdt_balance", INITIAL_USDT_INV))
                     self.initial_equity_clp = float(d.get("initial_equity_clp", 0.0))
+                    self.realized_pnl_clp = float(d.get("realized_pnl_clp", 0.0))
                     self.trades_completed = int(d.get("trades_completed", 0))
                     self.total_volume_clp = float(d.get("total_volume_clp", 0.0))
                     self.last_seen_trade_id = int(d.get("last_seen_trade_id", 0))
+                    self.avg_cost_price = float(d.get("avg_cost_price", 0.0))
                     self.history = d.get("history", [])
             except Exception:
                 pass
 
     def save_state(self):
+        pnl_pct = (self.realized_pnl_clp / self.initial_equity_clp * 100.0) if self.initial_equity_clp > 0 else 0.0
         d = {
             "market": self.market.upper(),
             "clp_balance": round(self.clp_balance, 2),
@@ -86,8 +90,9 @@ class BudaMarketMakerSim:
             "initial_equity_clp": round(self.initial_equity_clp, 2),
             "current_equity_clp": round(self.current_equity_clp, 2),
             "current_equity_usd": round(self.current_equity_usd, 2),
-            "pnl_clp": round(self.pnl_clp, 2),
-            "pnl_pct": round(self.pnl_pct, 2),
+            "realized_pnl_clp": round(self.realized_pnl_clp, 2),
+            "pnl_clp": round(self.realized_pnl_clp, 2),  # PnL Realizado Estricto por Fills
+            "pnl_pct": round(pnl_pct, 2),
             "trades_completed": self.trades_completed,
             "total_volume_clp": round(self.total_volume_clp, 2),
             "best_bid": round(self.best_bid, 2),
@@ -130,12 +135,14 @@ class BudaMarketMakerSim:
         # Inicializar patrimonio base si es primera vez
         if self.initial_equity_clp <= 0.0:
             self.initial_equity_clp = self.clp_balance + (self.usdt_balance * mid_price)
+            self.avg_cost_price = mid_price
             self.save_state()
+
+        if self.avg_cost_price <= 0.0:
+            self.avg_cost_price = mid_price
 
         current_equity_clp = self.clp_balance + (self.usdt_balance * mid_price)
         current_equity_usd = current_equity_clp / mid_price if mid_price > 0 else 100.0
-        pnl_clp = current_equity_clp - self.initial_equity_clp
-        pnl_pct = (pnl_clp / self.initial_equity_clp * 100.0) if self.initial_equity_clp > 0 else 0.0
 
         self.best_bid = best_bid
         self.best_ask = best_ask
@@ -144,19 +151,20 @@ class BudaMarketMakerSim:
         self.spread_pct = spread_pct
         self.current_equity_clp = current_equity_clp
         self.current_equity_usd = current_equity_usd
-        self.pnl_clp = pnl_clp
-        self.pnl_pct = pnl_pct
 
-        # 2. Posicionamiento Óptimo de Nuestras Órdenes (Penny Jumping con Umbral de Ganancia)
-        # Para ganar dinero neto, nuestras órdenes deben estar separadas al menos por 0.85% (comisión maker 0.80% roundtrip)
-        min_half_spread = (mid_price * (MIN_PROFITABLE_SPREAD / 2.0))
+        # 2. Posicionamiento Inteligente (Penny Jumping Dinámico)
+        # Con comisión oficial Buda de 0.20% Maker (0.40% roundtrip):
+        # Si el spread actual es >= 0.48%, competimos en la punta con Penny Jump (+0.01 / -0.01)
+        if spread_clp >= (mid_price * MIN_PROFITABLE_SPREAD):
+            target_bid = round(best_bid + 0.01, 2)
+            target_ask = round(best_ask - 0.01, 2)
+        else:
+            # Si el spread se comprime por debajo de 0.48%, colocamos límites protectores para no perder plata
+            min_half_spread = (mid_price * (MIN_PROFITABLE_SPREAD / 2.0))
+            target_bid = round(mid_price - min_half_spread, 2)
+            target_ask = round(mid_price + min_half_spread, 2)
 
-        # Precio de compra: lo más alto posible pero al menos a medio spread rentable
-        target_bid = round(min(best_bid + 0.01, mid_price - min_half_spread), 2)
-        # Precio de venta: lo más bajo posible pero al menos a medio spread rentable
-        target_ask = round(max(best_ask - 0.01, mid_price + min_half_spread), 2)
-
-        # Tamaño de la orden: 25% del capital disponible en cada punta (máximo 4 vueltas concurrentes)
+        # Tamaño de la orden: 40% del saldo disponible para no quedar atrapados en 1 solo trade
         order_size_usdt_buy = round(min(25.0, (self.clp_balance * 0.40) / target_bid), 4) if self.clp_balance >= 5000 else 0.0
         order_size_usdt_sell = round(min(25.0, self.usdt_balance * 0.40), 4) if self.usdt_balance >= 5.0 else 0.0
 
@@ -170,12 +178,11 @@ class BudaMarketMakerSim:
         new_fills = []
         if trades_data and "trades" in trades_data:
             entries = trades_data["trades"].get("entries", [])
-            # entries format: [timestamp, amount, price, side, trade_id]
             for tr in entries:
                 tr_id = int(tr[4])
                 tr_amount = float(tr[1])
                 tr_price = float(tr[2])
-                tr_side = tr[3].lower()  # 'buy' or 'sell' del usuario que apretó mercado
+                tr_side = tr[3].lower()
 
                 if self.last_seen_trade_id == 0:
                     self.last_seen_trade_id = tr_id
@@ -184,10 +191,8 @@ class BudaMarketMakerSim:
                 if tr_id <= self.last_seen_trade_id:
                     continue
 
-                # Actualizar el ID más alto visto
                 self.last_seen_trade_id = max(self.last_seen_trade_id, tr_id)
 
-                # FIL TRO DE EJECUCIÓN PASIVA REALISTA:
                 # Si un usuario chileno ejecutó SELL a mercado y el precio tocó o cayó por debajo de nuestro Bid:
                 if tr_side == "sell" and tr_price <= self.my_bid_price and self.my_bid_amount > 0:
                     fill_amt = min(self.my_bid_amount, tr_amount)
@@ -196,11 +201,16 @@ class BudaMarketMakerSim:
                     net_cost = gross_cost + fee
 
                     if self.clp_balance >= net_cost:
+                        # Actualizar costo promedio ponderado de inventario
+                        tot_val_prev = self.usdt_balance * self.avg_cost_price
+                        new_usdt = self.usdt_balance + fill_amt
+                        self.avg_cost_price = (tot_val_prev + net_cost) / new_usdt if new_usdt > 0 else self.my_bid_price
+
                         self.clp_balance -= net_cost
-                        self.usdt_balance += fill_amt
+                        self.usdt_balance = new_usdt
                         self.trades_completed += 1
                         self.total_volume_clp += gross_cost
-                        log_msg = f"📥 [FILL COMPRA MAKER] Compramos {fill_amt:.2f} USDT @ ${self.my_bid_price:.2f} CLP (Comisión: ${fee:.1f} CLP)"
+                        log_msg = f"📥 [FILL COMPRA MAKER] Compramos {fill_amt:.2f} USDT @ ${self.my_bid_price:.2f} CLP (Fee 0.2%: ${fee:.1f} CLP)"
                         new_fills.append(log_msg)
                         self.history.append({"time": datetime.now().strftime("%H:%M:%S"), "side": "BUY", "amount": fill_amt, "price": self.my_bid_price, "fee": fee})
 
@@ -212,30 +222,32 @@ class BudaMarketMakerSim:
                     net_revenue = gross_revenue - fee
 
                     if self.usdt_balance >= fill_amt:
+                        # Calcular ganancia realizada contra el precio de compra
+                        cost_of_sold = fill_amt * self.avg_cost_price
+                        trade_profit = net_revenue - cost_of_sold
+                        self.realized_pnl_clp += trade_profit
+
                         self.usdt_balance -= fill_amt
                         self.clp_balance += net_revenue
                         self.trades_completed += 1
                         self.total_volume_clp += gross_revenue
-                        log_msg = f"📤 [FILL VENTA MAKER] Vendimos {fill_amt:.2f} USDT @ ${self.my_ask_price:.2f} CLP (Comisión: ${fee:.1f} CLP)"
+                        log_msg = f"📤 [FILL VENTA MAKER] Vendimos {fill_amt:.2f} USDT @ ${self.my_ask_price:.2f} CLP | Ganancia neta: {trade_profit:+.1f} CLP (Fee: ${fee:.1f} CLP)"
                         new_fills.append(log_msg)
-                        self.history.append({"time": datetime.now().strftime("%H:%M:%S"), "side": "SELL", "amount": fill_amt, "price": self.my_ask_price, "fee": fee})
+                        self.history.append({"time": datetime.now().strftime("%H:%M:%S"), "side": "SELL", "amount": fill_amt, "price": self.my_ask_price, "fee": fee, "profit": trade_profit})
 
-            if new_fills:
-                self.save_state()
-            else:
-                self.save_state()
+        self.save_state()
 
         # 4. Renderizar Consola Interactiva
-        spread_status = "🟢 RENTABLE (>0.85%)" if spread_pct >= (MIN_PROFITABLE_SPREAD * 100) else "🟡 ESTRECHO"
+        spread_status = "🟢 RENTABLE (>0.48%)" if spread_pct >= (MIN_PROFITABLE_SPREAD * 100) else "🟡 ESTRECHO"
         if sys.stdout.isatty():
-            print("\033[2J\033[H", end="")  # Limpiar terminal solo si es interactivo
+            print("\033[2J\033[H", end="")
         print("=" * 82)
         print(f"  🏛️ BUDA.COM - DIGITAL DOLLAR MARKET MAKER (SIMULADOR EN VIVO)")
-        print(f"  • Par: {self.market.upper()} | Comisión Maker: {BUDA_MAKER_FEE*100:.2f}% | Spread Mínimo: {MIN_PROFITABLE_SPREAD*100:.2f}%")
+        print(f"  • Par: {self.market.upper()} | Comisión Maker BudaPro: {BUDA_MAKER_FEE*100:.2f}% | Spread Mínimo: {MIN_PROFITABLE_SPREAD*100:.2f}%")
         print(f"  📊 BUDA {datetime.now().strftime('%H:%M:%S')}: Bid ${best_bid:.2f} | Ask ${best_ask:.2f} | Spread: ${spread_clp:.2f} ({spread_pct:.2f}%) {spread_status}")
         print(f"  🎯 ÓRDENES MAKER: Compra {self.my_bid_amount:.2f}U @ ${self.my_bid_price:.2f} | Venta {self.my_ask_amount:.2f}U @ ${self.my_ask_price:.2f}")
         print(f"  💼 CAPITAL: ${self.clp_balance:,.0f} CLP + {self.usdt_balance:.2f} USDT = Total ${current_equity_clp:,.0f} CLP (~${current_equity_usd:.2f} USD)")
-        print(f"  📈 PnL: {pnl_clp:+,.2f} CLP ({pnl_pct:+.2f}%) | Trades: {self.trades_completed} | Vol: ${self.total_volume_clp:,.0f} CLP")
+        print(f"  📈 PnL Realizado: {self.realized_pnl_clp:+,.2f} CLP | Trades: {self.trades_completed} | Vol: ${self.total_volume_clp:,.0f} CLP")
         if self.history:
             print("  📜 ÚLTIMA EJECUCIÓN:")
             last = self.history[-1]
