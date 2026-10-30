@@ -43,6 +43,15 @@ class BudaMarketMakerSim:
         self.my_bid_amount = 0.0
         self.my_ask_amount = 0.0
         self.history: List[Dict[str, Any]] = []
+        self.best_bid = 0.0
+        self.best_ask = 0.0
+        self.mid_price = 0.0
+        self.spread_clp = 0.0
+        self.spread_pct = 0.0
+        self.current_equity_clp = 0.0
+        self.current_equity_usd = 0.0
+        self.pnl_clp = 0.0
+        self.pnl_pct = 0.0
         self.load_state()
 
     def fetch_api(self, endpoint: str) -> Optional[Dict[str, Any]]:
@@ -71,11 +80,25 @@ class BudaMarketMakerSim:
 
     def save_state(self):
         d = {
-            "clp_balance": self.clp_balance,
-            "usdt_balance": self.usdt_balance,
-            "initial_equity_clp": self.initial_equity_clp,
+            "market": self.market.upper(),
+            "clp_balance": round(self.clp_balance, 2),
+            "usdt_balance": round(self.usdt_balance, 4),
+            "initial_equity_clp": round(self.initial_equity_clp, 2),
+            "current_equity_clp": round(self.current_equity_clp, 2),
+            "current_equity_usd": round(self.current_equity_usd, 2),
+            "pnl_clp": round(self.pnl_clp, 2),
+            "pnl_pct": round(self.pnl_pct, 2),
             "trades_completed": self.trades_completed,
-            "total_volume_clp": self.total_volume_clp,
+            "total_volume_clp": round(self.total_volume_clp, 2),
+            "best_bid": round(self.best_bid, 2),
+            "best_ask": round(self.best_ask, 2),
+            "mid_price": round(self.mid_price, 2),
+            "spread_clp": round(self.spread_clp, 2),
+            "spread_pct": round(self.spread_pct, 2),
+            "my_bid_price": round(self.my_bid_price, 2),
+            "my_ask_price": round(self.my_ask_price, 2),
+            "my_bid_amount": round(self.my_bid_amount, 4),
+            "my_ask_amount": round(self.my_ask_amount, 4),
             "last_seen_trade_id": self.last_seen_trade_id,
             "history": self.history[-50:],
             "updated_at": datetime.now().isoformat()
@@ -113,6 +136,16 @@ class BudaMarketMakerSim:
         current_equity_usd = current_equity_clp / mid_price if mid_price > 0 else 100.0
         pnl_clp = current_equity_clp - self.initial_equity_clp
         pnl_pct = (pnl_clp / self.initial_equity_clp * 100.0) if self.initial_equity_clp > 0 else 0.0
+
+        self.best_bid = best_bid
+        self.best_ask = best_ask
+        self.mid_price = mid_price
+        self.spread_clp = spread_clp
+        self.spread_pct = spread_pct
+        self.current_equity_clp = current_equity_clp
+        self.current_equity_usd = current_equity_usd
+        self.pnl_clp = pnl_clp
+        self.pnl_pct = pnl_pct
 
         # 2. Posicionamiento Óptimo de Nuestras Órdenes (Penny Jumping con Umbral de Ganancia)
         # Para ganar dinero neto, nuestras órdenes deben estar separadas al menos por 0.85% (comisión maker 0.80% roundtrip)
@@ -188,6 +221,8 @@ class BudaMarketMakerSim:
                         self.history.append({"time": datetime.now().strftime("%H:%M:%S"), "side": "SELL", "amount": fill_amt, "price": self.my_ask_price, "fee": fee})
 
             if new_fills:
+                self.save_state()
+            else:
                 self.save_state()
 
         # 4. Renderizar Consola Interactiva

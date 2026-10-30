@@ -492,6 +492,54 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     <span style="color: #f0883e;">📡</span> <span id="radar-live-status">Iniciando radar...</span>
                 </div>
             </div>
+
+            <!-- PILAR 3: BUDA.COM - DIGITAL DOLLAR MARKET MAKER (CASA DE CAMBIO SIMULADOR) -->
+            <div class="card" id="buda-box" style="border-left: 4px solid #10b981;">
+                <div class="card-header">
+                    <div class="card-title" style="color: #10b981;">
+                        <span>🏛️ PILAR 3: BUDA.COM - MARKET MAKER (USDT/CLP)</span>
+                    </div>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <span class="tag tag-green">SIMULADOR EN VIVO ($100 USD)</span>
+                        <span class="tag tag-yellow">MAKER PASIVO</span>
+                    </div>
+                </div>
+                <div class="metric-box">
+                    <div class="metric">
+                        <div class="metric-label">Patrimonio Total</div>
+                        <div class="metric-value" id="buda-equity" style="color: #10b981; font-size: 14px;">$100,000 CLP</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Efectivo CLP</div>
+                        <div class="metric-value" id="buda-clp">$50,000 CLP</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Inventario USDT</div>
+                        <div class="metric-value" id="buda-usdt">50.00 USDT</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Spread Mercado</div>
+                        <div class="metric-value" id="buda-spread">$4.50 (0.45%)</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">PnL Acumulado</div>
+                        <div class="metric-value" id="buda-pnl" style="color: #10b981;">+$0 CLP (0.00%)</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Fills Ejecutados</div>
+                        <div class="metric-value" id="buda-trades">0</div>
+                    </div>
+                </div>
+                <!-- ÓRDENES PASIVAS ACTIVAS EN EL LIBRO -->
+                <div style="margin-top: 10px; background: #090d13; border: 1px solid #21262d; border-radius: 6px; padding: 8px 12px; font-family: 'JetBrains Mono', monospace; font-size: 11px;">
+                    <div style="color: var(--text-dim); font-size: 10px; font-weight: 600; margin-bottom: 4px;">🎯 ÓRDENES PASIVAS EN LIBRO DE BUDA:</div>
+                    <div id="buda-orders-feed" style="color: #ffffff;">Consultando órdenes activas...</div>
+                </div>
+                <!-- HISTORIAL RECIENTE BUDA -->
+                <div style="margin-top: 8px; font-size: 11px; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; display: flex; align-items: center; gap: 6px;">
+                    <span style="color: #10b981;">⚡</span> <span id="buda-history-feed">Esperando que compradores/vendedores de Buda crucen nuestras órdenes...</span>
+                </div>
+            </div>
         </div>
 
         <!-- PANORAMA Y CURVA DE PATRIMONIO HISTÓRICA -->
@@ -1108,6 +1156,44 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                         logHtml += `<div class="log-row">${badge}<span class="log-time">[${l.time}]</span> <span class="${cl}">${l.text}</span></div>`;
                     });
                     term.innerHTML = logHtml;
+                }
+
+                // 4. Buda.com Market Maker Sim Widget
+                if (d.buda_sim) {
+                    const b = d.buda_sim;
+                    const bBox = document.getElementById('buda-box');
+                    if (bBox) bBox.style.display = 'block';
+                    const bClpEl = document.getElementById('buda-clp');
+                    if (bClpEl) bClpEl.innerText = '$' + Number(b.clp_balance || 0).toLocaleString('es-CL', {maximumFractionDigits: 0}) + ' CLP';
+                    const bUsdtEl = document.getElementById('buda-usdt');
+                    if (bUsdtEl) bUsdtEl.innerText = Number(b.usdt_balance || 0).toFixed(2) + ' USDT';
+                    const bEqEl = document.getElementById('buda-equity');
+                    if (bEqEl) bEqEl.innerText = '$' + Number(b.current_equity_clp || 0).toLocaleString('es-CL', {maximumFractionDigits: 0}) + ' CLP (~$' + Number(b.current_equity_usd || 0).toFixed(2) + ' USD)';
+                    const bPnlEl = document.getElementById('buda-pnl');
+                    if (bPnlEl) {
+                        const pSign = (b.pnl_clp >= 0 ? '+' : '');
+                        bPnlEl.innerText = `${pSign}$${Number(b.pnl_clp || 0).toLocaleString('es-CL', {maximumFractionDigits: 0})} CLP (${pSign}${Number(b.pnl_pct || 0).toFixed(2)}%)`;
+                        bPnlEl.style.color = b.pnl_clp >= 0 ? '#3fb950' : '#f85149';
+                    }
+                    const bTrEl = document.getElementById('buda-trades');
+                    if (bTrEl) bTrEl.innerText = b.trades_completed || 0;
+                    const bSprEl = document.getElementById('buda-spread');
+                    if (bSprEl) bSprEl.innerText = '$' + Number(b.spread_clp || 0).toFixed(2) + ' (' + Number(b.spread_pct || 0).toFixed(2) + '%)';
+                    
+                    const bOrdEl = document.getElementById('buda-orders-feed');
+                    if (bOrdEl) {
+                        bOrdEl.innerHTML = `<span style="color:#3fb950;">🟢 Compra:</span> <b>${Number(b.my_bid_amount || 0).toFixed(2)} USDT @ $${Number(b.my_bid_price || 0).toFixed(2)} CLP</b> &nbsp;|&nbsp; <span style="color:#f85149;">🔴 Venta:</span> <b>${Number(b.my_ask_amount || 0).toFixed(2)} USDT @ $${Number(b.my_ask_price || 0).toFixed(2)} CLP</b>`;
+                    }
+                    const bHistEl = document.getElementById('buda-history-feed');
+                    if (bHistEl) {
+                        if (b.history && b.history.length > 0) {
+                            const last = b.history[b.history.length - 1];
+                            const sCol = last.side === 'BUY' ? '#3fb950' : '#f85149';
+                            bHistEl.innerHTML = `<span style="color:${sCol}; font-weight:bold;">[${last.time}] ${last.side}</span> ${Number(last.amount).toFixed(2)} USDT @ $${Number(last.price).toFixed(2)} CLP (Fee: $${Number(last.fee).toFixed(1)} CLP)`;
+                        } else {
+                            bHistEl.innerText = 'Esperando que compradores/vendedores de Buda crucen nuestras órdenes...';
+                        }
+                    }
                 }
             } catch (e) {
                 console.error("Dashboard poll error:", e);

@@ -83,6 +83,15 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             total_unrealized_pct = ((total_unrealized / total_invested) * 100.0) if total_invested > 0 else 0.0
             equity = bot.cash + (total_invested + total_unrealized)
 
+            buda_sim = None
+            buda_file = os.path.join(BASE_DIR, "buda_sim_state.json")
+            if os.path.exists(buda_file):
+                try:
+                    with open(buda_file, "r", encoding="utf-8") as bf:
+                        buda_sim = json.load(bf)
+                except Exception:
+                    pass
+
             payload = {
                 "cash": round(bot.cash, 2),
                 "equity": round(equity, 2),
@@ -103,7 +112,8 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 "real_grid": grid_stats,
                 "events": events,
                 "btc_context": update_btc_context(),
-                "recent_autopsies": autopsies
+                "recent_autopsies": autopsies,
+                "buda_sim": buda_sim
             }
             self.wfile.write(json.dumps(payload).encode("utf-8"))
         else:
