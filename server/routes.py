@@ -92,6 +92,15 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
+            carry_sim = None
+            carry_file = os.path.join(BASE_DIR, "cash_carry_sim_state.json")
+            if os.path.exists(carry_file):
+                try:
+                    with open(carry_file, "r", encoding="utf-8") as cf:
+                        carry_sim = json.load(cf)
+                except Exception:
+                    pass
+
             payload = {
                 "cash": round(bot.cash, 2),
                 "equity": round(equity, 2),
@@ -113,7 +122,8 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 "events": events,
                 "btc_context": update_btc_context(),
                 "recent_autopsies": autopsies,
-                "buda_sim": buda_sim
+                "buda_sim": buda_sim,
+                "carry_sim": carry_sim
             }
             self.wfile.write(json.dumps(payload).encode("utf-8"))
         else:

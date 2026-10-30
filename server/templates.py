@@ -540,6 +540,56 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     <span style="color: #10b981;">⚡</span> <span id="buda-history-feed">Esperando que compradores/vendedores de Buda crucen nuestras órdenes...</span>
                 </div>
             </div>
+
+            <!-- PILAR 4: BINANCE CASH & CARRY ROTATIVO (DELTA-NEUTRAL FUNDING ARBITRAGE) -->
+            <div class="card" id="carry-box" style="border-left: 4px solid #f59e0b;">
+                <div class="card-header">
+                    <div class="card-title" style="color: #f59e0b;">
+                        <span>⚖️ PILAR 4: BINANCE CASH & CARRY ROTATIVO (ARBITRAJE DE INTERESES)</span>
+                    </div>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <span class="tag tag-yellow">POZO DEDICADO ($100 USDT)</span>
+                        <span class="tag tag-green">DELTA-NEUTRAL (RIESGO 0%)</span>
+                    </div>
+                </div>
+                <div class="metric-box">
+                    <div class="metric">
+                        <div class="metric-label">Capital Acumulado</div>
+                        <div class="metric-value" id="carry-capital" style="color: #f59e0b; font-size: 14px;">$100.00 USDT</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Par Rotativo Top</div>
+                        <div class="metric-value" id="carry-pair" style="color: #58a6ff;">KSTR/USDT</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Tasa Actual (8h)</div>
+                        <div class="metric-value" id="carry-rate" style="color: #3fb950;">+0.24% / 8h</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Rendimiento APR</div>
+                        <div class="metric-value" id="carry-apr" style="color: #3fb950; font-weight: bold;">+263.7% Anual</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Pago por Ciclo</div>
+                        <div class="metric-value" id="carry-payout">+$0.24 USDT / 8h</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Intereses Cobrados</div>
+                        <div class="metric-value" id="carry-collected" style="color: #f59e0b;">+$0.00 USDT (0 pagos)</div>
+                    </div>
+                </div>
+                <!-- ESTRUCTURA DEL TRADE DELTA-NEUTRAL -->
+                <div style="margin-top: 10px; background: #090d13; border: 1px solid #21262d; border-radius: 6px; padding: 8px 12px; font-family: 'JetBrains Mono', monospace; font-size: 11px;">
+                    <div style="color: var(--text-dim); font-size: 10px; font-weight: 600; margin-bottom: 4px;">🛡️ ESTRUCTURA HÍBRIDA AISLADA (INTERÉS COMPUESTO 3 VECES AL DÍA):</div>
+                    <div id="carry-structure-feed" style="color: #ffffff;">
+                        <span style="color:#3fb950;">50% Spot Long</span> + <span style="color:#f85149;">50% Short Futuros x1</span> = <b>Exposición de Mercado: 0.00%</b> | Cobro de Funding cada 8h en USDT puro.
+                    </div>
+                </div>
+                <!-- TOP OPORTUNIDADES ROTATIVAS EN VIVO -->
+                <div style="margin-top: 8px; font-size: 11px; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; display: flex; align-items: center; gap: 6px;">
+                    <span style="color: #f59e0b;">🔥</span> <span id="carry-top-feed">Escaneando 900 perpetuos en Binance...</span>
+                </div>
+            </div>
         </div>
 
         <!-- PANORAMA Y CURVA DE PATRIMONIO HISTÓRICA -->
@@ -1193,6 +1243,33 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                         } else {
                             bHistEl.innerText = 'Esperando que compradores/vendedores de Buda crucen nuestras órdenes...';
                         }
+                    }
+                }
+
+                // 5. Binance Cash & Carry Arbitrage Sim Widget
+                if (d.carry_sim) {
+                    const c = d.carry_sim;
+                    const cCapEl = document.getElementById('carry-capital');
+                    if (cCapEl) cCapEl.innerText = '$' + Number(c.capital || 100).toFixed(2) + ' USDT';
+                    const cPairEl = document.getElementById('carry-pair');
+                    if (cPairEl) cPairEl.innerText = c.active_pair || 'KSTR/USDT';
+                    const cRateEl = document.getElementById('carry-rate');
+                    if (cRateEl) cRateEl.innerText = '+' + Number(c.active_rate_8h || 0).toFixed(4) + '% / 8h';
+                    const cAprEl = document.getElementById('carry-apr');
+                    if (cAprEl) cAprEl.innerText = '+' + Number(c.active_apr || 0).toFixed(1) + '% Anual';
+                    const cPayoutEl = document.getElementById('carry-payout');
+                    if (cPayoutEl) {
+                        const payout = Number(c.capital || 100) * (Number(c.active_rate_8h || 0) / 100.0);
+                        cPayoutEl.innerText = '+$' + payout.toFixed(4) + ' USDT / 8h';
+                    }
+                    const cCollEl = document.getElementById('carry-collected');
+                    if (cCollEl) {
+                        cCollEl.innerText = '+$' + Number(c.total_interest_earned || 0).toFixed(4) + ' USDT (' + (c.payments_collected || 0) + ' pagos)';
+                    }
+                    const cTopEl = document.getElementById('carry-top-feed');
+                    if (cTopEl && c.top_opportunities && c.top_opportunities.length > 0) {
+                        const topText = c.top_opportunities.slice(0, 3).map(o => `<b>${o.symbol}</b> (+${o.rate_8h_pct}% / 8h)`).join(' &nbsp;|&nbsp; ');
+                        cTopEl.innerHTML = `Top Oportunidades Binance: ${topText}`;
                     }
                 }
             } catch (e) {
