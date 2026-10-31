@@ -82,7 +82,11 @@ def process_trade_autopsy_and_feedback(bot, tr, exit_price: float, net_pnl: floa
     total_lifetime_trades = bot.db.get_trade_count()
     lr = calculate_decaying_learning_rate(total_lifetime_trades)
 
-    if window_count >= 5:
+    # Evaluación Cuantitativa por Cohortes (Bloques de 10 trades) para prevenir sobreajuste (Anti-Jitter)
+    is_cohort_milestone = (total_lifetime_trades > 0 and total_lifetime_trades % 10 == 0)
+    cohort_progress = f"Cohorte {total_lifetime_trades % 10}/10" if total_lifetime_trades % 10 != 0 else "Hito de Cohorte (10T)"
+
+    if window_count >= 10:
         wins_in_window = sum(1 for t in recent_trades if float(t.get("pnl", 0.0) or 0.0) > 0)
         winrate_window = (wins_in_window / window_count) * 100.0
         gross_wins = sum(float(t.get("pnl", 0.0)) for t in recent_trades if float(t.get("pnl", 0.0) or 0.0) > 0)
@@ -94,49 +98,56 @@ def process_trade_autopsy_and_feedback(bot, tr, exit_price: float, net_pnl: floa
         premature_chokes = sum(1 for a in recent_autopsies if a.get("classification") == "PREMATURE_CHOKE")
         noise_stops = sum(1 for a in recent_autopsies if a.get("classification") == "NOISE_STOP_HUNT")
 
-        # Regla 1: Asfixia recurrente de ganadores (> 25% de los trades recientes)
-        if premature_chokes >= 3 or (classification == "PREMATURE_CHOKE" and premature_chokes >= 2):
-            cur_trail = bot.settings.get("trail_distance_atr", 1.5)
-            step = round(lr * 1.0, 3)
-            new_trail = round(min(2.0, max(1.5, cur_trail + step)), 2)
-            if new_trail != cur_trail:
-                bot.settings["trail_distance_atr"] = new_trail
-                bot.save_settings()
-                action = f"Autoaprendizaje (Decay LR={lr:.3f}): Holgura Trailing ajustada a {new_trail}x ATR."
+        # Solo ajustamos parámetros si alcanzamos un hito de cohorte de 10 trades
+        if is_cohort_milestone:
+            # Regla 1: Asfixia recurrente de ganadores (> 30% de los trades recientes)
+            if premature_chokes >= 4:
+                cur_trail = bot.settings.get("trail_distance_atr", 1.5)
+                step = round(lr * 1.0, 3)
+                new_trail = round(min(2.0, max(1.5, cur_trail + step)), 2)
+                if new_trail != cur_trail:
+                    bot.settings["trail_distance_atr"] = new_trail
+                    bot.save_settings()
+                    action = f"Autoaprendizaje Cohorte (Decay LR={lr:.3f}): Holgura Trailing ajustada a {new_trail}x ATR."
 
-        # Regla 2: Ruido recurrente en stops (> 25% de los trades recientes)
-        if noise_stops >= 3 or (classification == "NOISE_STOP_HUNT" and noise_stops >= 2):
-            cur_stop = bot.settings.get("stop_atr_mult", 2.0)
-            step = round(lr * 1.0, 3)
-            new_stop = round(min(2.5, cur_stop + step), 2)
-            if new_stop != cur_stop:
-                bot.settings["stop_atr_mult"] = new_stop
-                bot.save_settings()
-                action = f"Autoaprendizaje (Decay LR={lr:.3f}): Multiplicador Stop ampliado a {new_stop}x ATR."
+            # Regla 2: Ruido recurrente en stops (> 30% de los trades recientes)
+            elif noise_stops >= 4:
+                cur_stop = bot.settings.get("stop_atr_mult", 2.0)
+                step = round(lr * 1.0, 3)
+                new_stop = round(min(2.5, cur_stop + step), 2)
+                if new_stop != cur_stop:
+                    bot.settings["stop_atr_mult"] = new_stop
+                    bot.save_settings()
+                    action = f"Autoaprendizaje Cohorte (Decay LR={lr:.3f}): Multiplicador Stop ampliado a {new_stop}x ATR."
 
-        # Regla 3: Régimen de bajo rendimiento sostenido (Winrate < 40%)
-        if winrate_window < 40.0:
-            cur_score = bot.settings.get("min_score", 82.0)
-            step_score = round(lr * 10.0, 1)
-            new_score = round(min(88.0, cur_score + step_score), 1)
-            if new_score != cur_score:
-                bot.settings["min_score"] = new_score
-                bot.settings["post_stop_cooldown_s"] = min(1200, bot.settings.get("post_stop_cooldown_s", 900) + 60)
-                bot.save_settings()
-                action = f"Autoaprendizaje Defensivo (Winrate 20T: {winrate_window:.1f}%): Elevando Score a {new_score}+."
+            # Regla 3: Régimen de bajo rendimiento sostenido (Winrate < 35% y PF < 0.9)
+            # Candado de Ganador: NUNCA subir score de forma defensiva si el trade actual fue con beneficio
+            elif winrate_window < 35.0 and profit_factor < 0.9 and net_pnl <= 0:
+                cur_score = bot.settings.get("min_score", 80.0)
+                step_score = round(lr * 5.0, 1)
+                new_score = round(min(86.0, cur_score + step_score), 1)
+                if new_score != cur_score:
+                    bot.settings["min_score"] = new_score
+                    bot.settings["post_stop_cooldown_s"] = min(900, bot.settings.get("post_stop_cooldown_s", 300) + 60)
+                    bot.save_settings()
+                    action = f"Autoaprendizaje Cohorte Defensivo (Winrate 20T: {winrate_window:.1f}%): Elevando Score a {new_score}+."
 
-        # Regla 4: Régimen de alta tracción (Winrate > 60% y Profit Factor > 1.8)
-        elif winrate_window > 60.0 and profit_factor > 1.8:
-            cur_score = bot.settings.get("min_score", 82.0)
-            step_score = round(lr * 5.0, 1)
-            new_score = round(max(78.0, cur_score - step_score), 1)
-            if new_score != cur_score:
-                bot.settings["min_score"] = new_score
-                bot.save_settings()
-                action = f"Autoaprendizaje Expansivo (PF: {profit_factor:.2f}): Score flexibilizado a {new_score}+."
+            # Regla 4: Régimen de alta tracción (Winrate > 60% y Profit Factor > 1.8)
+            elif winrate_window > 60.0 and profit_factor > 1.8:
+                cur_score = bot.settings.get("min_score", 80.0)
+                step_score = round(lr * 5.0, 1)
+                new_score = round(max(78.0, cur_score - step_score), 1)
+                if new_score != cur_score:
+                    bot.settings["min_score"] = new_score
+                    bot.save_settings()
+                    action = f"Autoaprendizaje Cohorte Expansivo (PF: {profit_factor:.2f}): Score flexibilizado a {new_score}+."
+            else:
+                action = f"Revisión de Cohorte completada: Métricas equilibradas (Winrate {winrate_window:.1f}%, PF {profit_factor:.2f}). Parámetros óptimos preservados."
+        else:
+            action = f"Parámetros estables [{cohort_progress}]: Observando sin sobreajuste (Winrate 20T: {winrate_window:.1f}%)."
     else:
-        # Menos de 5 trades en la ventana: no sobreajustar
-        action = f"Muestra insuficiente ({window_count}/20 trades). Parámetros preservados para evitar sobreajuste."
+        # Menos de 10 trades en la ventana: no sobreajustar
+        action = f"Muestra insuficiente ({window_count}/10 trades de cohorte). Parámetros preservados para evitar sobreajuste."
 
     # 3. Registrar Autopsia en SQLite
     bot.db.log_autopsy(
