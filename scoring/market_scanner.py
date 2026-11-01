@@ -41,18 +41,39 @@ def fetch_real_pionex_grid_stats() -> Dict[str, Any]:
         if res.returncode == 0:
             data = json.loads(res.stdout).get("data", {})
             bod = data.get("buOrderData", {})
+            base_amount = float(bod.get("baseAmount", 804.28))
+            quote_amount = float(bod.get("quoteAmount", 7.26))
+            init_inv = float(bod.get("initUsdtInvestment", 69.71))
+            grid_profit = float(bod.get("gridProfit", 0.0))
+            profit_withdrawn = float(bod.get("profitWithdrawn", 0.0))
+
+            # Obtener precio spot de DOGE para calcular la fluctuación flotante real (app Pionex)
+            try:
+                doge_t = exchange.fetch_ticker("DOGE/USDT")
+                doge_p = float(doge_t.get("last", 0.0753))
+            except Exception:
+                doge_p = 0.0753
+
+            current_equity = round((base_amount * doge_p) + quote_amount, 2)
+            floating_pnl = round(current_equity - init_inv, 4)
+            total_profit_usdt = round(grid_profit + floating_pnl, 4)
+            total_profit_pct = round((total_profit_usdt / init_inv) * 100.0, 2) if init_inv > 0 else 0.0
+
             return {
                 "bot_id": REAL_DOGE_GRID_BOT_ID,
                 "symbol": "DOGE/USDT",
                 "status": bod.get("status", "running"),
-                "investment": float(bod.get("initUsdtInvestment", 69.71)),
-                "grid_profit": float(bod.get("gridProfit", 0.0)),
-                "profit_withdrawn": float(bod.get("profitWithdrawn", 0.0)),
-                "total_profit_usdt": round(float(bod.get("gridProfit", 0.0)) + float(bod.get("profitWithdrawn", 0.0)), 4),
+                "investment": init_inv,
+                "current_equity": current_equity,
+                "grid_profit": grid_profit,
+                "profit_withdrawn": profit_withdrawn,
+                "floating_pnl": floating_pnl,
+                "total_profit_usdt": total_profit_usdt,
+                "total_profit_pct": total_profit_pct,
                 "paired_count": int(bod.get("exchangeOrderPairedCount", 0)),
                 "closed_count": int(bod.get("closedExchangeOrderCount", 0)),
-                "range_bottom": float(bod.get("bottom", 0.06711)),
-                "range_top": float(bod.get("top", 0.09383)),
+                "range_bottom": float(bod.get("bottom", 0.07243)),
+                "range_top": float(bod.get("top", 0.10127)),
                 "auto_reinvest": bool(bod.get("profitAutoReinvest", True)),
                 "trailing_up": bool(bod.get("movingTrailingUpParam")),
                 "updated_at": datetime.now().strftime("%H:%M:%S")
