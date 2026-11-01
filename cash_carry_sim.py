@@ -14,6 +14,7 @@ import json
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 import ccxt
+from execution.depth_slippage import calculate_orderbook_vwap
 
 # Configurar encoding UTF-8 en consola Windows
 if hasattr(sys.stdout, "reconfigure"):
@@ -141,6 +142,18 @@ class CashAndCarrySimulator:
                     ROUNDTRIP_FEE = 0.0010  # 0.10%
                     if spread_gain_48h >= (ROUNDTRIP_FEE * 2.5):
                         should_switch = True
+
+                # Chequeo L2 de Profundidad Institucional (Grado 10):
+                # Verificar que el par objetivo no tenga slippage > 0.15% en el libro de Binance
+                if should_switch:
+                    try:
+                        raw_sym = best.get("raw_symbol", "")
+                        ob = BINANCE_EXCHANGE.fetch_order_book(raw_sym, limit=5)
+                        vwap_chk = calculate_orderbook_vwap(ob.get("asks", []), target_amount_quote=50.0, side="BUY")
+                        if not vwap_chk.get("is_liquid", True) or vwap_chk.get("slippage_pct", 0.0) > 0.15:
+                            should_switch = False
+                    except Exception:
+                        pass
 
                 if should_switch:
                     self.active_pair = best["symbol"]

@@ -15,6 +15,7 @@ from config import (
 )
 from database import SwingDatabase
 from engine.bot_models import SwingTrade, BoundedMicroGrid
+from risk.dynamic_sizing import scale_capital_by_volatility
 
 
 class SwingBot:
@@ -113,18 +114,31 @@ class SwingBot:
             return "Dual-Sniper ($120-$200: 2 trades simultáneos)"
         return "Mono-Sniper (<$120: Interés Compuesto Concentrado)"
 
-    def calculate_trade_capital(self) -> float:
-        """Calcula el tamaño del trade con interés compuesto dinámico (Modo Sniper 80%-95% capital)."""
+    def calculate_trade_capital(self, current_atr_pct: float = 2.0) -> float:
+        """
+        Calcula el tamaño del trade con Interés Compuesto Institucional (Grado 10).
+        Modula el capital asignado (alloc) según la volatilidad de régimen (ATR).
+        """
         eq = self.total_equity()
         max_trades = self.get_max_concurrent_trades()
         alloc = self.settings.get("cash_allocation_pct", CASH_ALLOCATION_PCT)
+
         if max_trades == 1:
-            target_cap = self.cash * alloc
+            base_cap = self.cash * alloc
         elif max_trades == 2:
-            target_cap = eq * 0.45
+            base_cap = eq * 0.45
         else:
-            target_cap = eq * 0.30
-        return max(0.0, min(self.cash * 0.98, target_cap))
+            base_cap = eq * 0.30
+
+        # Escalado por volatilidad (Grado 10): a volatilidad base (2.0%), factor = 1.0 (56 USDT)
+        scaled_cap = scale_capital_by_volatility(
+            base_capital=base_cap,
+            current_atr_pct=current_atr_pct,
+            baseline_atr_pct=2.0,
+            min_scale=0.50,
+            max_scale=1.20
+        )
+        return max(0.0, min(self.cash * 0.98, scaled_cap))
 
     def add_log(self, msg: str, event_type: str = "info"):
         print(f"[{datetime.now().strftime('%H:%M:%S')}] [{event_type.upper()}] {msg}", flush=True)

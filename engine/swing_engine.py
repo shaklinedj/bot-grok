@@ -27,6 +27,9 @@ from scoring.breakout import analyze_breakout_15m
 from risk.risk_manager import manage_active_swing_trade
 from grid.bounded_grid import scan_bounded_grid_candidates, manage_active_bounded_grid
 from server.routes import start_swing_dashboard
+from execution.depth_slippage import evaluate_execution_route
+from execution.stale_guard import sanitize_execution_context
+from auditor.reconciler import QuantitativeReconciler
 
 
 def execute_swing_paper_entry(bot: SwingBot, opp: Dict[str, Any]):
@@ -40,7 +43,8 @@ def execute_swing_paper_entry(bot: SwingBot, opp: Dict[str, Any]):
         return
 
     curr_p = opp["price"]
-    trade_capital = bot.calculate_trade_capital()
+    atr_p = opp.get("atr_15m_pct", 2.0)
+    trade_capital = bot.calculate_trade_capital(current_atr_pct=atr_p)
     if trade_capital < 15.0 or curr_p <= 0 or bot.cash < trade_capital:
         return
 
@@ -54,6 +58,38 @@ def execute_swing_paper_entry(bot: SwingBot, opp: Dict[str, Any]):
         )
         bot.cooldowns[sym] = time.time() + 180  # Cooldown 3m para re-evaluar
         return
+
+    # --- FILTRO INSTITUCIONAL DE COTIZACIÓN CADUCA Y SPREAD (GRADO 10) ---
+    quote_ts = opp.get("timestamp_ms")
+    bid_p = opp.get("bid", curr_p * 0.9997)
+    ask_p = opp.get("ask", curr_p * 1.0003)
+    stale_check = sanitize_execution_context(sym, bid=bid_p, ask=ask_p, quote_timestamp_ms=quote_ts)
+    if not stale_check["safe_to_execute"]:
+        reasons_str = "; ".join(stale_check["rejection_reasons"])
+        bot.add_log(f"🛡️ [VETO GRADO 10: STALE GUARD] Disparo cancelado en {sym}: {reasons_str}", "warn")
+        bot.cooldowns[sym] = time.time() + 120
+        return
+
+    # --- FILTRO INSTITUCIONAL DE DESLIZAMIENTO Y VWAP POR PROFUNDIDAD (GRADO 10) ---
+    try:
+        raw_ob = exchange.fetch_order_book(sym, limit=10)
+        route_decision = evaluate_execution_route(
+            symbol=sym,
+            target_capital=trade_capital,
+            expected_gain_pct=opp.get("target_pct", 2.5),
+            orderbook=raw_ob,
+            side="BUY"
+        )
+        if route_decision["slippage_pct"] > 0.20:
+            bot.add_log(
+                f"🛡️ [VETO GRADO 10: SLIPPAGE EXCESIVO] {sym}: Deslizamiento {route_decision['slippage_pct']:.3f}% "
+                f"supera tolerancia institucional (Impacto: {route_decision['market_impact_bps']:.1f} bps)",
+                "warn"
+            )
+            bot.cooldowns[sym] = time.time() + 180
+            return
+    except Exception:
+        pass
 
     # --- CLASIFICACIÓN DE CONVICCIÓN GRADE A+ (APALANCAMIENTO x2) ---
     is_grade_a = opp.get("is_grade_a_turbo", False)
@@ -203,6 +239,8 @@ def run_hourly_swing():
     print("=" * 80, flush=True)
 
     bot = SwingBot()
+    reconciler = QuantitativeReconciler(bot.db.db_path)
+    last_reconcile_time = time.time() - 3300.0  # Primera verificación a los 5 minutos de arrancar
     start_swing_dashboard(bot, SWING_HTTP_PORT)
 
     scan_th = threading.Thread(target=swing_telemetry_thread, args=(bot,), daemon=True)
@@ -213,6 +251,15 @@ def run_hourly_swing():
     while True:
         try:
             now_ts = time.time()
+
+            # Auditoría Triple-Ledger Recurrente (Grado 10: cada 1 hora)
+            if now_ts - last_reconcile_time >= 3600.0:
+                last_reconcile_time = now_ts
+                rec_res = reconciler.reconcile_swing_engine(bot)
+                if rec_res["is_balanced"]:
+                    bot.add_log(f"⚖️ [AUDITORÍA TRIPLE-LEDGER GRADO 10] Balance íntegro: {rec_res['status']} (Delta: {rec_res['delta_usdt']:+.4f} USDT)", "info")
+                else:
+                    bot.add_log(f"⚠️ [AUDITORÍA TRIPLE-LEDGER GRADO 10] Alerta: {rec_res['details']}", "warn")
             btc_ctx = update_btc_context()
             btc_regime = btc_ctx.get("regime", "NEUTRAL_TRANSITION")
 

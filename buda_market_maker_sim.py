@@ -11,6 +11,7 @@ import json
 import urllib.request
 from datetime import datetime
 from typing import Dict, Any, List, Optional
+from execution.stale_guard import check_spread_health
 
 # Configurar encoding UTF-8 en consola Windows
 if hasattr(sys.stdout, "reconfigure"):
@@ -151,6 +152,14 @@ class BudaMarketMakerSim:
         self.spread_pct = spread_pct
         self.current_equity_clp = current_equity_clp
         self.current_equity_usd = current_equity_usd
+
+        # Filtro Grado 10: Fuga de liquidez o spread blowout (Toxic flow protection)
+        spread_check = check_spread_health(best_bid, best_ask, baseline_spread_pct=0.48, max_spread_multiplier=3.5)
+        if not spread_check["valid"]:
+            self.my_bid_amount = 0.0
+            self.my_ask_amount = 0.0
+            self.save_state()
+            return
 
         # 2. Posicionamiento Inteligente (Penny Jumping Dinámico)
         # Con comisión oficial Buda de 0.20% Maker (0.40% roundtrip):
