@@ -38,31 +38,31 @@ MAX_CONCURRENT_TRADES = 1  # 1 trade simultáneo para cuentas < $120 USDT
 CASH_ALLOCATION_PCT = 0.95  # 95% del efectivo en Mono-Sniper (antes 80%)
 
 # Parámetros del Modo Turbo A+ (Apalancamiento x2 & Fast Time-Stop)
-TURBO_LEVERAGE = 2.0         # x2 sólo en setups de convicción extrema (Score >= 88)
-TURBO_MIN_SCORE = 88.0       # Calificación A+ para activar x2
+TURBO_LEVERAGE = 2.0         # x2 sólo en setups de convicción extrema (Score >= 84)
+TURBO_MIN_SCORE = 84.0       # Calificación A+ optimizada (Gen 15 Monte Carlo)
 TURBO_TIME_STOP_S = 1500     # 25 minutos: Salida rápida si el momentum explosivo no continúa
 TURBO_FAST_BE_PCT = 0.0080   # +0.80% activa Break-Even inmediato en modo x2
 
 # Filtros de Escáner de Mercado
-RS_MIN_THRESHOLD = 1.0
-MIN_VOLUME_USDT = 15_000_000  # $15M mínimo para evitar iliquidez y trampas de volatilidad
+RS_MIN_THRESHOLD = 1.80      # Exigencia de fuerza relativa optimizada (+1.80% sobre BTC)
+MIN_VOLUME_USDT = 15_500_000  # $15.5M mínimo para evitar iliquidez y trampas de volatilidad
 GLOBAL_STOP_COOLDOWN_S = 300  # 5 minutos de pausa portfolio-wide tras cualquier stop loss
 IGNORE_SYMBOLS = [
     "USDC/USDT", "FDUSD/USDT", "TUSD/USDT", "EUR/USDT", "BUSD/USDT",
     "USDP/USDT", "AEUR/USDT"
 ]
 
-# Calibración Cuantitativa por Defecto (Asimetría con Alta Convicción)
+# Calibración Cuantitativa por Defecto (Asimetría con Alta Convicción - Gen 15 Monte Carlo)
 DEFAULT_SETTINGS = {
     "auto_atr_mode": True,               # Modo Automático ATR ON/OFF
-    "be_trigger_pct": 0.016,             # +1.60% activa Break-Even en trades normales
+    "be_trigger_pct": 0.0150,            # +1.50% activa Break-Even en trades normales (Gen 15)
     "be_stop_pct": 0.0020,               # +0.20% asegura comisiones en BE
-    "stop_atr_mult": 1.2,                # Stop Loss: Multiplicador ATR base
-    "target_atr_mult": 3.6,              # Target ampliado: 3.6x ATR 15m (R:R ~ 3.0:1 a 3.8:1)
-    "trail_distance_atr": 1.5,           # Trailing holgado 1.5x ATR (Oxígeno para buscar rallies)
+    "stop_atr_mult": 1.25,               # Stop Loss: 1.25x ATR base (Gen 15)
+    "target_atr_mult": 4.20,             # Target ampliado: 4.20x ATR (R:R ~ 3.3:1 a 4.0:1)
+    "trail_distance_atr": 1.50,          # Trailing con oxígeno 1.50x ATR (Calibración base de protección)
     "cash_allocation_pct": 0.80,         # Asignación base (modificable a 0.95 en vivo)
     "min_score": 80.0,                   # Score mínimo base elevado a 80 (filtro estricto)
-    "vol_spike_min": 1.2,                # Pico de volumen mínimo (1.2x media)
+    "vol_spike_min": 1.05,               # Pico de volumen mínimo (1.05x respaldado por L2 Order Flow)
     "post_stop_cooldown_s": 300,         # Cooldown base tras stop (5 min)
     "post_stop_extra_score": 12.0,       # Penalización temporal tras stop (+12 pts = 92 min)
     "global_stop_cooldown_s": 300        # Pausa global tras stop loss

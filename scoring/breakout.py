@@ -80,12 +80,13 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict[str, Any], settings: Optiona
         else:
             break
 
-    # Filtro de Sobreextensión / Agotamiento (Anti-FOMO en el techo tardío)
+    # Filtro de Sobreextensión / Agotamiento (Anti-FOMO Gen 15 Monte Carlo)
+    # Entrar con RSI 15m >= 74.0 o RSI 5m >= 76.0 es comprar el techo de la expansión. Capping previene trampas alcistas.
     is_overextended = (
-        rsi_15m >= 78.0
-        or rsi_5m >= 80.0
-        or (consecutive_greens >= 4 and rsi_15m >= 68.0)
-        or (dev_15m_ema20 >= 3.8 and consecutive_greens >= 3)
+        rsi_15m >= 74.0
+        or rsi_5m >= 76.0
+        or (consecutive_greens >= 3 and rsi_15m >= 68.0)
+        or (dev_15m_ema20 >= 3.2 and consecutive_greens >= 3)
     )
 
     # Micro-Base Saludable: precio consolidando cerca de la EMA20 sin estar en euforia
@@ -196,8 +197,8 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict[str, Any], settings: Optiona
     elif is_green and body_ratio >= 0.30:
         score += 8.0
 
-    # D. RSI 15m en zona de impulso (40-65 es ideal) (+10)
-    if 38.0 <= rsi_15m <= 68.0:
+    # D. RSI 15m en zona de impulso fresco (38-64 es ideal, no sobrecalentado) (+10)
+    if 38.0 <= rsi_15m <= 64.0:
         score += 10.0
 
     # E. Tendencia 1H a favor (precio > EMA20 1H) (+15)

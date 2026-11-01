@@ -96,7 +96,7 @@ def scan_bounded_grid_candidates(bot) -> Optional[BoundedMicroGrid]:
     res = chan["resistance"]
     mid = chan["midpoint"]
 
-    total_grid_cap = min(bot.cash * 0.92, 59.0)
+    total_grid_cap = min(bot.cash * 0.75, 75.0)
     level_cap = round(total_grid_cap / 3.0, 2)
 
     half_width = (mid - supp)
@@ -112,7 +112,7 @@ def scan_bounded_grid_candidates(bot) -> Optional[BoundedMicroGrid]:
         else:
             return round(level_cap / p, 2)
 
-    kill_switch_p = round(supp * 0.988, 6)
+    kill_switch_p = round(supp * 0.9850, 6)
 
     bot.sim_order_seq += 1
     grid_id = f"GRID_{bot.sim_order_seq}"
@@ -280,6 +280,41 @@ def manage_active_bounded_grid(bot):
                     parent_trade_id=grid.grid_id
                 )
                 bot.save_state()
+
+    # 2.1 Micro-Step Take Profit (+1.10% en tramos profundos L2 y L3)
+    # Permite monetizar rebotes intermedios sin esperar que toda la posición alcance el midpoint/resistencia
+    for lvl in grid.levels:
+        if lvl.level_idx in (1, 2) and lvl.status == "FILLED" and getattr(lvl, "fill_price", 0.0) > 0:
+            if curr_p >= lvl.fill_price * 1.0110:
+                step_fee = (curr_p * lvl.amount) * FEE_RATE
+                step_pnl = (curr_p - lvl.fill_price) * lvl.amount - step_fee
+                bot.cash += (lvl.capital + step_pnl)
+                pnl_pct = (step_pnl / lvl.capital) * 100.0
+                bot.add_log(f"🏆 STEP-TP MALLA L{lvl.level_idx+1}/3 en {sym} @ ${curr_p:.4f} (+{pnl_pct:.2f}%) | PnL: +${step_pnl:.4f} USDT", "trade")
+                bot.db.log_trade(
+                    symbol=sym,
+                    side="SELL",
+                    price=curr_p,
+                    amount=lvl.amount,
+                    capital=lvl.capital,
+                    pnl=step_pnl,
+                    fee=step_fee,
+                    order_id=f"{grid.grid_id}_STEP_L{lvl.level_idx+1}",
+                    target_price=grid.channel_resistance,
+                    stop_price=grid.kill_switch_price,
+                    note=f"🏆 STEP-TP MALLA L{lvl.level_idx+1} (+{pnl_pct:.2f}%)",
+                    mode="BOUNDED_GRID",
+                    parent_trade_id=grid.grid_id
+                )
+                lvl.status = "PENDING"
+                lvl.fill_price = 0.0
+                lvl.fill_time = 0.0
+                bot.save_state()
+
+    # Recalcular inventario para la cosecha final tras posibles Step-TP
+    total_inv = grid.get_total_inventory()
+    invested_cap = grid.get_invested_capital()
+    avg_entry = grid.get_average_entry()
 
     # 3. Cosecha de Ganancias (Take Profit / Reversión a la Media)
     is_above_midpoint_with_profit = (curr_p >= grid.midpoint and curr_p >= avg_entry * 1.0030)

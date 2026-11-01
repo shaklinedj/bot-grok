@@ -201,8 +201,8 @@ def scan_market_top_movers() -> List[Dict[str, Any]]:
         if last_price <= 0:
             continue
 
-        # Fuerza Relativa: qué tan bien se comporta vs BTC en la última hora
-        relative_strength = pct_24h - (btc_chg_1h * 0.5)  # Positivo = más fuerte que BTC
+        # Fuerza Relativa Optimizada (Gen 15 Monte Carlo): Ponderación 0.80x BTC para exigir volumen propio
+        relative_strength = pct_24h - (btc_chg_1h * 0.80)  # Positivo = más fuerte que BTC
 
         candidates.append({
             "symbol": sym,
@@ -213,5 +213,6 @@ def scan_market_top_movers() -> List[Dict[str, Any]]:
         })
 
     # Ordenar por fuerza relativa descendente (las que más resisten o suben vs BTC primero)
+    # Filtro Combustible Gen 15: Concentración en el Top 16 para evitar altcoins de baja liquidez
     candidates.sort(key=lambda x: x["relative_strength"], reverse=True)
-    return candidates[:25]  # Top 25 para analizar en detalle
+    return candidates[:16]
