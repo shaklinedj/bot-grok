@@ -54,8 +54,12 @@ class CashAndCarrySimulator:
                     self.total_interest_earned = float(d.get("total_interest_earned", 0.0))
                     self.payments_collected = int(d.get("payments_collected", 0))
                     self.active_pair = d.get("active_pair", "BTC/USDT:USDT")
-                    self.active_rate_8h = float(d.get("active_rate_8h", 0.0001))
-                    self.active_apr = float(d.get("active_apr", 10.95))
+                    raw_r = float(d.get("active_rate_8h_dec", 0.0) or d.get("active_rate_8h", 0.0008))
+                    # Normalizar a decimal puro estricto (ej: 0.08% -> 0.0008)
+                    while raw_r > 0.01:
+                        raw_r /= 100.0
+                    self.active_rate_8h = raw_r
+                    self.active_apr = float(d.get("active_apr", raw_r * 3.0 * 365.0 * 100.0))
                     self.last_payment_timestamp = int(d.get("last_payment_timestamp", 0))
                     self.history = d.get("history", [])
             except Exception:
@@ -71,6 +75,7 @@ class CashAndCarrySimulator:
             "payments_collected": self.payments_collected,
             "active_pair": self.active_pair,
             "active_rate_8h": round(self.active_rate_8h * 100, 4),
+            "active_rate_8h_dec": self.active_rate_8h,
             "active_apr": round(self.active_apr, 2),
             "top_opportunities": self.top_opportunities[:5],
             "history": self.history[-30:],
