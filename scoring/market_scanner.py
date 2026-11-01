@@ -37,7 +37,7 @@ def fetch_real_pionex_grid_stats() -> Dict[str, Any]:
         if not exe:
             return {"status": "CLI no disponible"}
         cmd = [exe, "bot", "spot_grid", "get", "--bu-order-id", REAL_DOGE_GRID_BOT_ID]
-        res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=8)
+        res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=12, shell=True)
         if res.returncode == 0:
             data = json.loads(res.stdout).get("data", {})
             bod = data.get("buOrderData", {})

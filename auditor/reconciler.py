@@ -9,7 +9,7 @@ import os
 import sqlite3
 from datetime import datetime
 from typing import Dict, Any, List, Optional
-from config import SWING_DB_FILE
+from config import SWING_DB_FILE, PAPER_INITIAL_CAPITAL
 
 
 class QuantitativeReconciler:
@@ -88,8 +88,8 @@ class QuantitativeReconciler:
 
             total_open_invested = invested_in_trades + invested_in_grid
 
-            # 3. Balance de caja esperado desde el génesis (base inicial $60.00 o configurada)
-            initial_cap = getattr(bot_instance, "initial_capital", 60.0)
+            # 3. Balance de caja esperado desde el génesis (base inicial $70.00 según config)
+            initial_cap = getattr(bot_instance, "initial_capital", PAPER_INITIAL_CAPITAL)
             expected_cash = initial_cap + sum_pnl - total_open_invested
             actual_cash = float(bot_instance.cash)
 

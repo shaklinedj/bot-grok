@@ -30,7 +30,7 @@ PAPER_INITIAL_CAPITAL = 70.00
 # Parámetros de Red y Servidor
 SWING_HTTP_PORT = 8900
 REAL_GRID_CACHE_TTL = 30  # segundos
-REAL_DOGE_GRID_BOT_ID = "215617258385481728"
+REAL_DOGE_GRID_BOT_ID = "61b3f37a-0cdd-458e-adf2-db096722c53b"
 
 # Comisiones y Asignación de Capital
 FEE_RATE = 0.00075  # 0.075% Binance Spot con BNB / standard

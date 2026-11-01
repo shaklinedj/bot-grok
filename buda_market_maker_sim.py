@@ -161,21 +161,37 @@ class BudaMarketMakerSim:
             self.save_state()
             return
 
-        # 2. Posicionamiento Inteligente (Penny Jumping Dinámico)
-        # Con comisión oficial Buda de 0.20% Maker (0.40% roundtrip):
-        # Si el spread actual es >= 0.48%, competimos en la punta con Penny Jump (+0.01 / -0.01)
-        if spread_clp >= (mid_price * MIN_PROFITABLE_SPREAD):
-            target_bid = round(best_bid + 0.01, 2)
-            target_ask = round(best_ask - 0.01, 2)
-        else:
-            # Si el spread se comprime por debajo de 0.48%, colocamos límites protectores para no perder plata
-            min_half_spread = (mid_price * (MIN_PROFITABLE_SPREAD / 2.0))
-            target_bid = round(mid_price - min_half_spread, 2)
-            target_ask = round(mid_price + min_half_spread, 2)
+        # 2. Gestión Cuantitativa de Inventario (Avellaneda-Stoikov Skewing)
+        usdt_val_clp = self.usdt_balance * mid_price
+        inv_ratio_usdt = (usdt_val_clp / current_equity_clp) if current_equity_clp > 0 else 0.50
 
-        # Tamaño de la orden: 40% del saldo disponible para no quedar atrapados en 1 solo trade
-        order_size_usdt_buy = round(min(25.0, (self.clp_balance * 0.40) / target_bid), 4) if self.clp_balance >= 5000 else 0.0
-        order_size_usdt_sell = round(min(25.0, self.usdt_balance * 0.40), 4) if self.usdt_balance >= 5.0 else 0.0
+        # Si tenemos déficit severo de USDT (< 20% del capital):
+        # Sesgar el Bid agresivamente a la punta para recargar inventario de USDT de inmediato
+        if inv_ratio_usdt < 0.20:
+            target_bid = round(best_bid + 0.01, 2)
+            target_ask = round(max(best_ask, mid_price * (1.0 + MIN_PROFITABLE_SPREAD)), 2)
+            order_size_usdt_buy = round(min(45.0, (self.clp_balance * 0.60) / target_bid), 4) if self.clp_balance >= 5000 else 0.0
+            order_size_usdt_sell = round(self.usdt_balance * 0.50, 4) if self.usdt_balance >= 1.0 else 0.0
+
+        # Si tenemos exceso de USDT (> 80% del capital en USDT y déficit de CLP):
+        elif inv_ratio_usdt > 0.80:
+            target_bid = round(min(best_bid, mid_price * (1.0 - MIN_PROFITABLE_SPREAD)), 2)
+            target_ask = round(best_ask - 0.01, 2)
+            order_size_usdt_buy = round((self.clp_balance * 0.50) / target_bid, 4) if self.clp_balance >= 5000 else 0.0
+            order_size_usdt_sell = round(min(45.0, self.usdt_balance * 0.60), 4) if self.usdt_balance >= 5.0 else 0.0
+
+        # Inventario balanceado (20% - 80%):
+        else:
+            if spread_clp >= (mid_price * MIN_PROFITABLE_SPREAD):
+                target_bid = round(best_bid + 0.01, 2)
+                target_ask = round(best_ask - 0.01, 2)
+            else:
+                min_half_spread = (mid_price * (MIN_PROFITABLE_SPREAD / 2.0))
+                target_bid = round(mid_price - min_half_spread, 2)
+                target_ask = round(mid_price + min_half_spread, 2)
+
+            order_size_usdt_buy = round(min(25.0, (self.clp_balance * 0.40) / target_bid), 4) if self.clp_balance >= 5000 else 0.0
+            order_size_usdt_sell = round(min(25.0, self.usdt_balance * 0.40), 4) if self.usdt_balance >= 2.0 else 0.0
 
         self.my_bid_price = target_bid
         self.my_ask_price = target_ask
