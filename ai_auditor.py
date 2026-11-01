@@ -27,7 +27,7 @@ from dotenv import load_dotenv
 load_dotenv()
 DEFAULT_NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "")
 NVIDIA_NIM_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
-MODEL_NAME = "meta/llama-3.2-11b-vision-instruct"
+MODEL_NAME = "google/diffusiongemma-26b-a4b-it"
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), "paper_logs")
 AI_AUDIT_LOG_FILE = os.path.join(LOG_DIR, "ai_trade_audits.json")

@@ -64,6 +64,16 @@ def scan_bounded_grid_candidates(bot) -> Optional[BoundedMicroGrid]:
             if chan["channel_pos"] > 0.60:
                 continue
 
+            # Filtro Anti-Cuchillo Cayendo (NVIDIA Audit): No entrar si la vela 15m actual está en desplome acelerado
+            last_candle = candles[-1]
+            last_candle_ret = (last_candle[4] - last_candle[1]) / last_candle[1] * 100.0
+            if last_candle_ret < -1.6:
+                continue
+
+            # Filtro de Volatilidad Relativa: Canales excesivamente anchos (> 4.2%) no son oscilaciones limpias
+            if chan.get("width_pct", 0.0) > 4.2:
+                continue
+
             if h < lowest_hurst:
                 lowest_hurst = h
                 best_candidate = (sym, chan, h, curr_p)

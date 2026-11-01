@@ -112,13 +112,36 @@ class CashAndCarrySimulator:
             cands.sort(key=lambda x: x["rate_8h_pct"], reverse=True)
             self.top_opportunities = cands
 
-            # Seleccionar la mejor oportunidad de forma rotativa
+            # Seleccionar la mejor oportunidad con Filtro de Fricción Cuantitativo (Anti-Churning)
             if cands:
                 best = cands[0]
-                self.active_pair = best["symbol"]
-                self.active_rate_8h = best["rate_8h_pct"] / 100.0
-                self.active_apr = best["apr"]
-                self.next_funding_time = best["funding_time"]
+                best_sym = best["symbol"]
+                best_rate = best["rate_8h_pct"] / 100.0
+
+                should_switch = False
+                if not self.active_pair:
+                    should_switch = True
+                elif self.active_rate_8h < 0.0003:  # Tasa actual decaída por debajo de +0.03%
+                    should_switch = True
+                elif best_sym != self.active_pair:
+                    # Encontrar tasa actualizada del par activo
+                    cur_in_cands = next((c for c in cands if c["symbol"] == self.active_pair), None)
+                    cur_rate = (cur_in_cands["rate_8h_pct"] / 100.0) if cur_in_cands else 0.0
+                    self.active_rate_8h = cur_rate
+                    self.active_apr = cur_rate * 3.0 * 365.0 * 100.0
+
+                    # Rotar cuesta ~0.10% en comisiones (Spot + Futuros).
+                    # Solo rotamos si el exceso de rendimiento en 48h (6 ciclos) supera 2.5x el costo.
+                    spread_gain_48h = (best_rate - cur_rate) * 6.0
+                    ROUNDTRIP_FEE = 0.0010  # 0.10%
+                    if spread_gain_48h >= (ROUNDTRIP_FEE * 2.5):
+                        should_switch = True
+
+                if should_switch:
+                    self.active_pair = best["symbol"]
+                    self.active_rate_8h = best_rate
+                    self.active_apr = best["apr"]
+                    self.next_funding_time = best["funding_time"]
         except Exception as e:
             pass
 
