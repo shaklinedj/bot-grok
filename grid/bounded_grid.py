@@ -74,6 +74,14 @@ def scan_bounded_grid_candidates(bot) -> Optional[BoundedMicroGrid]:
             if chan.get("width_pct", 0.0) > 4.2:
                 continue
 
+            # Gating de Ratio Volatilidad/Canal (Consenso Multi-Modelo):
+            # Si el canal es desproporcionadamente amplio respecto al ATR de 14 períodos, se descarta por riesgo de falso rompimiento
+            tr_list = [max(c[2] - c[3], abs(c[2] - c[4]), abs(c[3] - c[4])) for c in candles[-14:]]
+            atr_val = sum(tr_list) / len(tr_list) if tr_list else 0.0
+            atr_pct = (atr_val / curr_p * 100.0) if curr_p > 0 else 1.0
+            if chan.get("width_pct", 0.0) > (atr_pct * 3.5):
+                continue
+
             if h < lowest_hurst:
                 lowest_hurst = h
                 best_candidate = (sym, chan, h, curr_p)

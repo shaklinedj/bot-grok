@@ -9,13 +9,14 @@ from config import DEFAULT_SETTINGS, POST_STOP_COOLDOWN_S
 from scoring.market_scanner import update_btc_context
 
 
-def calculate_decaying_learning_rate(trade_count: int, base_lr: float = 0.10, decay_rate: float = 0.05) -> float:
+def calculate_decaying_learning_rate(trade_count: int, base_lr: float = 0.10, decay_rate: float = 0.03, min_lr: float = 0.04) -> float:
     """
-    Calcula la tasa de aprendizaje decreciente:
-    eta_t = eta_0 / (1 + decay_rate * t)
-    Garantiza que el bot converja hacia la estabilidad a medida que acumula historial estadístico.
+    Calcula la tasa de aprendizaje con suelo mínimo garantizado (Anti-Parálisis):
+    eta_t = max(min_lr, base_lr / (1 + decay_rate * t))
+    Garantiza convergencia sin perder la capacidad de adaptación ante cambios de régimen de mercado.
     """
-    return base_lr / (1.0 + decay_rate * max(0, trade_count))
+    decayed = base_lr / (1.0 + decay_rate * max(0, trade_count))
+    return max(min_lr, decayed)
 
 
 def process_trade_autopsy_and_feedback(bot, tr, exit_price: float, net_pnl: float, reason: str, exit_fee: float):
