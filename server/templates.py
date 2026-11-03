@@ -683,7 +683,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 <div class="fader-group">
                     <div class="fader-header">
                         <span class="fader-label">🛑 Stop Loss (ATR 15m):</span>
-                        <span class="fader-val" id="val-stop-atr">1.2x ATR</span>
+                        <span class="fader-val" id="val-stop-atr">1.85x ATR</span>
                     </div>
                     <input type="range" id="slider-stop-atr" min="0.8" max="2.5" step="0.05" value="1.85" oninput="updateFaderUI('stop_atr_mult', this.value)" onchange="sendSettingsUpdate()">
                     <div class="fader-sub">Distancia inicial de protección calculada en base a volatilidad.</div>
@@ -843,7 +843,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             if (param === 'be_trigger_pct') {
                 document.getElementById('val-be-trigger').innerText = '+' + Number(val).toFixed(2) + '%';
             } else if (param === 'stop_atr_mult') {
-                document.getElementById('val-stop-atr').innerText = Number(val).toFixed(1) + 'x ATR';
+                document.getElementById('val-stop-atr').innerText = Number(val).toFixed(2) + 'x ATR';
             } else if (param === 'target_atr_mult') {
                 document.getElementById('val-target-atr').innerText = Number(val).toFixed(1) + 'x ATR';
             } else if (param === 'trail_distance_atr') {
@@ -938,7 +938,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                         document.getElementById('val-be-trigger').innerText = '+' + Number(beVal).toFixed(2) + '%';
 
                         document.getElementById('slider-stop-atr').value = d.settings.stop_atr_mult;
-                        document.getElementById('val-stop-atr').innerText = Number(d.settings.stop_atr_mult).toFixed(1) + 'x ATR';
+                        document.getElementById('val-stop-atr').innerText = Number(d.settings.stop_atr_mult).toFixed(2) + 'x ATR';
 
                         document.getElementById('slider-target-atr').value = d.settings.target_atr_mult;
                         document.getElementById('val-target-atr').innerText = Number(d.settings.target_atr_mult).toFixed(1) + 'x ATR';
