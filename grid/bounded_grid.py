@@ -11,17 +11,31 @@ from scoring.indicators import calc_ema, calc_hurst_exponent, detect_horizontal_
 from scoring.market_scanner import fetch_ohlcv_cached
 
 
-def scan_bounded_grid_candidates(bot) -> Optional[BoundedMicroGrid]:
+def scan_bounded_grid_candidates(bot, target_cap: Optional[float] = None) -> Optional[BoundedMicroGrid]:
     """
-    Escanea candidatos para Malla Acotada durante régimen CHOP_COMPRESSION.
-    Criterios matemáticos:
-    - Volumen y reputación comprobados
-    - Exponente de Hurst H < 0.46 (Reversión a la media comprobada)
-    - Canal horizontal detectado (1.0% <= Ancho <= 4.5%, pendiente plana)
-    - Posición actual en el canal: channel_pos <= 0.60 (compramos en la mitad inferior)
-    - Entrada inmediata (curr_p <= p1)
+    Escanea candidatos para Malla Acotada.
+    En Tier 1 (<$100): Se activa durante régimen CHOP_COMPRESSION.
+    En Tier 2+ (≥$100): Se activa de forma concurrente como Satélite descorrelacionado.
     """
-    if bot.cash < 45.0 or getattr(bot, "active_grid", None) or bot.active_trades:
+    active_grids = bot.get_active_grids() if hasattr(bot, "get_active_grids") else ([bot.active_grid] if getattr(bot, "active_grid", None) else [])
+
+    plan = None
+    if hasattr(bot, "get_portfolio_allocation_plan"):
+        from scoring.market_scanner import update_btc_context
+        btc_ctx = update_btc_context()
+        btc_regime = btc_ctx.get("regime", "NEUTRAL_TRANSITION")
+        plan = bot.get_portfolio_allocation_plan(btc_regime)
+
+    max_allowed_grids = plan["max_grids"] if plan else 1
+    if len(active_grids) >= max_allowed_grids:
+        return None
+
+    min_cash_required = 20.0 if (plan and plan["tier"] >= 2) else 45.0
+    if bot.cash < min_cash_required:
+        return None
+
+    # En Tier 1 (<$100), exclusividad estricta (no abrir mallas si hay swing activo)
+    if (not plan or plan["tier"] == 1) and (bot.active_trades or getattr(bot, "active_grid", None)):
         return None
 
     now = time.time()
@@ -31,10 +45,16 @@ def scan_bounded_grid_candidates(bot) -> Optional[BoundedMicroGrid]:
         "NEAR/USDT", "LINK/USDT", "AVAX/USDT", "DOT/USDT", "SUI/USDT"
     ]
 
+    # Regla de Descorrelación y No-Duplicidad: No abrir en monedas ya activas en Swing o en otra Malla
+    active_grid_syms = {g.symbol for g in active_grids}
+    held_symbols = set(bot.active_trades.keys()) | active_grid_syms
+
     best_candidate = None
     lowest_hurst = 0.50
 
     for sym in symbols:
+        if sym in held_symbols:
+            continue
         if bot.cooldowns.get(sym, 0) > now:
             continue
         try:
@@ -96,7 +116,13 @@ def scan_bounded_grid_candidates(bot) -> Optional[BoundedMicroGrid]:
     res = chan["resistance"]
     mid = chan["midpoint"]
 
-    total_grid_cap = min(bot.cash * 0.85, 75.0)
+    if target_cap is not None and target_cap > 0:
+        total_grid_cap = min(bot.cash * 0.90, target_cap)
+    elif plan and "grid_cap" in plan and plan["grid_cap"] > 0:
+        total_grid_cap = min(bot.cash * 0.90, plan["grid_cap"])
+    else:
+        total_grid_cap = min(bot.cash * 0.85, 75.0)
+
     level_cap = round(total_grid_cap / 3.0, 2)
 
     half_width = (mid - supp)
@@ -157,8 +183,15 @@ def scan_bounded_grid_candidates(bot) -> Optional[BoundedMicroGrid]:
     )
 
     grid.levels = [lvl1, lvl2, lvl3]
-    bot.active_grid = grid
-    bot.active_mode = "BOUNDED_GRID"
+    if hasattr(bot, "add_active_grid"):
+        bot.add_active_grid(grid)
+    else:
+        bot.active_grid = grid
+
+    if plan and plan["tier"] > 1:
+        bot.active_mode = "CORE_SATELLITE_DUAL"
+    else:
+        bot.active_mode = "BOUNDED_GRID"
 
     bot.add_log(
         f"🟡 ACTIVANDO MALLA ACOTADA #{grid_id} en {sym}: Canal ${supp:.4f} - ${res:.4f} ({chan['width_pct']}%) | "
@@ -169,14 +202,40 @@ def scan_bounded_grid_candidates(bot) -> Optional[BoundedMicroGrid]:
     return grid
 
 
+def _close_single_grid(bot, grid: BoundedMicroGrid):
+    """Cierra limpiamente una malla y reajusta el modo de ejecución del bot."""
+    if hasattr(bot, "remove_active_grid"):
+        bot.remove_active_grid(grid.grid_id)
+    else:
+        bot.active_grid = None
+    remaining_grids = bot.get_active_grids() if hasattr(bot, "get_active_grids") else ([bot.active_grid] if getattr(bot, "active_grid", None) else [])
+    if not remaining_grids and not bot.active_trades:
+        bot.active_mode = "SWING_SNIPER"
+    bot.save_state()
+
+
 def manage_active_bounded_grid(bot):
     """
-    Monitorea la Malla Acotada activa.
+    Monitorea todas las Mallas Acotadas activas (soporte multi-malla para Tier 2, 3 y 4).
     1. Ejecuta Kill-Switch si el precio rompe el soporte del canal.
     2. Llena órdenes de compra pendientes cuando el precio retrocede.
-    3. Cosecha ganancias (Take Profit) cuando el precio revierte hacia la resistencia o media.
+    3. Ejecuta Step-TP (+1.10%) en rebotes intermedios.
+    4. Cosecha ganancias (Take Profit) cuando el precio revierte hacia la resistencia o media.
     """
-    grid = getattr(bot, "active_grid", None)
+    grids = bot.get_active_grids() if hasattr(bot, "get_active_grids") else ([bot.active_grid] if getattr(bot, "active_grid", None) else [])
+    if not grids:
+        return
+
+    for grid in list(grids):
+        _manage_single_grid(bot, grid)
+
+    remaining_grids = bot.get_active_grids() if hasattr(bot, "get_active_grids") else ([bot.active_grid] if getattr(bot, "active_grid", None) else [])
+    if remaining_grids:
+        symbols_str = ", ".join(f"{g.symbol} ({len(g.get_filled_levels())}/3)" for g in remaining_grids)
+        bot.status_msg = f"🟡 Malla(s) Activa(s): {symbols_str}"
+
+
+def _manage_single_grid(bot, grid: BoundedMicroGrid):
     if not grid or grid.status != "ACTIVE":
         return
 
@@ -206,9 +265,7 @@ def manage_active_bounded_grid(bot):
     if total_inv == 0:
         if curr_p >= grid.midpoint or (time.time() - grid.created_at > 600):
             bot.add_log(f"⚪ MALLA FANTASMA CANCELADA: {sym} cotiza a ${curr_p:.4f} sin retroceso a niveles de compra. Bot liberado al 100%.", "info")
-            bot.active_grid = None
-            bot.active_mode = "SWING_SNIPER"
-            bot.save_state()
+            _close_single_grid(bot, grid)
             return
 
     # 1. Kill-Switch Estricto (Garantía Anti-Atrapamiento)
@@ -250,9 +307,7 @@ def manage_active_bounded_grid(bot):
                 adaptive_action="Enfriamiento de 15m en el par y re-verificación de Hurst."
             )
         bot.cooldowns[sym] = time.time() + 900  # 15 min cooldown
-        bot.active_grid = None
-        bot.active_mode = "SWING_SNIPER"
-        bot.save_state()
+        _close_single_grid(bot, grid)
         return
 
     # 2. Ejecutar Fills de Niveles Pendientes
@@ -359,9 +414,7 @@ def manage_active_bounded_grid(bot):
             adaptive_action="Capital liberado a caja listo para siguiente ciclo."
         )
         bot.cooldowns[sym] = time.time() + 300  # 5 min cooldown tras win
-        bot.active_grid = None
-        bot.active_mode = "SWING_SNIPER"
-        bot.save_state()
+        _close_single_grid(bot, grid)
         return
 
     filled_cnt = len(grid.get_filled_levels())

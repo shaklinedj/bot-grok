@@ -75,8 +75,9 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             unrealized_pnl_pct = ((unrealized_pnl / invested) * 100.0) if invested > 0 else 0.0
             grid_obj = getattr(bot, "active_grid", None)
             grid_dict = grid_obj.to_dict() if grid_obj else None
-            grid_inv = grid_obj.get_invested_capital() if grid_obj else 0.0
-            grid_unreal = grid_obj.unrealized_pnl if grid_obj else 0.0
+            grids_list = bot.get_active_grids() if hasattr(bot, "get_active_grids") else ([grid_obj] if grid_obj else [])
+            grid_inv = sum(g.get_invested_capital() for g in grids_list)
+            grid_unreal = sum(getattr(g, "unrealized_pnl", 0.0) for g in grids_list)
 
             total_invested = invested + grid_inv
             total_unrealized = unrealized_pnl + grid_unreal
@@ -114,6 +115,8 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 "active_trade": trades_list[0].to_dict() if trades_list else None,
                 "active_trades": [t.to_dict() for t in trades_list],
                 "active_grid": grid_dict,
+                "active_grids": [g.to_dict() for g in grids_list],
+                "allocation_plan": bot.get_portfolio_allocation_plan() if hasattr(bot, "get_portfolio_allocation_plan") else None,
                 "last_closed_trade": last_closed,
                 "stats": stats,
                 "settings": bot.settings,

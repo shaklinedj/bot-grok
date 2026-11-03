@@ -270,63 +270,73 @@ def run_hourly_swing():
             has_active_swing = len(bot.active_trades) > 0
             has_active_grid = (getattr(bot, "active_grid", None) is not None and bot.active_grid.status == "ACTIVE")
 
-            # 2. Conmutación de Régimen y Ejecución Dual
-            if not has_active_swing and not has_active_grid:
-                # Pausa portfolio-wide si está activo el enfriamiento global post-stop
-                if getattr(bot, "global_cooldown_until", 0.0) > now_ts:
-                    remaining = int(bot.global_cooldown_until - now_ts)
-                    bot.status_msg = f"🛡️ ENFRIAMIENTO GLOBAL POST-STOP ({remaining}s): Pausa preventiva para asentar volatilidad..."
-                    time.sleep(2.5)
-                    continue
+            # 2. Conmutación de Régimen y Ejecución Dinámica Core + Satélite Barbell
+            plan = bot.get_portfolio_allocation_plan(btc_regime) if hasattr(bot, "get_portfolio_allocation_plan") else None
+            max_swings = plan["max_swings"] if plan else bot.get_max_concurrent_trades()
+            max_grids = plan["max_grids"] if plan else 1
+            current_swings = len(bot.active_trades)
+            active_grids_list = bot.get_active_grids() if hasattr(bot, "get_active_grids") else ([bot.active_grid] if getattr(bot, "active_grid", None) else [])
+            current_grids = len(active_grids_list)
 
-                # Régimen 1: Expansión alcista o consolidación normal -> MODO SWING SNIPER
-                if btc_regime in ("BULLISH_EXPANSION", "NEUTRAL_TRANSITION"):
-                    bot.active_mode = "SWING_SNIPER"
-                    max_concurrent = bot.get_max_concurrent_trades()
-                    current_active_count = len(bot.active_trades)
+            # Pausa portfolio-wide si está activo el enfriamiento global post-stop
+            if getattr(bot, "global_cooldown_until", 0.0) > now_ts:
+                remaining = int(bot.global_cooldown_until - now_ts)
+                bot.status_msg = f"🛡️ ENFRIAMIENTO GLOBAL POST-STOP ({remaining}s): Pausa preventiva para asentar volatilidad..."
+                time.sleep(2.5)
+                continue
 
-                    if current_active_count < max_concurrent:
-                        with bot.data_lock:
-                            telemetry = list(bot.radar_telemetry)
+            # Régimen 3: Dump bajista de BTC -> MODO BÚNKER 100% CAJA
+            if btc_regime == "BEARISH_DUMP":
+                bot.active_mode = "CASH_VAULT"
+                bot.status_msg = "🛡️ MODO BÚNKER (Caja 100%): BTC en corrección bajista. Disparos y mallas bloqueados."
+                time.sleep(2.5)
+                continue
 
-                        time_since_last_stop = now_ts - getattr(bot, "last_stop_time", 0.0)
-                        is_recovering_from_stop = time_since_last_stop < 300.0
-                        base_min_score = bot.settings.get("min_score", MIN_SCORE_V2)
-                        extra_score = bot.settings.get("post_stop_extra_score", POST_STOP_EXTRA_SCORE)
-                        effective_min_score = (base_min_score + extra_score) if is_recovering_from_stop else base_min_score
+            # Slot A: Swing Sniper (Longs Direccionales de Alta Convicción)
+            can_open_swing = (current_swings < max_swings) and (bot.cash >= 20.0)
+            if can_open_swing and btc_regime in ("BULLISH_EXPANSION", "NEUTRAL_TRANSITION"):
+                with bot.data_lock:
+                    telemetry = list(bot.radar_telemetry)
 
-                        ready_opps = [
-                            o for o in telemetry
-                            if o.get("trigger_ready")
-                            and o.get("score", 0.0) >= effective_min_score
-                            and bot.cooldowns.get(o["symbol"], 0.0) <= now_ts
-                            and o["symbol"] not in bot.active_trades
-                        ]
+                time_since_last_stop = now_ts - getattr(bot, "last_stop_time", 0.0)
+                is_recovering_from_stop = time_since_last_stop < 300.0
+                base_min_score = bot.settings.get("min_score", MIN_SCORE_V2)
+                extra_score = bot.settings.get("post_stop_extra_score", POST_STOP_EXTRA_SCORE)
+                effective_min_score = (base_min_score + extra_score) if is_recovering_from_stop else base_min_score
 
-                        if ready_opps:
-                            # Priorizar por Convicción x Velocidad de Expansión (Score + Bonus de ATR/Beta para acelerar rallies)
-                            ready_opps.sort(key=lambda o: (o.get("score", 0.0) + min(o.get("atr_pct", 1.5) * 2.0, 8.0)), reverse=True)
-                            best = ready_opps[0]
-                            execute_swing_paper_entry(bot, best)
-                        else:
-                            top = telemetry[0] if telemetry else None
-                            if top and not bot.active_trades:
-                                cooldown_active = bot.cooldowns.get(top["symbol"], 0.0) > now_ts
-                                anti_badge = f" [Anti-Ametralladora: Min Score {effective_min_score:.0f}]" if is_recovering_from_stop else ""
-                                cd_badge = " (Cooldown activo)" if cooldown_active else ""
-                                bot.status_msg = f"Radar V2: Líder {top['symbol']} (Score {top['score']}/100 | RS {top.get('rs_vs_btc', 0):+.1f}pp | {top['status']}){cd_badge}{anti_badge}."
+                ready_opps = [
+                    o for o in telemetry
+                    if o.get("trigger_ready")
+                    and o.get("score", 0.0) >= effective_min_score
+                    and bot.cooldowns.get(o["symbol"], 0.0) <= now_ts
+                    and o["symbol"] not in bot.active_trades
+                ]
 
-                # Régimen 2: Compresión lateral (Chop) -> MODO MALLA ACOTADA
-                elif btc_regime == "CHOP_COMPRESSION":
-                    bot.active_mode = "BOUNDED_GRID"
-                    scan_bounded_grid_candidates(bot)
+                if ready_opps:
+                    # Priorizar por Convicción x Velocidad de Expansión (Score + Bonus de ATR/Beta para acelerar rallies)
+                    ready_opps.sort(key=lambda o: (o.get("score", 0.0) + min(o.get("atr_pct", 1.5) * 2.0, 8.0)), reverse=True)
+                    best = ready_opps[0]
+                    execute_swing_paper_entry(bot, best)
+                else:
+                    top = telemetry[0] if telemetry else None
+                    if top and not bot.active_trades:
+                        cooldown_active = bot.cooldowns.get(top["symbol"], 0.0) > now_ts
+                        anti_badge = f" [Anti-Ametralladora: Min Score {effective_min_score:.0f}]" if is_recovering_from_stop else ""
+                        cd_badge = " (Cooldown activo)" if cooldown_active else ""
+                        bot.status_msg = f"Radar V2: Líder {top['symbol']} (Score {top['score']}/100 | RS {top.get('rs_vs_btc', 0):+.1f}pp | {top['status']}){cd_badge}{anti_badge}."
+
+            # Slot B: Mallas Acotadas (Satélite de Reversión a la Media)
+            can_open_grid = (current_grids < max_grids) and (bot.cash >= 20.0)
+            if can_open_grid:
+                # En Tier 1 (<$100), la malla solo opera si BTC está en CHOP y no hay swings activos
+                # En Tier 2+ (≥$100), la malla opera como satélite concurrente
+                is_tier_1 = (plan is None or plan["tier"] == 1)
+                should_scan = (btc_regime == "CHOP_COMPRESSION" and current_swings == 0) if is_tier_1 else True
+                if should_scan:
+                    grid_target_cap = plan.get("grid_cap") if plan else None
+                    scan_bounded_grid_candidates(bot, target_cap=grid_target_cap)
                     if not bot.active_grid:
-                        bot.status_msg = "🟡 MODO CHOP: Escaneando activos con reversión comprobada (Hurst < 0.45)..."
-
-                # Régimen 3: Dump bajista de BTC -> MODO BÚNKER 100% CAJA
-                elif btc_regime == "BEARISH_DUMP":
-                    bot.active_mode = "CASH_VAULT"
-                    bot.status_msg = "🛡️ MODO BÚNKER (Caja 100%): BTC en corrección bajista. Disparos y mallas bloqueados."
+                        bot.status_msg = "🟡 MODO CHOP/SATÉLITE: Escaneando activos con reversión comprobada (Hurst < 0.46)..."
 
             time.sleep(2.5)
 

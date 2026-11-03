@@ -24,7 +24,7 @@ class SwingBot:
         self.db = SwingDatabase(db_path or SWING_DB_FILE)
         self.cash = PAPER_INITIAL_CAPITAL
         self.active_trades: Dict[str, SwingTrade] = {}
-        self.active_grid: Optional[BoundedMicroGrid] = None
+        self._active_grids: Dict[str, BoundedMicroGrid] = {}
         self.active_mode: str = "SWING_SNIPER"
         self.radar_telemetry: List[Dict[str, Any]] = []
         self.real_grid_stats: Dict[str, Any] = {}
@@ -89,18 +89,51 @@ class SwingBot:
         else:
             self.active_trades[val.symbol] = val
 
+    @property
+    def active_grid(self) -> Optional[BoundedMicroGrid]:
+        """Propiedad retrocompatible: primer micro-malla activa o None."""
+        if not hasattr(self, "_active_grids"):
+            self._active_grids = {}
+        if self._active_grids:
+            return next(iter(self._active_grids.values()))
+        return None
+
+    @active_grid.setter
+    def active_grid(self, val: Optional[BoundedMicroGrid]):
+        if not hasattr(self, "_active_grids"):
+            self._active_grids = {}
+        if val is None:
+            self._active_grids.clear()
+        else:
+            self._active_grids[val.grid_id] = val
+
+    def get_active_grids(self) -> List[BoundedMicroGrid]:
+        """Devuelve la lista de todas las mallas activas en paralelo."""
+        if not hasattr(self, "_active_grids"):
+            self._active_grids = {}
+        return list(self._active_grids.values())
+
+    def add_active_grid(self, grid: BoundedMicroGrid):
+        if not hasattr(self, "_active_grids"):
+            self._active_grids = {}
+        self._active_grids[grid.grid_id] = grid
+
+    def remove_active_grid(self, grid_id: str):
+        if hasattr(self, "_active_grids") and grid_id in self._active_grids:
+            del self._active_grids[grid_id]
+
     def total_equity(self) -> float:
-        """Calcula el patrimonio total en vivo: Caja disponible + Posiciones Swing + Malla Acotada."""
+        """Calcula el patrimonio total en vivo: Caja disponible + Posiciones Swing + Mallas Acotadas."""
         pos_val = sum(tr.amount * getattr(tr, "current_price", tr.entry_price) for tr in self.active_trades.values())
-        grid_val = 0.0
-        if getattr(self, "active_grid", None):
-            grid_val = self.active_grid.get_invested_capital() + self.active_grid.unrealized_pnl
+        grid_val = sum(g.get_invested_capital() + g.unrealized_pnl for g in self.get_active_grids())
         return self.cash + pos_val + grid_val
 
     def get_max_concurrent_trades(self) -> int:
         """Escalabilidad de diversificación multi-trade según nivel de capital."""
         eq = self.total_equity()
-        if eq >= 200.0:
+        if eq >= 500.0:
+            return 4
+        elif eq >= 200.0:
             return 3
         elif eq >= 120.0:
             return 2
@@ -108,7 +141,9 @@ class SwingBot:
 
     def get_tier_name(self) -> str:
         eq = self.total_equity()
-        if eq >= 200.0:
+        if eq >= 500.0:
+            return "Fondo Multi-Estrategia Asimétrico (≥$500: 1 Long Core $300 + 2 Mallas $100)"
+        elif eq >= 200.0:
             return "Multi-Sniper Diversificado (≥$200: 3 trades al unísono)"
         elif eq >= 120.0:
             return "Dual-Sniper ($120-$200: 2 trades simultáneos)"
@@ -127,8 +162,11 @@ class SwingBot:
             base_cap = self.cash * alloc
         elif max_trades == 2:
             base_cap = eq * 0.45
-        else:
+        elif max_trades == 3:
             base_cap = eq * 0.30
+        else:
+            # Tier 4 (≥ $500: Gran Long Core $275 - $300 USDT)
+            base_cap = eq * 0.55
 
         # Escalado por volatilidad (Grado 10): a volatilidad base (2.0%), factor = 1.0 (56 USDT)
         scaled_cap = scale_capital_by_volatility(
@@ -139,6 +177,74 @@ class SwingBot:
             max_scale=1.20
         )
         return max(0.0, min(self.cash * 0.98, scaled_cap))
+
+    def get_portfolio_allocation_plan(self, btc_regime: str = "NEUTRAL_TRANSITION") -> Dict[str, Any]:
+        """
+        Calcula la matriz dinámica de asignación Core + Satélite Barbell según Equity y Régimen de Mercado.
+        Tier 1 (< $100): Mono-Sniper (100% concentrado en 1 trade o 1 malla).
+        Tier 2 ($100-$250): Core-Satélite Dual (1 Long Core 60% + 1 Malla Satélite 35%).
+        Tier 3 ($250-$500): Tridente Adaptativo (2 Longs + 1 Malla en Bullish, o 1 Long + 2 Mallas en Chop).
+        Tier 4 (≥ $500): Fondo Multi-Estrategia Asimétrico (1 Gran Long $300 + 2 Mallas $100 c/u + Caja).
+        """
+        eq = self.total_equity()
+        if eq < 100.0:
+            if btc_regime == "CHOP_COMPRESSION":
+                return {
+                    "tier": 1,
+                    "name": "Mono-Sniper (Chop)",
+                    "max_swings": 0,
+                    "max_grids": 1,
+                    "swing_cap": 0.0,
+                    "grid_cap": min(self.cash * 0.85, 75.0)
+                }
+            else:
+                return {
+                    "tier": 1,
+                    "name": "Mono-Sniper (Trend)",
+                    "max_swings": 1,
+                    "max_grids": 0,
+                    "swing_cap": self.calculate_trade_capital(),
+                    "grid_cap": 0.0
+                }
+        elif eq < 250.0:
+            core_swing_cap = eq * 0.60
+            satellite_grid_cap = eq * 0.35
+            return {
+                "tier": 2,
+                "name": "Core-Satélite Dual ($100-$250)",
+                "max_swings": 1,
+                "max_grids": 1,
+                "swing_cap": min(self.cash * 0.95, core_swing_cap),
+                "grid_cap": min(self.cash * 0.95, satellite_grid_cap)
+            }
+        elif eq < 500.0:
+            if btc_regime in ("BULLISH_EXPANSION", "NEUTRAL_TRANSITION"):
+                return {
+                    "tier": 3,
+                    "name": "Tridente Tendencial ($250-$500)",
+                    "max_swings": 2,
+                    "max_grids": 1,
+                    "swing_cap": eq * 0.40,
+                    "grid_cap": eq * 0.20
+                }
+            else:
+                return {
+                    "tier": 3,
+                    "name": "Tridente Chop ($250-$500)",
+                    "max_swings": 1,
+                    "max_grids": 2,
+                    "swing_cap": eq * 0.35,
+                    "grid_cap": eq * 0.30
+                }
+        else:
+            return {
+                "tier": 4,
+                "name": "Fondo Multi-Estrategia Asimétrico (≥$500)",
+                "max_swings": 1,
+                "max_grids": 2,
+                "swing_cap": eq * 0.55,  # ~$275-$300 en $500
+                "grid_cap": eq * 0.20   # ~$100 c/u en $500
+            }
 
     def add_log(self, msg: str, event_type: str = "info"):
         print(f"[{datetime.now().strftime('%H:%M:%S')}] [{event_type.upper()}] {msg}", flush=True)
@@ -164,11 +270,17 @@ class SwingBot:
                 self.last_stop_time = float(d.get("last_stop_time", 0.0))
                 self.sim_order_seq = int(d.get("sim_order_seq", 1000))
                 self.active_mode = d.get("active_mode", "SWING_SNIPER")
-                raw_grid = d.get("active_grid")
-                if raw_grid and isinstance(raw_grid, dict):
-                    self.active_grid = BoundedMicroGrid.from_dict(raw_grid)
+                self._active_grids.clear()
+                raw_grids = d.get("active_grids")
+                if raw_grids and isinstance(raw_grids, list):
+                    for rg in raw_grids:
+                        g = BoundedMicroGrid.from_dict(rg)
+                        self._active_grids[g.grid_id] = g
                 else:
-                    self.active_grid = None
+                    raw_grid = d.get("active_grid")
+                    if raw_grid and isinstance(raw_grid, dict):
+                        g = BoundedMicroGrid.from_dict(raw_grid)
+                        self._active_grids[g.grid_id] = g
         except Exception as e:
             self.add_log(f"Error cargando estado desde SQLite: {e}", "error")
 
@@ -177,7 +289,8 @@ class SwingBot:
             "cash": self.cash,
             "active_trade": self.active_trade.to_dict() if self.active_trade else None,
             "active_trades": [t.to_dict() for t in self.active_trades.values()],
-            "active_grid": self.active_grid.to_dict() if getattr(self, "active_grid", None) else None,
+            "active_grid": self.active_grid.to_dict() if self.active_grid else None,
+            "active_grids": [g.to_dict() for g in self.get_active_grids()],
             "active_mode": getattr(self, "active_mode", "SWING_SNIPER"),
             "tier_mode": self.get_tier_name(),
             "max_concurrent_trades": self.get_max_concurrent_trades(),

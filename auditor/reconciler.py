@@ -83,7 +83,9 @@ class QuantitativeReconciler:
             # 2. Calcular capital inmovilizado en trades/malla abiertos
             invested_in_trades = sum(tr.capital for tr in bot_instance.active_trades.values())
             invested_in_grid = 0.0
-            if getattr(bot_instance, "active_grid", None):
+            if hasattr(bot_instance, "get_active_grids"):
+                invested_in_grid = sum(g.get_invested_capital() for g in bot_instance.get_active_grids())
+            elif getattr(bot_instance, "active_grid", None):
                 invested_in_grid = bot_instance.active_grid.get_invested_capital()
 
             total_open_invested = invested_in_trades + invested_in_grid
@@ -117,7 +119,7 @@ class QuantitativeReconciler:
                 delta,
                 round(sum_pnl, 4),
                 round(sum_fee, 4),
-                len(bot_instance.active_trades) + (1 if getattr(bot_instance, "active_grid", None) else 0),
+                len(bot_instance.active_trades) + (len(bot_instance.get_active_grids()) if hasattr(bot_instance, "get_active_grids") else (1 if getattr(bot_instance, "active_grid", None) else 0)),
                 status,
                 details
             ))

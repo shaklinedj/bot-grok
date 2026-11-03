@@ -609,3 +609,71 @@ def test_bounded_grid_midpoint_profit_harvest(test_bot, monkeypatch):
     assert test_bot.active_grid is None
     # Capital liberado a cash (> 10.0 + 45.0)
     assert test_bot.cash > 55.0
+
+
+def test_core_satellite_portfolio_allocation_plan(test_bot):
+    """Verifica la matriz de asignación Core + Satélite Barbell por nivel de capital y régimen."""
+    # 1. Tier 1 (< $100): Mono-Sniper
+    test_bot.cash = 70.0
+    plan_trend = test_bot.get_portfolio_allocation_plan("BULLISH_EXPANSION")
+    assert plan_trend["tier"] == 1
+    assert plan_trend["max_swings"] == 1
+    assert plan_trend["max_grids"] == 0
+
+    plan_chop = test_bot.get_portfolio_allocation_plan("CHOP_COMPRESSION")
+    assert plan_chop["tier"] == 1
+    assert plan_chop["max_swings"] == 0
+    assert plan_chop["max_grids"] == 1
+
+    # 2. Tier 2 ($100 - $250): Core + Satélite Dual (1 Long Core + 1 Malla Satélite)
+    test_bot.cash = 150.0
+    plan_dual = test_bot.get_portfolio_allocation_plan("NEUTRAL_TRANSITION")
+    assert plan_dual["tier"] == 2
+    assert plan_dual["max_swings"] == 1
+    assert plan_dual["max_grids"] == 1
+    assert plan_dual["swing_cap"] == pytest.approx(90.0)    # 150 * 0.60
+    assert plan_dual["grid_cap"] == pytest.approx(52.50)   # 150 * 0.35
+
+    # 3. Tier 3 ($250 - $500): Tridente Adaptativo
+    test_bot.cash = 350.0
+    plan_trident_bull = test_bot.get_portfolio_allocation_plan("BULLISH_EXPANSION")
+    assert plan_trident_bull["tier"] == 3
+    assert plan_trident_bull["max_swings"] == 2
+    assert plan_trident_bull["max_grids"] == 1
+
+    plan_trident_chop = test_bot.get_portfolio_allocation_plan("CHOP_COMPRESSION")
+    assert plan_trident_chop["tier"] == 3
+    assert plan_trident_chop["max_swings"] == 1
+    assert plan_trident_chop["max_grids"] == 2
+
+    # 4. Tier 4 (≥ $500): Fondo Multi-Estrategia Asimétrico ($300 Long + 2 Mallas de $100)
+    test_bot.cash = 500.0
+    plan_fund = test_bot.get_portfolio_allocation_plan("NEUTRAL_TRANSITION")
+    assert plan_fund["tier"] == 4
+    assert plan_fund["max_swings"] == 1
+    assert plan_fund["max_grids"] == 2
+    assert plan_fund["swing_cap"] == pytest.approx(275.0)  # 500 * 0.55
+    assert plan_fund["grid_cap"] == pytest.approx(100.0)   # 500 * 0.20
+
+
+def test_multi_grid_parallel_tracking(test_bot):
+    """Verifica que el bot pueda rastrear y gestionar 2 mallas descorrelacionadas en paralelo."""
+    test_bot.cash = 250.0
+    grid1 = BoundedMicroGrid("GRID_1", "ADA/USDT", 0.18, 0.20, 0.19, 0.40, 0.175, total_capital=30.0)
+    grid2 = BoundedMicroGrid("GRID_2", "LINK/USDT", 11.0, 12.0, 11.5, 0.39, 10.8, total_capital=30.0)
+
+    test_bot.add_active_grid(grid1)
+    test_bot.add_active_grid(grid2)
+
+    assert len(test_bot.get_active_grids()) == 2
+    assert test_bot.active_grid is not None
+
+    # Eliminar una malla deja la otra intacta
+    test_bot.remove_active_grid("GRID_1")
+    assert len(test_bot.get_active_grids()) == 1
+    assert test_bot.active_grid.grid_id == "GRID_2"
+
+    test_bot.remove_active_grid("GRID_2")
+    assert len(test_bot.get_active_grids()) == 0
+    assert test_bot.active_grid is None
+
