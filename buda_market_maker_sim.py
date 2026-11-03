@@ -35,17 +35,33 @@ BASE_MAKER_FEE = 0.0020         # 0.20% Maker Tier 0 inicial
 
 
 def get_buda_fee_tier(volume_usd: float) -> Tuple[float, str]:
-    """Calcula la comisión Maker oficial según el volumen mensual acumulado en Buda."""
-    if volume_usd >= 200000.0:
-        return 0.0000, "Tier 4 VIP (0.00% Maker / Cero Comisión)"
-    elif volume_usd >= 50000.0:
-        return 0.0005, "Tier 3 (0.05% Maker)"
-    elif volume_usd >= 10000.0:
-        return 0.0010, "Tier 2 (0.10% Maker)"
-    elif volume_usd >= 1000.0:
-        return 0.0015, "Tier 1 (0.15% Maker)"
+    """Calcula la comisión Maker oficial de BudaPro para Stablecoins (USDT/USDC) según la tabla oficial."""
+    if volume_usd > 24000000.0:
+        return 0.0008, "Tier 13 (>US$24M: 0.08% Maker)"
+    elif volume_usd >= 9500001.0:
+        return 0.0009, "Tier 12 (US$9.5M-24M: 0.09% Maker)"
+    elif volume_usd >= 3800001.0:
+        return 0.0010, "Tier 11 (US$3.8M-9.5M: 0.10% Maker)"
+    elif volume_usd >= 1500001.0:
+        return 0.0011, "Tier 10 (US$1.5M-3.8M: 0.11% Maker)"
+    elif volume_usd >= 600001.0:
+        return 0.0012, "Tier 9 (US$600k-1.5M: 0.12% Maker)"
+    elif volume_usd >= 250001.0:
+        return 0.0013, "Tier 8 (US$250k-600k: 0.13% Maker)"
+    elif volume_usd >= 100001.0:
+        return 0.0014, "Tier 7 (US$100k-250k: 0.14% Maker)"
+    elif volume_usd >= 40001.0:
+        return 0.0015, "Tier 6 (US$40k-100k: 0.15% Maker)"
+    elif volume_usd >= 15001.0:
+        return 0.0016, "Tier 5 (US$15k-40k: 0.16% Maker)"
+    elif volume_usd >= 6001.0:
+        return 0.0017, "Tier 4 (US$6k-15k: 0.17% Maker)"
+    elif volume_usd >= 2501.0:
+        return 0.0018, "Tier 3 (US$2.5k-6k: 0.18% Maker)"
+    elif volume_usd >= 1001.0:
+        return 0.0019, "Tier 2 (US$1k-2.5k: 0.19% Maker)"
     else:
-        return 0.0020, "Tier 0 (0.20% Maker)"
+        return 0.0020, "Tier 1 (US$0-1k: 0.20% Maker)"
 
 
 def find_liquidity_wall(orders: List[List[str]], threshold_usdt: float = 15000.0) -> Tuple[float, float, float]:
