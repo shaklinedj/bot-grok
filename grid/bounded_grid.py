@@ -96,7 +96,7 @@ def scan_bounded_grid_candidates(bot) -> Optional[BoundedMicroGrid]:
     res = chan["resistance"]
     mid = chan["midpoint"]
 
-    total_grid_cap = min(bot.cash * 0.75, 75.0)
+    total_grid_cap = min(bot.cash * 0.85, 75.0)
     level_cap = round(total_grid_cap / 3.0, 2)
 
     half_width = (mid - supp)
@@ -316,9 +316,11 @@ def manage_active_bounded_grid(bot):
     invested_cap = grid.get_invested_capital()
     avg_entry = grid.get_average_entry()
 
-    # 3. Cosecha de Ganancias (Take Profit / Reversión a la Media)
-    is_above_midpoint_with_profit = (curr_p >= grid.midpoint and curr_p >= avg_entry * 1.0030)
-    is_resistance_hit = (curr_p >= grid.channel_resistance)
+    # 3. Cosecha de Ganancias (Take Profit Dinámico / Reversión a la Media)
+    # Exige rentabilidad real sobre el precio medio (neto positivo tras comisiones) al cruzar midpoint o tocar resistencia
+    min_harvest = getattr(bot, "settings", {}).get("grid_min_harvest_pct", 0.0040)
+    is_above_midpoint_with_profit = (curr_p >= grid.midpoint and curr_p >= avg_entry * (1.0 + min_harvest))
+    is_resistance_hit = (curr_p >= grid.channel_resistance and curr_p >= avg_entry * 1.0020)
     if total_inv > 0 and (is_resistance_hit or is_above_midpoint_with_profit):
         exit_fee = (curr_p * total_inv) * FEE_RATE
         gross_pnl = (curr_p - avg_entry) * total_inv

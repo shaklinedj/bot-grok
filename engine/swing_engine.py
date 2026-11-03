@@ -304,6 +304,8 @@ def run_hourly_swing():
                         ]
 
                         if ready_opps:
+                            # Priorizar por Convicción x Velocidad de Expansión (Score + Bonus de ATR/Beta para acelerar rallies)
+                            ready_opps.sort(key=lambda o: (o.get("score", 0.0) + min(o.get("atr_pct", 1.5) * 2.0, 8.0)), reverse=True)
                             best = ready_opps[0]
                             execute_swing_paper_entry(bot, best)
                         else:
