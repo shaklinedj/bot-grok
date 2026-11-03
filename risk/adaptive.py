@@ -60,9 +60,11 @@ def process_trade_autopsy_and_feedback(bot, tr, exit_price: float, net_pnl: floa
             lesson = f"Cierre defensivo en coste protegido (+{pnl_pct:.2f}%). Capital preservado."
             action = "Continuar escaneo."
     else:
-        if duration_s < 1500 and abs(mae_pct) < 1.0:
+        # Invarianza de Ruido Cuantitativa: normalizado por ATR en vez de 1.0% fijo
+        atr_pct = getattr(tr, "atr_pct", 1.0) or 1.0
+        if duration_s < 1500 and abs(mae_pct) < (0.5 * atr_pct):
             classification = "NOISE_STOP_HUNT"
-            lesson = f"Stop tocado en {duration_s/60:.0f}m con oscilación menor (-{abs(mae_pct):.2f}%). Ruido de mercado."
+            lesson = f"Stop tocado en {duration_s/60:.0f}m con oscilación menor (-{abs(mae_pct):.2f}% vs ATR {atr_pct:.2f}%). Ruido de microestructura."
             action = "Candidato a elevar stop multiplier (evaluando ventana móvil)."
         elif btc_regime == "CHOP_COMPRESSION":
             classification = "CHOP_FALSE_BREAKOUT"

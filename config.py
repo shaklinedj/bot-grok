@@ -52,14 +52,14 @@ IGNORE_SYMBOLS = [
     "USDP/USDT", "AEUR/USDT"
 ]
 
-# Calibración Cuantitativa por Defecto (Asimetría con Alta Convicción - Gen 15 Monte Carlo)
+# Calibración Cuantitativa por Defecto (Asimetría con Alta Convicción - Gen 15 Monte Carlo + Anti-Overfitting)
 DEFAULT_SETTINGS = {
     "auto_atr_mode": True,               # Modo Automático ATR ON/OFF
     "be_trigger_pct": 0.0150,            # +1.50% activa Break-Even en trades normales (Gen 15)
     "be_stop_pct": 0.0020,               # +0.20% asegura comisiones en BE
-    "stop_atr_mult": 1.25,               # Stop Loss: 1.25x ATR base (Gen 15)
-    "target_atr_mult": 4.20,             # Target ampliado: 4.20x ATR (R:R ~ 3.3:1 a 4.0:1)
-    "trail_distance_atr": 1.50,          # Trailing con oxígeno 1.50x ATR (Calibración base de protección)
+    "stop_atr_mult": 1.85,               # Stop Loss: 1.85x ATR base (Blindaje Anti-Ruido y Anti-Stop Hunt)
+    "target_atr_mult": 4.20,             # Target realista: 4.20x ATR (R:R alcanzable sin sobreajuste)
+    "trail_distance_atr": 1.50,          # Trailing con oxígeno 1.50x ATR base (Rango adaptativo 1.5x-2.0x ATR)
     "cash_allocation_pct": 0.80,         # Asignación base (modificable a 0.95 en vivo)
     "min_score": 80.0,                   # Score mínimo base elevado a 80 (filtro estricto)
     "vol_spike_min": 1.05,               # Pico de volumen mínimo (1.05x respaldado por L2 Order Flow)

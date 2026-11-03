@@ -685,7 +685,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                         <span class="fader-label">🛑 Stop Loss (ATR 15m):</span>
                         <span class="fader-val" id="val-stop-atr">1.2x ATR</span>
                     </div>
-                    <input type="range" id="slider-stop-atr" min="0.8" max="2.5" step="0.1" value="1.2" oninput="updateFaderUI('stop_atr_mult', this.value)" onchange="sendSettingsUpdate()">
+                    <input type="range" id="slider-stop-atr" min="0.8" max="2.5" step="0.05" value="1.85" oninput="updateFaderUI('stop_atr_mult', this.value)" onchange="sendSettingsUpdate()">
                     <div class="fader-sub">Distancia inicial de protección calculada en base a volatilidad.</div>
                 </div>
 
@@ -695,7 +695,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                         <span class="fader-label">🎯 Target Profit (ATR 15m):</span>
                         <span class="fader-val" id="val-target-atr">3.0x ATR</span>
                     </div>
-                    <input type="range" id="slider-target-atr" min="1.5" max="5.0" step="0.1" value="3.0" oninput="updateFaderUI('target_atr_mult', this.value)" onchange="sendSettingsUpdate()">
+                    <input type="range" id="slider-target-atr" min="1.5" max="5.0" step="0.1" value="4.2" oninput="updateFaderUI('target_atr_mult', this.value)" onchange="sendSettingsUpdate()">
                     <div class="fader-sub">Toma de ganancia simétrica por volatilidad (R:R objetivo).</div>
                 </div>
 
@@ -705,7 +705,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                         <span class="fader-label">📈 Distancia Trailing (ATR 15m):</span>
                         <span class="fader-val" id="val-trail-atr">1.5x ATR</span>
                     </div>
-                    <input type="range" id="slider-trail-atr" min="0.5" max="2.5" step="0.1" value="1.5" oninput="updateFaderUI('trail_distance_atr', this.value)" onchange="sendSettingsUpdate()">
+                    <input type="range" id="slider-trail-atr" min="0.5" max="2.5" step="0.1" value="2.0" oninput="updateFaderUI('trail_distance_atr', this.value)" onchange="sendSettingsUpdate()">
                     <div class="fader-sub">Holgura detrás del máximo para dejar correr ganancias hacia +3.0x ATR.</div>
                 </div>
 
@@ -895,9 +895,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             if (newMode) {
                 // Restablecer valores óptimos para Modo Automático ATR (Opción B)
                 payload.be_trigger_pct = 0.0150;
-                payload.stop_atr_mult = 1.25;
+                payload.stop_atr_mult = 1.85;
                 payload.target_atr_mult = 4.20;
-                payload.trail_distance_atr = 1.5;
+                payload.trail_distance_atr = 2.0;
                 payload.min_score = 80.0;
                 payload.post_stop_cooldown_s = 300;
             }

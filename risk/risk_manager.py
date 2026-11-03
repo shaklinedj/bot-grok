@@ -43,20 +43,23 @@ def manage_active_swing_trade(bot):
 
         atr_val_abs = tr.entry_price * (tr.atr_pct / 100.0)
 
-        # 1. Break-Even: Dinámico por ATR o Acelerado en Modo Turbo x2
+        # 1. Break-Even: Dinámico por ATR + Spread L2 o Acelerado en Modo Turbo x2
         is_turbo_trade = getattr(tr, "is_turbo", False)
+        spread_pct = getattr(tr, "spread_pct", 0.0010) or 0.0010
         if is_turbo_trade:
-            be_threshold = TURBO_FAST_BE_PCT  # +0.80% en precio (+1.6% sobre margen x2)
-            be_stop = 0.0025                  # +0.25% asegura comisiones dobles
+            be_threshold = TURBO_FAST_BE_PCT + spread_pct  # +0.80% + spread en precio
+            be_stop = max(0.0025, spread_pct * 1.5)        # Asegura comisiones y spread
             mode_lbl = "TURBO x2 FAST"
         elif getattr(bot, "settings", {}).get("auto_atr_mode", True):
-            be_threshold = max(0.012, (tr.atr_pct / 100.0) * 0.90)
-            be_stop = getattr(bot, "settings", {}).get("be_stop_pct", 0.0020)
-            mode_lbl = "AUTO ATR"
+            base_be = getattr(bot, "settings", {}).get("be_trigger_pct", 0.0150)
+            be_threshold = max(base_be + spread_pct, (tr.atr_pct / 100.0) * 0.90 + spread_pct)
+            be_stop = max(getattr(bot, "settings", {}).get("be_stop_pct", 0.0020), spread_pct * 1.5)
+            mode_lbl = "AUTO ATR + SPREAD"
         else:
-            be_threshold = getattr(bot, "settings", {}).get("be_trigger_pct", 0.016)
-            be_stop = getattr(bot, "settings", {}).get("be_stop_pct", 0.0020)
-            mode_lbl = "MANUAL"
+            base_be = getattr(bot, "settings", {}).get("be_trigger_pct", 0.0150)
+            be_threshold = base_be + spread_pct
+            be_stop = max(getattr(bot, "settings", {}).get("be_stop_pct", 0.0020), spread_pct * 1.5)
+            mode_lbl = "MANUAL + SPREAD"
 
         if not tr.is_be_active and gain_pct >= be_threshold:
             tr.is_be_active = True
@@ -100,7 +103,7 @@ def manage_active_swing_trade(bot):
             bot.save_state()
             continue
 
-        # 2. Trailing Stop: Se activa al alcanzar >= +1.8% o 1.8x ATR con holgura amplia (1.5x ATR)
+        # 2. Trailing Stop: Se activa al alcanzar >= +1.8% o 1.8x ATR con holgura ágil (1.5x ATR base)
         trail_dist_mult = getattr(bot, "settings", {}).get("trail_distance_atr", 1.5)
         trailing_trigger = max(0.018, (tr.atr_pct / 100.0) * 1.8)
         if gain_pct >= trailing_trigger:
