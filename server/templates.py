@@ -894,9 +894,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             const payload = { auto_atr_mode: newMode };
             if (newMode) {
                 // Restablecer valores óptimos para Modo Automático ATR (Opción B)
-                payload.be_trigger_pct = 0.016;
-                payload.stop_atr_mult = 1.2;
-                payload.target_atr_mult = 3.0;
+                payload.be_trigger_pct = 0.0150;
+                payload.stop_atr_mult = 1.25;
+                payload.target_atr_mult = 4.20;
                 payload.trail_distance_atr = 1.5;
                 payload.min_score = 80.0;
                 payload.post_stop_cooldown_s = 300;
