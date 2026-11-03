@@ -24,6 +24,11 @@ if sys.platform == "win32":
 
 from dotenv import load_dotenv
 
+try:
+    from valkey_llm_cache import valkey_cache
+except ImportError:
+    valkey_cache = None
+
 load_dotenv()
 DEFAULT_NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "")
 NVIDIA_NIM_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
@@ -110,6 +115,32 @@ class NvidiaTradeAuditor:
             if trade_sig == ex_sig:
                 return existing
 
+        # Consulta de Caché Semántico en Valkey RAM (Ahorro de ~450 tokens por consulta)
+        pnl_bracket = round((pnl / (entry_p or 1.0)) * 100.0, 1)
+        if valkey_cache:
+            cached = valkey_cache.get_cached_audit(sym, side, is_win, exit_reason, pnl_bracket)
+            if cached:
+                print(f"  ⚡ [Valkey RAM Cache Hit] Diagnóstico recuperado de RAM para {sym} (450 tokens ahorrados)", flush=True)
+                audit_record = {
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "symbol": sym,
+                    "side": side,
+                    "pnl": round(pnl, 4),
+                    "is_win": is_win,
+                    "entry_p": entry_p,
+                    "exit_p": exit_p,
+                    "exit_reason": exit_reason,
+                    "diagnostico": cached.get("diagnostico_forense", cached.get("diagnostico", "Evaluado en caché.")),
+                    "calidad": cached.get("calidad_decision", cached.get("calidad", "EVALUADO")),
+                    "puntaje": cached.get("puntaje_calidad", cached.get("puntaje", 8)),
+                    "leccion": cached.get("leccion_cuantitativa", cached.get("leccion", "Mantener disciplina algorítmica.")),
+                    "ajuste_sugerido": cached.get("ajuste_parametro", cached.get("ajuste_sugerido", {})),
+                    "valkey_cache_hit": True
+                }
+                self.audits.append(audit_record)
+                self.save_audits()
+                return audit_record
+
         # Memoria previa sobre este activo para darle contexto al LLM
         coin_mem = self.system_memory.get("coin_lessons", {}).get(sym, {})
         past_losses = coin_mem.get("losses", 0)
@@ -187,6 +218,10 @@ Responde ÚNICAMENTE en JSON con este esquema estricto:
                 
                 self.audits.append(audit_record)
                 self.save_audits()
+
+                # Guardar en Valkey RAM para ahorrar tokens en futuros análisis similares
+                if valkey_cache:
+                    valkey_cache.set_cached_audit(sym, side, is_win, exit_reason, pnl_bracket, parsed)
 
                 # Actualizar Memoria del Sistema para esta moneda
                 if sym not in self.system_memory["coin_lessons"]:

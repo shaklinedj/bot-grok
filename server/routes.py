@@ -50,6 +50,17 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             history_data = self.bot.db.get_full_history() if self.bot else []
             self.wfile.write(json.dumps(history_data).encode("utf-8"))
+        elif self.path == "/api/valkey/stats":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            try:
+                from valkey_llm_cache import valkey_cache
+                stats_data = valkey_cache.get_stats()
+            except Exception as e:
+                stats_data = {"error": str(e), "valkey_status": "OFFLINE"}
+            self.wfile.write(json.dumps(stats_data).encode("utf-8"))
         elif self.path == "/api/status":
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -102,6 +113,12 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
+            try:
+                from valkey_llm_cache import valkey_cache
+                valkey_stats = valkey_cache.get_stats()
+            except Exception:
+                valkey_stats = {"valkey_status": "OFFLINE"}
+
             payload = {
                 "cash": round(bot.cash, 2),
                 "equity": round(equity, 2),
@@ -126,7 +143,8 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 "btc_context": update_btc_context(),
                 "recent_autopsies": autopsies,
                 "buda_sim": buda_sim,
-                "carry_sim": carry_sim
+                "carry_sim": carry_sim,
+                "valkey_stats": valkey_stats
             }
             self.wfile.write(json.dumps(payload).encode("utf-8"))
         else:
