@@ -12,9 +12,31 @@ import subprocess
 import threading
 import webbrowser
 import ctypes
+import socket
 from datetime import datetime
 from PIL import Image, ImageDraw
 import pystray
+
+MASTER_LOCK_PORT = 48901
+_lock_socket = None
+
+def ensure_single_instance():
+    """Garantiza que no existan dos instancias del supervisor maestro corriendo a la vez."""
+    global _lock_socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", MASTER_LOCK_PORT))
+        s.listen(1)
+        _lock_socket = s
+        return True
+    except OSError:
+        print("\n" + "=" * 70)
+        print("  ⚠️ [INSTANCIA DUPLICADA DETECTADA]")
+        print("  Ya existe un Supervisor Maestro 24/7 corriendo en este equipo.")
+        print("  Revisa tu barra de tareas (junto al reloj) o abre: http://localhost:8900")
+        print("=" * 70 + "\n")
+        time.sleep(3)
+        sys.exit(0)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOGS_DIR = os.path.join(BASE_DIR, "swing_logs", "paper")
@@ -94,6 +116,7 @@ def log_master(msg: str):
 
 def run_supervisor():
     global is_running
+    ensure_single_instance()
     try:
         ctypes.windll.kernel32.SetConsoleTitleW("🟢 BOT GROK 24/7 - SISTEMA EN VIVO")
     except Exception:
