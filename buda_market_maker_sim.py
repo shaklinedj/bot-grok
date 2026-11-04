@@ -267,65 +267,58 @@ class BudaMarketMakerSim:
         vol_usd = self.total_volume_clp / mid_price if mid_price > 0 else 0.0
         self.current_maker_fee, self.current_tier_label = get_buda_fee_tier(vol_usd)
         roundtrip_fee = self.current_maker_fee * 2
-        min_profitable_spread = roundtrip_fee + 0.0008  # Mínimo +0.08% de ganancia neta garantizada
+        min_profitable_spread = max(0.0048, roundtrip_fee + 0.0012)  # Mínimo 0.48% o comisión + 0.12% margen neto
 
-        # 4. Gestión Cuantitativa de Inventario & Cotización Adaptativa
+        # 4. Gestión Cuantitativa de Inventario & Cotización con Break-Even Dinámico
         usdt_val_clp = self.usdt_balance * mid_price
         inv_ratio_usdt = (usdt_val_clp / current_equity_clp) if current_equity_clp > 0 else 0.50
 
-        # Caso A: Déficit severo de USDT (< 20% del capital) -> Sesgo comprador agresivo
-        if inv_ratio_usdt < 0.20:
+        # Precio mínimo para salir a coste cero neto (Break-Even exacto cubriendo compra + venta)
+        be_ask_price = round(self.avg_cost_price * (1.0 + self.current_maker_fee) / (1.0 - self.current_maker_fee), 2)
+        half_spread = mid_price * (min_profitable_spread / 2.0)
+
+        # Caso A: Déficit de USDT (< 25% del capital) -> Sesgo comprador
+        if inv_ratio_usdt < 0.25:
             self.strategy_mode = "SKEW_RELOAD_USDT"
             target_bid = round(best_bid + 0.01, 2)
-            target_ask = round(max(best_ask, mid_price * (1.0 + min_profitable_spread)), 2)
-            order_size_usdt_buy = round(min(45.0, (self.clp_balance * 0.60) / target_bid), 4) if self.clp_balance >= 5000 else 0.0
-            order_size_usdt_sell = round(self.usdt_balance * 0.50, 4) if self.usdt_balance >= 1.0 else 0.0
+            target_ask = round(max(best_ask, be_ask_price, mid_price * (1.0 + min_profitable_spread)), 2)
+            order_size_usdt_buy = round(min(25.0, (self.clp_balance * 0.50) / target_bid), 4) if self.clp_balance >= 5000 else 0.0
+            order_size_usdt_sell = round(min(15.0, self.usdt_balance * 0.50), 4) if self.usdt_balance >= 1.0 else 0.0
 
-        # Caso B: Exceso severo de USDT (> 80% del capital) -> Sesgo vendedor agresivo
-        elif inv_ratio_usdt > 0.80:
-            self.strategy_mode = "SKEW_DUMP_USDT"
-            target_bid = round(min(best_bid, mid_price * (1.0 - min_profitable_spread)), 2)
-            target_ask = round(best_ask - 0.01, 2)
-            order_size_usdt_buy = round((self.clp_balance * 0.50) / target_bid, 4) if self.clp_balance >= 5000 else 0.0
-            order_size_usdt_sell = round(min(45.0, self.usdt_balance * 0.60), 4) if self.usdt_balance >= 5.0 else 0.0
+        # Caso B: Exceso de USDT (> 75% del capital) -> Desescalada Suave & Break-Even Dinámico
+        elif inv_ratio_usdt > 0.75:
+            target_bid = round(min(best_bid, mid_price - half_spread), 2)
+            order_size_usdt_buy = round(min(10.0, (self.clp_balance * 0.30) / target_bid), 4) if self.clp_balance >= 5000 else 0.0
 
-        # Caso C: Inventario equilibrado (20% - 80%)
+            # Sub-caso B1: El mercado permite salir en Break-Even o con ganancia
+            if best_ask >= be_ask_price:
+                self.strategy_mode = "DEFENSIVE_BREAK_EVEN"
+                target_ask = round(max(be_ask_price, best_ask - 0.01), 2)
+                order_size_usdt_sell = round(min(25.0, self.usdt_balance * 0.40), 4) if self.usdt_balance >= 2.0 else 0.0
+
+            # Sub-caso B2: Movimiento brusco hacia abajo (best_ask < be_ask_price).
+            # En lugar de un "dump masivo" con pérdidas brutales, aplicamos desescalada suave (TWAP defensivo):
+            # Salimos en pequeños tramos (15-20% del inventario) con descuento controlado para rotar liquidez sin congelarse.
+            else:
+                self.strategy_mode = "SOFT_DEESCALATION_TWAP"
+                # Concesión suave: nunca vender con más de 0.25% de descuento respecto a BE
+                soft_floor = round(be_ask_price * 0.9975, 2)
+                target_ask = round(max(soft_floor, best_ask), 2)
+                order_size_usdt_sell = round(min(12.0, self.usdt_balance * 0.20), 4) if self.usdt_balance >= 2.0 else 0.0
+
+        # Caso C: Inventario equilibrado (25% - 75%) -> Spread Puro Rentable & Invariante de Ganancia
         else:
-            # Sub-caso 1: El spread de adentro es amplio y rentable por sí solo
             if spread_pct >= (min_profitable_spread * 100.0):
                 self.strategy_mode = "WIDE_SPREAD_MAKER"
                 target_bid = round(best_bid + 0.01, 2)
-                target_ask = round(best_ask - 0.01, 2)
-
-            # Sub-caso 2: Spread de adentro estrecho por bots VIP, pero el Bolsillo entre Murallas es rentable
-            elif wall_pocket_pct >= (min_profitable_spread * 100.0):
-                self.strategy_mode = "WALL_BOUNCE"
-                # Frontrunning seguro a las murallas institucionales:
-                # Nos paramos $0.05 CLP por delante del gran bid y $0.05 CLP por delante del gran ask
-                trend_bias = 0.05 if self.var_24h > 0.002 else (-0.05 if self.var_24h < -0.002 else 0.0)
-                
-                cand_bid = round(bid_wall_p + 0.05 + trend_bias, 2)
-                cand_ask = round(ask_wall_p - 0.05 + trend_bias, 2)
-                
-                # Respetar límites del libro
-                target_bid = min(round(best_bid + 0.01, 2), max(cand_bid, round(bid_wall_p + 0.01, 2)))
-                target_ask = max(round(best_ask - 0.01, 2), min(cand_ask, round(ask_wall_p - 0.01, 2)))
-                
-                # Salvaguarda matemática: si tras el recorte el spread es menor a lo rentable, abrirlo simétricamente
-                if (target_ask - target_bid) / target_bid < min_profitable_spread:
-                    half_spread = mid_price * (min_profitable_spread / 2.0)
-                    target_bid = round(mid_price - half_spread, 2)
-                    target_ask = round(mid_price + half_spread, 2)
-
-            # Sub-caso 3: Modo conservador simétrico
+                target_ask = round(max(be_ask_price, best_ask - 0.01), 2)
             else:
-                self.strategy_mode = "SAFE_HALF_SPREAD"
-                half_spread = mid_price * (min_profitable_spread / 2.0)
+                self.strategy_mode = "SAFE_SYMMETRIC_SPREAD"
                 target_bid = round(mid_price - half_spread, 2)
-                target_ask = round(mid_price + half_spread, 2)
+                target_ask = round(max(be_ask_price, mid_price + half_spread), 2)
 
-            order_size_usdt_buy = round(min(25.0, (self.clp_balance * 0.40) / target_bid), 4) if self.clp_balance >= 5000 else 0.0
-            order_size_usdt_sell = round(min(25.0, self.usdt_balance * 0.40), 4) if self.usdt_balance >= 2.0 else 0.0
+            order_size_usdt_buy = round(min(20.0, (self.clp_balance * 0.40) / target_bid), 4) if self.clp_balance >= 5000 else 0.0
+            order_size_usdt_sell = round(min(20.0, self.usdt_balance * 0.40), 4) if self.usdt_balance >= 2.0 else 0.0
 
         self.my_bid_price = target_bid
         self.my_ask_price = target_ask
@@ -407,7 +400,7 @@ class BudaMarketMakerSim:
         print(f"  📊 BUDA {datetime.now().strftime('%H:%M:%S')}: Bid ${best_bid:.2f} | Ask ${best_ask:.2f} | Spread Int.: ${spread_clp:.2f} ({spread_pct:.2f}%) {spread_status}")
         print(f"  🧱 MURALLAS L2: Bid Wall ${self.bid_wall_price:.2f} ({self.bid_wall_vol:,.0f}U) | Ask Wall ${self.ask_wall_price:.2f} ({self.ask_wall_vol:,.0f}U)")
         print(f"  👝 BOLSILLO MURALLAS: ${self.wall_pocket_spread:.2f} CLP ({self.wall_pocket_pct:.2f}%) | Margen Neto Estimado: {net_margin_proj:+.2f}%")
-        print(f"  🎯 ÓRDENES MAKER: Compra {self.my_bid_amount:.2f}U @ ${self.my_bid_price:.2f} | Venta {self.my_ask_amount:.2f}U @ ${self.my_ask_price:.2f}")
+        print(f"  🎯 ÓRDENES MAKER: Compra {self.my_bid_amount:.2f}U @ ${self.my_bid_price:.2f} | Venta {self.my_ask_amount:.2f}U @ ${self.my_ask_price:.2f} (Costo: ${self.avg_cost_price:.2f} | BE: ${be_ask_price:.2f})")
         print(f"  💼 CAPITAL: ${self.clp_balance:,.0f} CLP + {self.usdt_balance:.2f} USDT = Total ${current_equity_clp:,.0f} CLP (~${current_equity_usd:.2f} USD)")
         print(f"  📈 PnL Realizado: {self.realized_pnl_clp:+,.2f} CLP | Trades: {self.trades_completed} | Vol: ${self.total_volume_clp:,.0f} CLP (~${vol_usd:,.0f} USD)")
         if self.history:
