@@ -17,6 +17,7 @@ import urllib.request
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 from execution.stale_guard import check_spread_health
+from database import SwingDatabase
 
 # Configurar encoding UTF-8 en consola Windows
 if hasattr(sys.stdout, "reconfigure"):
@@ -26,7 +27,6 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 BUDA_API_BASE = "https://www.buda.com/api/v2"
-STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "buda_sim_state.json")
 
 # Configuración Inicial ($100 USD en CLP al tipo de cambio de arranque)
 INITIAL_CLP_CASH = 50000.0      # $50,000 CLP para comprar USDT
@@ -118,6 +118,7 @@ class BudaMarketMakerSim:
         self.var_24h = 0.0
         
         self.history: List[Dict[str, Any]] = []
+        self.db = SwingDatabase()
         self.load_state()
 
     def fetch_api(self, endpoint: str) -> Optional[Dict[str, Any]]:
@@ -141,23 +142,21 @@ class BudaMarketMakerSim:
         return {"var_24h": 0.0}
 
     def load_state(self):
-        if os.path.exists(STATE_FILE):
-            try:
-                with open(STATE_FILE, "r", encoding="utf-8") as f:
-                    d = json.load(f)
-                    self.clp_balance = float(d.get("clp_balance", INITIAL_CLP_CASH))
-                    self.usdt_balance = float(d.get("usdt_balance", INITIAL_USDT_INV))
-                    self.initial_equity_clp = float(d.get("initial_equity_clp", 0.0))
-                    self.realized_pnl_clp = float(d.get("realized_pnl_clp", 0.0))
-                    self.trades_completed = int(d.get("trades_completed", 0))
-                    self.total_volume_clp = float(d.get("total_volume_clp", 0.0))
-                    self.last_seen_trade_id = int(d.get("last_seen_trade_id", 0))
-                    self.avg_cost_price = float(d.get("avg_cost_price", 0.0))
-                    self.history = d.get("history", [])
-            except Exception:
-                pass
+        """Carga el estado de Buda MM directamente desde SQLite WAL."""
+        d = self.db.load_buda_state()
+        if d:
+            self.clp_balance = float(d.get("clp_balance", INITIAL_CLP_CASH))
+            self.usdt_balance = float(d.get("usdt_balance", INITIAL_USDT_INV))
+            self.initial_equity_clp = float(d.get("initial_equity_clp", 0.0))
+            self.realized_pnl_clp = float(d.get("realized_pnl_clp", 0.0))
+            self.trades_completed = int(d.get("trades_completed", 0))
+            self.total_volume_clp = float(d.get("total_volume_clp", 0.0))
+            self.last_seen_trade_id = int(d.get("last_seen_trade_id", 0))
+            self.avg_cost_price = float(d.get("avg_cost_price", 0.0))
+            self.history = d.get("history", [])
 
     def save_state(self):
+        """Persiste el estado de Buda MM directamente en SQLite WAL de forma atómica."""
         pnl_pct = (self.realized_pnl_clp / self.initial_equity_clp * 100.0) if self.initial_equity_clp > 0 else 0.0
         d = {
             "market": self.market.upper(),
@@ -194,11 +193,7 @@ class BudaMarketMakerSim:
             "history": self.history[-50:],
             "updated_at": datetime.now().isoformat()
         }
-        try:
-            with open(STATE_FILE, "w", encoding="utf-8") as f:
-                json.dump(d, f, indent=2)
-        except Exception:
-            pass
+        self.db.save_buda_state(d)
 
     def run_cycle(self):
         # 1. Obtener libro de órdenes en vivo
@@ -364,6 +359,10 @@ class BudaMarketMakerSim:
                         log_msg = f"📥 [FILL COMPRA MAKER] Compramos {fill_amt:.2f} USDT @ ${self.my_bid_price:.2f} CLP (Fee {self.current_maker_fee*100:.2f}%: ${fee:.1f} CLP)"
                         new_fills.append(log_msg)
                         self.history.append({"time": datetime.now().strftime("%H:%M:%S"), "side": "BUY", "amount": fill_amt, "price": self.my_bid_price, "fee": fee})
+                        try:
+                            self.db.log_buda_trade("BUY", self.my_bid_price, fill_amt, gross_cost, fee, 0.0, "Maker BUY fill")
+                        except Exception:
+                            pass
 
                 # Si un usuario chileno ejecutó BUY a mercado y el precio tocó o subió por encima de nuestro Ask:
                 elif tr_side == "buy" and tr_price >= self.my_ask_price and self.my_ask_amount > 0:
@@ -384,6 +383,10 @@ class BudaMarketMakerSim:
                         log_msg = f"📤 [FILL VENTA MAKER] Vendimos {fill_amt:.2f} USDT @ ${self.my_ask_price:.2f} CLP | Ganancia neta: {trade_profit:+.1f} CLP (Fee {self.current_maker_fee*100:.2f}%: ${fee:.1f} CLP)"
                         new_fills.append(log_msg)
                         self.history.append({"time": datetime.now().strftime("%H:%M:%S"), "side": "SELL", "amount": fill_amt, "price": self.my_ask_price, "fee": fee, "profit": trade_profit})
+                        try:
+                            self.db.log_buda_trade("SELL", self.my_ask_price, fill_amt, gross_revenue, fee, trade_profit, "Maker SELL fill")
+                        except Exception:
+                            pass
 
         self.save_state()
 

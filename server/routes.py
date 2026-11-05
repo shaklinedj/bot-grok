@@ -84,23 +84,8 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             total_unrealized_pct = ((total_unrealized / total_invested) * 100.0) if total_invested > 0 else 0.0
             equity = bot.cash + (total_invested + total_unrealized)
 
-            buda_sim = None
-            buda_file = os.path.join(BASE_DIR, "buda_sim_state.json")
-            if os.path.exists(buda_file):
-                try:
-                    with open(buda_file, "r", encoding="utf-8") as bf:
-                        buda_sim = json.load(bf)
-                except Exception:
-                    pass
-
-            carry_sim = None
-            carry_file = os.path.join(BASE_DIR, "cash_carry_sim_state.json")
-            if os.path.exists(carry_file):
-                try:
-                    with open(carry_file, "r", encoding="utf-8") as cf:
-                        carry_sim = json.load(cf)
-                except Exception:
-                    pass
+            buda_sim = bot.db.load_buda_state() if hasattr(bot, "db") else None
+            carry_sim = bot.db.load_cash_carry_state() if hasattr(bot, "db") else None
 
             payload = {
                 "cash": round(bot.cash, 2),

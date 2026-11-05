@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 import ccxt
 from execution.depth_slippage import calculate_orderbook_vwap
+from database import SwingDatabase
 
 # Configurar encoding UTF-8 en consola Windows
 if hasattr(sys.stdout, "reconfigure"):
@@ -23,50 +24,46 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_FILE = os.path.join(BASE_DIR, "cash_carry_sim_state.json")
-
 INITIAL_CAPITAL = 100.00  # $100 USDT dedicados exclusivamente a este motor
 BINANCE_EXCHANGE = ccxt.binance({"enableRateLimit": True})
 
 
 class CashAndCarrySimulator:
     def __init__(self):
+        self.db = SwingDatabase()
         self.capital = INITIAL_CAPITAL
         self.initial_capital = INITIAL_CAPITAL
         self.total_interest_earned = 0.0
         self.payments_collected = 0
-        self.active_pair = "BTC/USDT:USDT"
+        self.active_pair = "USDEX/USDT"
         self.active_rate_8h = 0.0001
         self.active_apr = 10.95
         self.next_funding_time = 0
-        self.last_payment_timestamp = 0
+        self.last_payment_timestamp = time.time()
         self.top_opportunities: List[Dict[str, Any]] = []
         self.history: List[Dict[str, Any]] = []
         self.load_state()
 
     def load_state(self):
-        if os.path.exists(STATE_FILE):
-            try:
-                with open(STATE_FILE, "r", encoding="utf-8") as f:
-                    d = json.load(f)
-                    self.capital = float(d.get("capital", INITIAL_CAPITAL))
-                    self.initial_capital = float(d.get("initial_capital", INITIAL_CAPITAL))
-                    self.total_interest_earned = float(d.get("total_interest_earned", 0.0))
-                    self.payments_collected = int(d.get("payments_collected", 0))
-                    self.active_pair = d.get("active_pair", "BTC/USDT:USDT")
-                    raw_r = float(d.get("active_rate_8h_dec", 0.0) or d.get("active_rate_8h", 0.0008))
-                    # Normalizar a decimal puro estricto (ej: 0.08% -> 0.0008)
-                    while raw_r > 0.01:
-                        raw_r /= 100.0
-                    self.active_rate_8h = raw_r
-                    self.active_apr = float(d.get("active_apr", raw_r * 3.0 * 365.0 * 100.0))
-                    self.last_payment_timestamp = int(d.get("last_payment_timestamp", 0))
-                    self.history = d.get("history", [])
-            except Exception:
-                pass
+        """Carga el estado de Cash & Carry directamente desde SQLite WAL."""
+        d = self.db.load_cash_carry_state()
+        if d:
+            self.capital = float(d.get("capital", INITIAL_CAPITAL))
+            self.initial_capital = float(d.get("initial_capital", INITIAL_CAPITAL))
+            self.total_interest_earned = float(d.get("total_interest_earned", 0.0))
+            self.payments_collected = int(d.get("payments_collected", 0))
+            self.active_pair = d.get("active_pair", "USDEX/USDT")
+            raw_r = float(d.get("active_rate_8h_dec", 0.0) or d.get("active_rate_8h", 0.0008))
+            while raw_r > 0.01:
+                raw_r /= 100.0
+            self.active_rate_8h = raw_r
+            self.active_apr = float(d.get("active_apr", raw_r * 3.0 * 365.0 * 100.0))
+            self.last_payment_timestamp = float(d.get("last_payment_timestamp", time.time()))
+            self.top_opportunities = d.get("top_opportunities", [])
+            self.history = d.get("history", [])
 
     def save_state(self):
+        """Persiste el estado de Cash & Carry directamente en SQLite WAL de forma atómica."""
         pnl_pct = ((self.capital - self.initial_capital) / self.initial_capital * 100.0) if self.initial_capital > 0 else 0.0
         d = {
             "initial_capital": round(self.initial_capital, 2),
@@ -78,15 +75,12 @@ class CashAndCarrySimulator:
             "active_rate_8h": round(self.active_rate_8h * 100, 4),
             "active_rate_8h_dec": self.active_rate_8h,
             "active_apr": round(self.active_apr, 2),
+            "last_payment_timestamp": self.last_payment_timestamp,
             "top_opportunities": self.top_opportunities[:5],
             "history": self.history[-30:],
             "updated_at": datetime.now().isoformat()
         }
-        try:
-            with open(STATE_FILE, "w", encoding="utf-8") as f:
-                json.dump(d, f, indent=2)
-        except Exception:
-            pass
+        self.db.save_cash_carry_state(d)
 
     def scan_best_funding_opportunities(self):
         try:
@@ -192,6 +186,10 @@ class CashAndCarrySimulator:
                     "payout": round(interest, 4),
                     "new_capital": round(self.capital, 4)
                 })
+                try:
+                    self.db.log_cash_carry_payout(self.active_pair, self.active_rate_8h * 100.0, interest, self.capital)
+                except Exception:
+                    pass
 
             self.last_payment_timestamp = now
             self.save_state()

@@ -118,6 +118,34 @@ class SwingDatabase:
                     adaptive_action TEXT NOT NULL
                 );
             """)
+
+            # 7. Tabla de Trades de Buda Market Maker (Pilar 3)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS buda_trades (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    price REAL NOT NULL,
+                    amount REAL NOT NULL,
+                    total_clp REAL NOT NULL,
+                    fee_clp REAL NOT NULL,
+                    profit_clp REAL DEFAULT 0.0,
+                    note TEXT
+                );
+            """)
+
+            # 8. Tabla de Liquidaciones Funding Cash & Carry (Pilar 4)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS cash_carry_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    pair TEXT NOT NULL,
+                    rate_8h_pct REAL NOT NULL,
+                    payout_usdt REAL NOT NULL,
+                    new_capital REAL NOT NULL,
+                    note TEXT
+                );
+            """)
             conn.commit()
 
     def log_trade(self, symbol: str, side: str, price: float, amount: float, capital: float,
@@ -308,4 +336,80 @@ class SwingDatabase:
                 FROM trade_autopsies
                 ORDER BY id DESC LIMIT ?
             """, (limit,)).fetchall()
+            return [dict(r) for r in rows]
+
+    # --- Métodos de Persistencia SQLite para Buda Market Maker (Pilar 3) ---
+    def save_buda_state(self, state: Dict[str, Any]):
+        """Persiste el estado operativo de Buda MM en SQLite de forma atómica y segura."""
+        ts = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            conn.execute("""
+                INSERT INTO bot_state (key, val_json, updated_at)
+                VALUES ('buda_state', ?, ?)
+                ON CONFLICT(key) DO UPDATE SET val_json=excluded.val_json, updated_at=excluded.updated_at
+            """, (json.dumps(state), ts))
+            conn.commit()
+
+    def load_buda_state(self) -> Optional[Dict[str, Any]]:
+        """Recupera el estado de Buda MM directamente desde SQLite."""
+        with self._get_connection() as conn:
+            row = conn.execute("SELECT val_json FROM bot_state WHERE key = 'buda_state'").fetchone()
+            if row and row["val_json"]:
+                try:
+                    return json.loads(row["val_json"])
+                except Exception:
+                    pass
+        return None
+
+    def log_buda_trade(self, side: str, price: float, amount: float, total_clp: float, fee_clp: float, profit_clp: float = 0.0, note: str = ""):
+        """Registra un fill del market maker de Buda en SQLite."""
+        ts = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            conn.execute("""
+                INSERT INTO buda_trades (timestamp, side, price, amount, total_clp, fee_clp, profit_clp, note)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (ts, side, price, amount, total_clp, fee_clp, profit_clp, note))
+            conn.commit()
+
+    def get_buda_trades(self, limit: int = 50) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            rows = conn.execute("SELECT * FROM buda_trades ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+            return [dict(r) for r in rows]
+
+    # --- Métodos de Persistencia SQLite para Binance Cash & Carry (Pilar 4) ---
+    def save_cash_carry_state(self, state: Dict[str, Any]):
+        """Persiste el estado operativo de Cash & Carry en SQLite de forma atómica y segura."""
+        ts = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            conn.execute("""
+                INSERT INTO bot_state (key, val_json, updated_at)
+                VALUES ('cash_carry_state', ?, ?)
+                ON CONFLICT(key) DO UPDATE SET val_json=excluded.val_json, updated_at=excluded.updated_at
+            """, (json.dumps(state), ts))
+            conn.commit()
+
+    def load_cash_carry_state(self) -> Optional[Dict[str, Any]]:
+        """Recupera el estado de Cash & Carry directamente desde SQLite."""
+        with self._get_connection() as conn:
+            row = conn.execute("SELECT val_json FROM bot_state WHERE key = 'cash_carry_state'").fetchone()
+            if row and row["val_json"]:
+                try:
+                    return json.loads(row["val_json"])
+                except Exception:
+                    pass
+        return None
+
+    def log_cash_carry_payout(self, pair: str, rate_8h_pct: float, payout_usdt: float, new_capital: float, note: str = ""):
+        """Registra una liquidación de funding rate 8h de Binance en SQLite."""
+        ts = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            conn.execute("""
+                INSERT INTO cash_carry_history (timestamp, pair, rate_8h_pct, payout_usdt, new_capital, note)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (ts, pair, rate_8h_pct, payout_usdt, new_capital, note))
+            conn.commit()
+
+    def get_cash_carry_history(self, limit: int = 50) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            rows = conn.execute("SELECT * FROM cash_carry_history ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
             return [dict(r) for r in rows]
