@@ -241,6 +241,10 @@ def run_hourly_swing():
     bot = SwingBot()
     reconciler = QuantitativeReconciler(bot.db.db_path)
     last_reconcile_time = time.time() - 3300.0  # Primera verificación a los 5 minutos de arrancar
+    try:
+        bot.real_grid_stats = fetch_real_pionex_grid_stats()
+    except Exception:
+        pass
     start_swing_dashboard(bot, SWING_HTTP_PORT)
 
     scan_th = threading.Thread(target=swing_telemetry_thread, args=(bot,), daemon=True)
