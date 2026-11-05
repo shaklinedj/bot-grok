@@ -13,6 +13,18 @@ import threading
 import webbrowser
 import ctypes
 import socket
+
+# Configurar encoding UTF-8 en consola Windows para evitar UnicodeEncodeError con emojis
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 from datetime import datetime
 from PIL import Image, ImageDraw
 import pystray
