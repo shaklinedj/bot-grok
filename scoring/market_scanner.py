@@ -41,18 +41,20 @@ def fetch_real_pionex_grid_stats() -> Dict[str, Any]:
         if res.returncode == 0:
             data = json.loads(res.stdout).get("data", {})
             bod = data.get("buOrderData", {})
-            base_amount = float(bod.get("baseAmount", 804.28))
-            quote_amount = float(bod.get("quoteAmount", 7.26))
+            base_amount = float(bod.get("baseAmount", 0.0))
+            quote_amount = float(bod.get("quoteAmount", 0.0))
             init_inv = float(bod.get("initUsdtInvestment", 69.71))
             grid_profit = float(bod.get("gridProfit", 0.0))
             profit_withdrawn = float(bod.get("profitWithdrawn", 0.0))
 
-            # Obtener precio spot de DOGE para calcular la fluctuación flotante real (app Pionex)
+            # Obtener precio spot de DOGE en vivo directamente para reflejar el valor exacto de la App
+            doge_p = 0.0725
             try:
                 doge_t = exchange.fetch_ticker("DOGE/USDT")
-                doge_p = float(doge_t.get("last", 0.0753))
+                if doge_t and "last" in doge_t and doge_t["last"]:
+                    doge_p = float(doge_t["last"])
             except Exception:
-                doge_p = 0.0753
+                pass
 
             current_equity = round((base_amount * doge_p) + quote_amount, 2)
             floating_pnl = round(current_equity - init_inv, 4)
