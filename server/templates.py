@@ -12,7 +12,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    <title>THE SWING SNIPER & PIONEX GRID - QUANT DASHBOARD</title>
+    <title>QUANTUM ARBITRAGE & SWING SNIPER - QUANT DASHBOARD</title>
 
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
 
@@ -766,7 +766,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
                 <h1>🦅 THE QUANT SNIPER & GRID DESK</h1>
 
-                <div class="title-sub">Dual Architecture: Malla Spot Pionex (Real) + Asymmetric Swing 1H/4H (Paper)</div>
+                <div class="title-sub">Multi-Pilar Cuantitativo: Binance Cash & Carry Real + Asymmetric Swing 1H/4H + Buda MM</div>
 
             </div>
 
@@ -794,91 +794,57 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
         <div class="grid-2col">
 
-            <!-- PILAR 1: MALLA REAL PIONEX (DOGE) -->
-
-            <div class="card" style="border-left: 4px solid var(--purple);">
-
+                        <!-- PILAR 1: BINANCE CASH & CARRY ROTATIVO (DELTA-NEUTRAL EN VIVO) -->
+            <div class="card" id="carry-box" style="border-left: 4px solid #f59e0b;">
                 <div class="card-header">
-
-                    <div class="card-title" style="color: var(--purple);">
-
-                        <span>⚡ PILAR 1: MALLA PIONEX SPOT REAL (DOGE/USDT)</span>
-
+                    <div class="card-title" style="color: #f59e0b;">
+                        <span>⚖️ PILAR 1: BINANCE CASH & CARRY (ARBITRAJE DE INTERESES EN VIVO)</span>
                     </div>
-
-                    <span class="tag tag-green">BOT EN EJECUCIÓN</span>
-
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <span class="tag tag-green" id="carry-mode-badge">🔴 REAL EN VIVO (BINANCE)</span>
+                        <span class="tag tag-yellow">DELTA-NEUTRAL (RIESGO 0%)</span>
+                    </div>
                 </div>
-
                 <div class="metric-box">
-
                     <div class="metric">
-
-                        <div class="metric-label">Inversión Inicial</div>
-
-                        <div class="metric-value" id="grid-invest">$69.71</div>
+                        <div class="metric-label">Capital Binance (Spot+Fut)</div>
+                        <div class="metric-value" id="carry-capital" style="color: #f59e0b; font-size: 14px;">$65.64 USDT</div>
                     </div>
                     <div class="metric">
-                        <div class="metric-label">Patrimonio Actual (App)</div>
-                        <div class="metric-value" id="grid-equity" style="color: #e3b341;">$65.59</div>
-
+                        <div class="metric-label">Par Activo en Vivo</div>
+                        <div class="metric-value" id="carry-pair" style="color: #58a6ff;">XVG/USDT</div>
                     </div>
-
                     <div class="metric">
-
-                        <div class="metric-label">Ganancia de Malla (Grid)</div>
-
-                        <div class="metric-value" style="color: var(--green);" id="grid-profit">+$0.63 USDT</div>
-
+                        <div class="metric-label">Tasa Actual (8h)</div>
+                        <div class="metric-value" id="carry-rate" style="color: #3fb950;">+0.0636% / 8h</div>
                     </div>
-
                     <div class="metric">
-
-                        <div class="metric-label">Flotante DOGE (No Realizado)</div>
-
-                        <div class="metric-value" id="grid-floating">-$1.84 USDT</div>
-
+                        <div class="metric-label">Rendimiento Anual (APR)</div>
+                        <div class="metric-value" id="carry-apr" style="color: #3fb950; font-weight: bold;">+69.7% Anual</div>
                     </div>
-
                     <div class="metric">
-
-                        <div class="metric-label">Resultado Total (App)</div>
-
-                        <div class="metric-value" id="grid-total-pnl">-$1.21 USDT</div>
-
+                        <div class="metric-label">Pago por Ciclo</div>
+                        <div class="metric-value" id="carry-payout">+$0.0417 USDT / 8h</div>
                     </div>
-
                     <div class="metric">
-
-                        <div class="metric-label">Arbitrajes Emparejados</div>
-
-                        <div class="metric-value" id="grid-pairs">661 pares</div>
-
+                        <div class="metric-label">Intereses Cobrados</div>
+                        <div class="metric-value" id="carry-collected" style="color: #f59e0b;">+$0.00 USDT (0 pagos)</div>
                     </div>
-
-                    <div class="metric">
-
-                        <div class="metric-label">Rango Activo</div>
-
-                        <div class="metric-value" style="font-size: 13px;" id="grid-range">0.0724 - 0.1012</div>
-
-                    </div>
-
                 </div>
-
-                <div style="font-size: 11px; color: var(--text-dim); font-family: monospace; line-height: 1.5;">
-
-                    • Estado: <b style="color: #ffffff;">Reinversión Automática Activa</b> | Trailing-Up Activado (+5%).<br>
-
-                    • Tu bot real en Pionex está 100% aislado y ganando dinero de la oscilación lateral.
-
+                <!-- ESTRUCTURA DEL TRADE DELTA-NEUTRAL -->
+                <div style="margin-top: 10px; background: #090d13; border: 1px solid #21262d; border-radius: 6px; padding: 8px 12px; font-family: 'JetBrains Mono', monospace; font-size: 11px;">
+                    <div style="color: var(--text-dim); font-size: 10px; font-weight: 600; margin-bottom: 4px;">🛡️ ESTRUCTURA HÍBRIDA (INTERÉS COMPUESTO 3 VECES AL DÍA):</div>
+                    <div id="carry-structure-feed" style="color: #ffffff;">
+                        <span style="color:#3fb950;">50% Spot Long</span> + <span style="color:#f85149;">50% Short Futuros x2</span> = <b>Exposición de Mercado: 0.00%</b> | Cobro de Funding cada 8h en USDT puro.
+                    </div>
                 </div>
-
+                <!-- TOP OPORTUNIDADES ROTATIVAS EN VIVO -->
+                <div style="margin-top: 8px; font-size: 11px; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; display: flex; align-items: center; gap: 6px;">
+                    <span style="color: #f59e0b;">🔥</span> <span id="carry-top-feed">Escaneando perpetuos en Binance...</span>
+                </div>
             </div>
 
-
-
-            <!-- PILAR 2: SWING SNIPER (1H / 4H PAPER) -->
+<!-- PILAR 2: SWING SNIPER (1H / 4H PAPER) -->
 
             <div class="card" style="border-left: 4px solid var(--accent);">
 
@@ -1010,7 +976,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
             <!-- PILAR 3: BUDA.COM - DIGITAL DOLLAR MARKET MAKER (CASA DE CAMBIO SIMULADOR) -->
 
-            <div class="card" id="buda-box" style="border-left: 4px solid #10b981;">
+            <div class="card" id="buda-box" style="border-left: 4px solid #10b981; grid-column: 1 / -1;">
 
                 <div class="card-header">
 
@@ -1104,105 +1070,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 
 
-            <!-- PILAR 4: BINANCE CASH & CARRY ROTATIVO (DELTA-NEUTRAL FUNDING ARBITRAGE) -->
-
-            <div class="card" id="carry-box" style="border-left: 4px solid #f59e0b;">
-
-                <div class="card-header">
-
-                    <div class="card-title" style="color: #f59e0b;">
-
-                        <span>⚖️ PILAR 4: BINANCE CASH & CARRY ROTATIVO (ARBITRAJE DE INTERESES)</span>
-
-                    </div>
-
-                    <div style="display: flex; gap: 8px; align-items: center;">
-
-                        <span class="tag tag-yellow">POZO DEDICADO ($100 USDT)</span>
-
-                        <span class="tag tag-green">DELTA-NEUTRAL (RIESGO 0%)</span>
-
-                    </div>
-
-                </div>
-
-                <div class="metric-box">
-
-                    <div class="metric">
-
-                        <div class="metric-label">Capital Acumulado</div>
-
-                        <div class="metric-value" id="carry-capital" style="color: #f59e0b; font-size: 14px;">$100.00 USDT</div>
-
-                    </div>
-
-                    <div class="metric">
-
-                        <div class="metric-label">Par Rotativo Top</div>
-
-                        <div class="metric-value" id="carry-pair" style="color: #58a6ff;">KSTR/USDT</div>
-
-                    </div>
-
-                    <div class="metric">
-
-                        <div class="metric-label">Tasa Actual (8h)</div>
-
-                        <div class="metric-value" id="carry-rate" style="color: #3fb950;">+0.24% / 8h</div>
-
-                    </div>
-
-                    <div class="metric">
-
-                        <div class="metric-label">Rendimiento APR</div>
-
-                        <div class="metric-value" id="carry-apr" style="color: #3fb950; font-weight: bold;">+263.7% Anual</div>
-
-                    </div>
-
-                    <div class="metric">
-
-                        <div class="metric-label">Pago por Ciclo</div>
-
-                        <div class="metric-value" id="carry-payout">+$0.24 USDT / 8h</div>
-
-                    </div>
-
-                    <div class="metric">
-
-                        <div class="metric-label">Intereses Cobrados</div>
-
-                        <div class="metric-value" id="carry-collected" style="color: #f59e0b;">+$0.00 USDT (0 pagos)</div>
-
-                    </div>
-
-                </div>
-
-                <!-- ESTRUCTURA DEL TRADE DELTA-NEUTRAL -->
-
-                <div style="margin-top: 10px; background: #090d13; border: 1px solid #21262d; border-radius: 6px; padding: 8px 12px; font-family: 'JetBrains Mono', monospace; font-size: 11px;">
-
-                    <div style="color: var(--text-dim); font-size: 10px; font-weight: 600; margin-bottom: 4px;">🛡️ ESTRUCTURA HÍBRIDA AISLADA (INTERÉS COMPUESTO 3 VECES AL DÍA):</div>
-
-                    <div id="carry-structure-feed" style="color: #ffffff;">
-
-                        <span style="color:#3fb950;">50% Spot Long</span> + <span style="color:#f85149;">50% Short Futuros x1</span> = <b>Exposición de Mercado: 0.00%</b> | Cobro de Funding cada 8h en USDT puro.
-
-                    </div>
-
-                </div>
-
-                <!-- TOP OPORTUNIDADES ROTATIVAS EN VIVO -->
-
-                <div style="margin-top: 8px; font-size: 11px; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; display: flex; align-items: center; gap: 6px;">
-
-                    <span style="color: #f59e0b;">🔥</span> <span id="carry-top-feed">Escaneando 900 perpetuos en Binance...</span>
-
-                </div>
-
-            </div>
-
-        </div>
+            
 
 
 
@@ -1950,60 +1818,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 
 
-                // 1. Malla Real
-
-                if (d.real_grid) {
-
-                    const g = d.real_grid;
-
-                    const eqEl = document.getElementById('grid-equity');
-                    if (eqEl) {
-                        const curEq = Number(g.current_equity || (Number(g.investment || 69.71) + Number(g.floating_pnl || 0)));
-                        eqEl.innerText = '$' + curEq.toFixed(2);
-                    }
-                    document.getElementById('grid-invest').innerText = '$' + Number(g.investment || 69.71).toFixed(2);
-
-                    document.getElementById('grid-profit').innerText = '+' + Number(g.grid_profit || 0.63).toFixed(4) + ' USDT';
-
-
-
-                    const floatEl = document.getElementById('grid-floating');
-
-                    if (floatEl) {
-
-                        const fl = Number(g.floating_pnl || 0.0);
-
-                        floatEl.innerText = (fl >= 0 ? '+' : '') + fl.toFixed(2) + ' USDT';
-
-                        floatEl.style.color = fl >= 0 ? 'var(--green)' : '#f85149';
-
-                    }
-
-
-
-                    const totEl = document.getElementById('grid-total-pnl');
-
-                    if (totEl) {
-
-                        const tot = Number(g.total_profit_usdt || 0.0);
-
-                        const totPct = Number(g.total_profit_pct || 0.0);
-
-                        totEl.innerText = (tot >= 0 ? '+' : '') + tot.toFixed(2) + ` USDT (${totPct >= 0 ? '+' : ''}${totPct.toFixed(1)}%)`;
-
-                        totEl.style.color = tot >= 0 ? 'var(--green)' : '#f85149';
-
-                    }
-
-
-
-                    document.getElementById('grid-pairs').innerText = (g.paired_count || 661) + ' pares';
-
-                    document.getElementById('grid-range').innerText = (g.range_bottom || 0.0724) + ' - ' + (g.range_top || 0.1012);
-
-                }
-
-
+                // 1. Arbitraje Binance Cash & Carry en Vivo
 
                 // 2. Swing Paper
 
@@ -2624,6 +2439,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     if (cCollEl) {
 
                         cCollEl.innerText = '+$' + Number(c.total_interest_earned || 0).toFixed(4) + ' USDT (' + (c.payments_collected || 0) + ' pagos)';
+                    }
+                    const cModeBadge = document.getElementById('carry-mode-badge');
+                    if (cModeBadge && c.mode === 'LIVE_BINANCE') {
+                        cModeBadge.innerText = '🔴 REAL EN VIVO (BINANCE)';
+                        cModeBadge.className = 'tag tag-green';
 
                     }
 

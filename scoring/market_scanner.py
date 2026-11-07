@@ -31,58 +31,24 @@ _btc_performance_cache = {
 
 
 def fetch_real_pionex_grid_stats() -> Dict[str, Any]:
-    """Consulta la API de Pionex en modo SOLO LECTURA para reportar la Malla de DOGE."""
-    try:
-        exe = shutil.which("pionex-trade-cli.cmd") or shutil.which("pionex-trade-cli")
-        if not exe:
-            return {"status": "CLI no disponible"}
-        cmd = [exe, "bot", "spot_grid", "get", "--bu-order-id", REAL_DOGE_GRID_BOT_ID]
-        res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=12, shell=True)
-        if res.returncode == 0:
-            data = json.loads(res.stdout).get("data", {})
-            bod = data.get("buOrderData", {})
-            base_amount = float(bod.get("baseAmount", 0.0))
-            quote_amount = float(bod.get("quoteAmount", 0.0))
-            init_inv = float(bod.get("initUsdtInvestment", 69.71))
-            grid_profit = float(bod.get("gridProfit", 0.0))
-            profit_withdrawn = float(bod.get("profitWithdrawn", 0.0))
-
-            # Obtener precio spot de DOGE en vivo directamente para reflejar el valor exacto de la App
-            doge_p = 0.0725
-            try:
-                doge_t = exchange.fetch_ticker("DOGE/USDT")
-                if doge_t and "last" in doge_t and doge_t["last"]:
-                    doge_p = float(doge_t["last"])
-            except Exception:
-                pass
-
-            current_equity = round((base_amount * doge_p) + quote_amount, 2)
-            floating_pnl = round(current_equity - init_inv, 4)
-            total_profit_usdt = round(grid_profit + floating_pnl, 4)
-            total_profit_pct = round((total_profit_usdt / init_inv) * 100.0, 2) if init_inv > 0 else 0.0
-
-            return {
-                "bot_id": REAL_DOGE_GRID_BOT_ID,
-                "symbol": "DOGE/USDT",
-                "status": bod.get("status", "running"),
-                "investment": init_inv,
-                "current_equity": current_equity,
-                "grid_profit": grid_profit,
-                "profit_withdrawn": profit_withdrawn,
-                "floating_pnl": floating_pnl,
-                "total_profit_usdt": total_profit_usdt,
-                "total_profit_pct": total_profit_pct,
-                "paired_count": int(bod.get("exchangeOrderPairedCount", 0)),
-                "closed_count": int(bod.get("closedExchangeOrderCount", 0)),
-                "range_bottom": float(bod.get("bottom", 0.07243)),
-                "range_top": float(bod.get("top", 0.10127)),
-                "auto_reinvest": bool(bod.get("profitAutoReinvest", True)),
-                "trailing_up": bool(bod.get("movingTrailingUpParam")),
-                "updated_at": datetime.now().strftime("%H:%M:%S")
-            }
-    except Exception as e:
-        return {"error": str(e), "status": "offline"}
-    return {}
+    """Retorna estado cerrado tras migración de fondos a Binance Cash & Carry."""
+    return {
+        "status": "closed",
+        "symbol": "DOGE/USDT",
+        "investment": 0.0,
+        "current_equity": 0.0,
+        "grid_profit": 0.0,
+        "floating_pnl": 0.0,
+        "total_profit_usdt": 0.0,
+        "total_profit_pct": 0.0,
+        "paired_count": 0,
+        "closed_count": 0,
+        "range_bottom": 0.0,
+        "range_top": 0.0,
+        "auto_reinvest": False,
+        "trailing_up": False,
+        "updated_at": datetime.now().strftime("%H:%M:%S")
+    }
 
 
 def fetch_ohlcv_cached(symbol: str, timeframe: str, limit: int = 60) -> List:
