@@ -1444,7 +1444,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 
 
-                <!-- Fader 6: Cooldown Post-Stop -->
+                                <!-- Fader 6: Cooldown Post-Stop -->
 
                 <div class="fader-group">
 
@@ -1459,6 +1459,26 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     <input type="range" id="slider-cooldown" min="30" max="900" step="15" value="300" oninput="updateFaderUI('post_stop_cooldown_s', this.value)" onchange="sendSettingsUpdate()">
 
                     <div class="fader-sub">Tiempo de enfriamiento en el par tras tocar Stop Loss.</div>
+
+                </div>
+
+
+
+                <!-- Fader 7: Cosecha Malla CHOP -->
+
+                <div class="fader-group">
+
+                    <div class="fader-header">
+
+                        <span class="fader-label">🌾 Cosecha Malla CHOP:</span>
+
+                        <span class="fader-val" id="val-grid-harvest">+0.85%</span>
+
+                    </div>
+
+                    <input type="range" id="slider-grid-harvest" min="0.4" max="2.0" step="0.05" value="0.85" oninput="updateFaderUI('grid_min_harvest_pct', this.value)" onchange="sendSettingsUpdate()">
+
+                    <div class="fader-sub">Ganancia mínima para cosechar rebotes en rango lateral (Anti-microscalp).</div>
 
                 </div>
 
@@ -1710,6 +1730,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
                 document.getElementById('val-cooldown').innerText = Math.round(val) + ' seg';
 
+            } else if (param === 'grid_min_harvest_pct') {
+
+                document.getElementById('val-grid-harvest').innerText = '+' + Number(val).toFixed(2) + '%';
+
             }
 
         }
@@ -1733,6 +1757,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 min_score: parseFloat(document.getElementById('slider-min-score').value),
 
                 post_stop_cooldown_s: parseInt(document.getElementById('slider-cooldown').value),
+
+                grid_min_harvest_pct: parseFloat(document.getElementById('slider-grid-harvest').value) / 100.0,
 
                 auto_atr_mode: currentSettings.auto_atr_mode !== undefined ? currentSettings.auto_atr_mode : true
 
@@ -1907,6 +1933,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                         document.getElementById('slider-cooldown').value = d.settings.post_stop_cooldown_s;
 
                         document.getElementById('val-cooldown').innerText = Math.round(d.settings.post_stop_cooldown_s) + ' seg';
+
+                    if (document.getElementById('slider-grid-harvest')) {
+
+                        const hVal = ((d.settings.grid_min_harvest_pct || 0.0085) * 100.0).toFixed(2);
+
+                        document.getElementById('slider-grid-harvest').value = hVal;
+
+                        document.getElementById('val-grid-harvest').innerText = '+' + Number(hVal).toFixed(2) + '%';
+
+                    }
 
                     }
 
