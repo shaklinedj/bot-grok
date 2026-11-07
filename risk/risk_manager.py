@@ -103,9 +103,10 @@ def manage_active_swing_trade(bot):
             bot.save_state()
             continue
 
-        # 2. Trailing Stop: Se activa al alcanzar >= +1.8% o 1.8x ATR con holgura ágil (1.5x ATR base)
-        trail_dist_mult = getattr(bot, "settings", {}).get("trail_distance_atr", 1.5)
-        trailing_trigger = max(0.018, (tr.atr_pct / 100.0) * 1.8)
+        # 2. Trailing Stop: Se activa al alcanzar trigger de ganancia con holgura de oxígeno
+        trail_dist_mult = getattr(bot, "settings", {}).get("trail_distance_atr", 1.50)
+        trail_trigger_pct = getattr(bot, "settings", {}).get("trail_trigger_pct", 0.0180)
+        trailing_trigger = max(trail_trigger_pct, (tr.atr_pct / 100.0) * 1.8)
         if gain_pct >= trailing_trigger:
             trail_stop = round(tr.highest_price - (trail_dist_mult * atr_val_abs), 6)
             if trail_stop > tr.stop_price:

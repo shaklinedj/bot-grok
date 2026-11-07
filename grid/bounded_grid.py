@@ -372,10 +372,10 @@ def _manage_single_grid(bot, grid: BoundedMicroGrid):
     avg_entry = grid.get_average_entry()
 
     # 3. Cosecha de Ganancias (Take Profit Dinámico / Reversión a la Media)
-    # Exige rentabilidad real sobre el precio medio (neto positivo tras comisiones) al cruzar midpoint o tocar resistencia
+    # Exige rentabilidad real sobre el precio medio (neto positivo tras comisiones >= +0.85% en prod para evitar micro-scalps)
     min_harvest = getattr(bot, "settings", {}).get("grid_min_harvest_pct", 0.0040)
     is_above_midpoint_with_profit = (curr_p >= grid.midpoint and curr_p >= avg_entry * (1.0 + min_harvest))
-    is_resistance_hit = (curr_p >= grid.channel_resistance and curr_p >= avg_entry * 1.0020)
+    is_resistance_hit = (curr_p >= grid.channel_resistance and curr_p >= avg_entry * (1.0 + min_harvest))
     if total_inv > 0 and (is_resistance_hit or is_above_midpoint_with_profit):
         exit_fee = (curr_p * total_inv) * FEE_RATE
         gross_pnl = (curr_p - avg_entry) * total_inv
