@@ -1068,6 +1068,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
             </div>
 
+        </div>
+
 
 
             
