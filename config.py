@@ -37,8 +37,9 @@ FEE_RATE = 0.00075  # 0.075% Binance Spot con BNB / standard
 MAX_CONCURRENT_TRADES = 1  # 1 trade simultáneo para cuentas < $120 USDT
 CASH_ALLOCATION_PCT = 0.95  # 95% del efectivo en Mono-Sniper (antes 80%)
 
-# Parámetros del Modo Turbo A+ (Apalancamiento x2 & Fast Time-Stop)
-TURBO_LEVERAGE = 2.0         # x2 sólo en setups de convicción extrema (Score >= 84)
+# Parámetros de Apalancamiento del Swing Sniper (Paper Trading)
+SNIPER_LEVERAGE = 2.0        # Apalancamiento 2x general para acelerar el crecimiento del sandbox
+TURBO_LEVERAGE = 2.0         # x2 en setups de convicción extrema (Score >= 84)
 TURBO_MIN_SCORE = 84.0       # Calificación A+ optimizada (Gen 15 Monte Carlo)
 TURBO_TIME_STOP_S = 1500     # 25 minutos: Salida rápida si el momentum explosivo no continúa
 TURBO_FAST_BE_PCT = 0.0080   # +0.80% activa Break-Even inmediato en modo x2

@@ -13,7 +13,8 @@ from config import (
     MIN_SCORE_V2,
     POST_STOP_EXTRA_SCORE,
     TURBO_LEVERAGE,
-    TURBO_MIN_SCORE
+    TURBO_MIN_SCORE,
+    SNIPER_LEVERAGE
 )
 from engine.bot_models import SwingTrade
 from engine.swing_bot import SwingBot
@@ -91,11 +92,11 @@ def execute_swing_paper_entry(bot: SwingBot, opp: Dict[str, Any]):
     except Exception:
         pass
 
-    # --- CLASIFICACIÓN DE CONVICCIÓN GRADE A+ (APALANCAMIENTO x2) ---
+    # --- CLASIFICACIÓN DE CONVICCIÓN Y APALANCAMIENTO x2 ---
     is_grade_a = opp.get("is_grade_a_turbo", False)
     flow_confirmed = (flow.get("buy_ratio_pct", 50.0) >= 60.0 and flow.get("obi", 0.0) >= 0.15)
     is_turbo = is_grade_a and flow_confirmed and (opp.get("score", 0.0) >= TURBO_MIN_SCORE)
-    leverage = TURBO_LEVERAGE if is_turbo else 1.0
+    leverage = TURBO_LEVERAGE if is_turbo else SNIPER_LEVERAGE
 
     # Capital efectivo con apalancamiento x2 (Notional)
     effective_cap = trade_capital * leverage
@@ -162,12 +163,12 @@ def execute_swing_paper_entry(bot: SwingBot, opp: Dict[str, Any]):
         entry_note = f"🚀 Ignición Momentum #{order_id} (R:R {rr}:1 | Vol {opp.get('vol_spike', 0):.1f}x | {of_info})"
     else:
         bot.add_log(
-            f"🎯 DISPARO V2 #{order_id}: {sym} @ ${curr_p:.4f} | {rs_info} | {of_info} | "
-            f"Ruptura 15m + Vol {opp.get('vol_spike', 0):.1f}x | ${trade_capital:.2f} USDT | "
+            f"🎯 DISPARO V2 x{leverage:.0f} #{order_id}: {sym} @ ${curr_p:.4f} | {rs_info} | {of_info} | "
+            f"Margen: ${trade_capital:.2f} USDT (Notional x{leverage:.0f}: ${effective_cap:.2f}) | "
             f"Target: ${target_p:.4f} (+{target_pct*100:.2f}%) | Stop: ${stop_p:.4f} (-{stop_pct*100:.2f}%) | R:R {rr}:1",
             "trade"
         )
-        entry_note = f"V2 Entry #{order_id} (R:R {rr}:1 | {of_info} | RS {opp.get('rs_vs_btc', 0):+.1f}pp)"
+        entry_note = f"🎯 Disparo V2 x{leverage:.0f} #{order_id} (Notional ${effective_cap:.2f} | R:R {rr}:1 | Vol {opp.get('vol_spike', 0):.1f}x | {of_info})"
 
     bot.db.log_trade(
         symbol=sym,
