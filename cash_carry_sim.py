@@ -144,22 +144,31 @@ class CashAndCarrySimulator:
             spot_bal = self.spot_live.fetch_balance()
             spot_coins = float(spot_bal["total"].get(base_coin, 0.0))
             spot_usdt = float(spot_bal["free"].get("USDT", 0.0))
+            spot_bnb = float(spot_bal["total"].get("BNB", 0.0))
 
             # Consultar saldo futuros
             fut_bal = self.fut_live.fetch_balance()
             fut_usdt = float(fut_bal.get("USDT", {}).get("total", 0.0))
+            fut_bnb = float(fut_bal.get("BNB", {}).get("total", 0.0) if isinstance(fut_bal.get("BNB"), dict) else 0.0)
+            fut_unreal = float(active_fut.get("unrealizedPnl", 0.0))
 
-            # Capital total real en juego
+            # Precios actuales de mercado
             current_price = entry_price
-            if current_price <= 0:
-                try:
-                    tkr = self.spot_live.fetch_ticker(clean_pair)
-                    current_price = float(tkr.get("last", 0.0))
-                except Exception:
-                    current_price = 0.00206
+            bnb_price = 690.0
+            try:
+                tkr = self.spot_live.fetch_ticker(clean_pair)
+                current_price = float(tkr.get("last", entry_price))
+            except Exception:
+                pass
+            try:
+                bnb_tkr = self.spot_live.fetch_ticker("BNB/USDT")
+                bnb_price = float(bnb_tkr.get("last", 690.0))
+            except Exception:
+                pass
 
-            spot_value = (spot_coins * current_price) + spot_usdt
-            total_real_capital = spot_value + fut_usdt
+            spot_value = (spot_coins * current_price) + spot_usdt + (spot_bnb * bnb_price)
+            fut_value = fut_usdt + (fut_bnb * bnb_price) + fut_unreal
+            total_real_capital = spot_value + fut_value
 
             # Tasa de financiamiento en vivo
             fr_info = self.fut_live.fetch_funding_rate(raw_sym)
