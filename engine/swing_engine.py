@@ -330,17 +330,17 @@ def run_hourly_swing():
                         bot.status_msg = f"Radar V2: Líder {top['symbol']} (Score {top['score']}/100 | RS {top.get('rs_vs_btc', 0):+.1f}pp | {top['status']}){cd_badge}{anti_badge}."
 
             # Slot B: Mallas Acotadas (Satélite de Reversión a la Media)
-            can_open_grid = (current_grids < max_grids) and (bot.cash >= 20.0)
+            # DESACTIVADO EN CUENTAS <$100 (Tier 1):
+            # En cuentas pequeñas (<$100), la malla arriesgaba el 85% del capital ($51 USDT) perdiendo ~$1.00 en Kill-Switch
+            # para ganar apenas +$0.20 en cosechas (R:R asimétrico negativo 5:1 en contra).
+            # Por mandato cuantitativo de EV positivo, la cuenta opera 100% en SWING SNIPER ASIMÉTRICO (R:R 2.4:1 a favor).
+            is_tier_1 = (plan is None or plan["tier"] == 1)
+            can_open_grid = (not is_tier_1) and (current_grids < max_grids) and (bot.cash >= 40.0)
             if can_open_grid:
-                # En Tier 1 (<$100), la malla solo opera si BTC está en CHOP y no hay swings activos
-                # En Tier 2+ (≥$100), la malla opera como satélite concurrente
-                is_tier_1 = (plan is None or plan["tier"] == 1)
-                should_scan = (btc_regime == "CHOP_COMPRESSION" and current_swings == 0) if is_tier_1 else True
-                if should_scan:
-                    grid_target_cap = plan.get("grid_cap") if plan else None
-                    scan_bounded_grid_candidates(bot, target_cap=grid_target_cap)
-                    if not bot.active_grid:
-                        bot.status_msg = "🟡 MODO CHOP/SATÉLITE: Escaneando activos con reversión comprobada (Hurst < 0.46)..."
+                grid_target_cap = plan.get("grid_cap") if plan else None
+                scan_bounded_grid_candidates(bot, target_cap=grid_target_cap)
+                if not bot.active_grid:
+                    bot.status_msg = "🟡 MODO CHOP/SATÉLITE: Escaneando activos con reversión comprobada (Hurst < 0.46)..."
 
             time.sleep(2.5)
 
