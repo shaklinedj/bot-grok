@@ -168,7 +168,14 @@ def manage_active_swing_trade(bot):
                 bot.save_state()
 
         # 3. Cierre por Target
-        if curr_p >= tr.target_price:
+        # Si UNLIMITED_RUNNER está activo y ya se cobró TP1, el 50% restante es un RUNNER SIN LÍMITES
+        # que no tiene techo fijo y corre libremente guiado al 100% por el Trailing Stop.
+        unlimited_runner = getattr(bot, "settings", {}).get("unlimited_runner", True)
+        should_close_target = (curr_p >= tr.target_price)
+        if getattr(tr, "tp1_hit", False) and unlimited_runner:
+            should_close_target = False  # El Runner corre libre sin techo fijo
+
+        if should_close_target:
             gross_pnl = (tr.target_price - tr.entry_price) * tr.amount
             exit_fee = (tr.target_price * tr.amount) * FEE_RATE
             net_pnl = gross_pnl - tr.entry_fee - exit_fee
@@ -195,13 +202,16 @@ def manage_active_swing_trade(bot):
             bot.save_state()
             continue
 
-        # 4. Cierre por Stop Loss (o Break-Even / Trailing)
+        # 4. Cierre por Stop Loss (o Break-Even / Trailing / Runner Ilimitado)
         if curr_p <= tr.stop_price:
             gross_pnl = (tr.stop_price - tr.entry_price) * tr.amount
             exit_fee = (tr.stop_price * tr.amount) * FEE_RATE
             net_pnl = gross_pnl - tr.entry_fee - exit_fee
             bot.cash += (tr.capital + net_pnl)
-            if tr.is_trailing_active:
+            if getattr(tr, "tp1_hit", False):
+                runner_gain = ((tr.stop_price - tr.entry_price) / tr.entry_price) * 100.0
+                reason = f"🚀 RUNNER SIN LÍMITE CERRÓ EN MÁXIMOS (+{runner_gain:+.2f}%)"
+            elif tr.is_trailing_active:
                 reason = "📈 TRAILING CERRÓ CON GANANCIA"
             elif tr.is_be_active:
                 reason = "🛡️ SALIDA BREAK-EVEN"

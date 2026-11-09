@@ -73,8 +73,12 @@ def test_swing_trade_target_win(test_bot, monkeypatch):
     )
     test_bot.active_trade = trade
 
-    # Precio alcanza el Target a $105.00
+    # 1. Precio alcanza el Target a $105.10 (TP1 parcial liquidado y runner continúa libre)
     monkeypatch.setattr("hourly_swing_agent.exchange.fetch_ticker", lambda s: {"last": 105.10})
+    manage_active_swing_trade(test_bot)
+
+    # 2. Con Runner Ilimitado, el 50% restante acompaña con trailing y cierra al retroceder
+    monkeypatch.setattr("hourly_swing_agent.exchange.fetch_ticker", lambda s: {"last": 101.50})
     manage_active_swing_trade(test_bot)
 
     # Posición debe cerrarse con ganancia neta en la caja (Protocolo Bimodal: 2 órdenes TP1 + Runner)
@@ -82,7 +86,7 @@ def test_swing_trade_target_win(test_bot, monkeypatch):
     stats = test_bot.db.get_stats()
     assert stats["total"] >= 1
     assert stats["wins"] >= 1
-    assert stats["pnl"] > 2.0  # +$2.50 bruto menos fees
+    assert stats["pnl"] > 1.5  # Ganancia positiva asegurada por TP1 + Runner
 
 
 def test_swing_trade_stop_loss(test_bot, monkeypatch):
