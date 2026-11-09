@@ -36,6 +36,7 @@ class SwingTrade:
         self.is_be_active = False        # Break-Even Shield activado (+0.20%)
         self.is_trailing_active = False  # Trailing Stop ATR activado
         self.tp1_hit = False            # Protocolo Bimodal: True si se ejecutó toma parcial 50% al +1.5R
+        self.tp2_hit = False            # Cosecha Escalonada: True si se ejecutó toma parcial 25% al +3.0R
         self.highest_price = entry_price
         self.lowest_price = entry_price
         self.current_price = entry_price

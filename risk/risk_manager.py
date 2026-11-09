@@ -103,9 +103,13 @@ def manage_active_swing_trade(bot):
             bot.save_state()
             continue
 
-        # 1.8 PROTOCOLO BIMODAL CUANTITATIVO: Toma Parcial TP1 (50% a +1.5R) y Stop Runner a +0.5R Lock-in
-        # Asegura la mitad del beneficio en caja inmediatamente y convierte el 50% restante en FREE ROLL.
+        # 1.8 COSECHA ESCALONADA ASIMÉTRICA:
+        # TP1 (50% al +1.5R): Asegura caja y blinda el stop a +0.5R (Free Roll).
+        # TP2 (25% al +3.0R): Asegura el pico intermedio (75% total asegurado).
+        # Moonbag (25% final): Runner sin techo que se exprime con Trailing Stop Acelerado.
         r_gain = gain_pct / max(tr.stop_pct, 0.005)
+
+        # TP1: 50% al +1.5R (~ +2.4%)
         if not getattr(tr, "tp1_hit", False) and r_gain >= 1.50 and tr.amount > 0:
             partial_amount = round(tr.amount * 0.50, 4)
             partial_cap = round(tr.capital * 0.50, 2)
@@ -115,23 +119,22 @@ def manage_active_swing_trade(bot):
                 partial_entry_fee = tr.entry_fee * 0.50
                 net_partial_pnl = gross_partial_pnl - partial_entry_fee - partial_exit_fee
 
-                # Consolidar caja inmediatamente en tiempo real
                 bot.cash += (partial_cap + net_partial_pnl)
                 tr.amount -= partial_amount
                 tr.capital -= partial_cap
                 tr.entry_fee -= partial_entry_fee
                 tr.tp1_hit = True
 
-                # Lock-in de Ganancia en el 50% restante: Mover stop a +0.5R por encima de la entrada
+                # Lock-in de Ganancia: Stop a +0.5R por encima de la entrada
                 lockin_stop = round(tr.entry_price * (1.0 + (tr.stop_pct * 0.50)), 6)
                 if lockin_stop > tr.stop_price:
                     tr.stop_price = lockin_stop
                     tr.is_be_active = True
 
-                reason_tp1 = f"💰 TP1 PARCIAL (+1.5R | +{gain_pct*100:.2f}%): 50% liquidado"
+                reason_tp1 = f"💰 TP1 PARCIAL 50% (+1.5R | +{gain_pct*100:.2f}%): Asegurado a caja"
                 bot.add_log(
-                    f"{reason_tp1} en {sym} @ ${curr_p:.4f} | PnL: +${net_partial_pnl:.4f} USDT a caja. "
-                    f"Stop Runner restante asegurado en ${lockin_stop:.4f} (+0.5R Lock-in). Posición en FREE ROLL.",
+                    f"{reason_tp1} en {sym} @ ${curr_p:.4f} | PnL: +${net_partial_pnl:.4f} USDT. "
+                    f"Stop Runner en ${lockin_stop:.4f} (+0.5R). Posición en FREE ROLL.",
                     "trade"
                 )
                 bot.db.log_trade(
@@ -150,18 +153,110 @@ def manage_active_swing_trade(bot):
                 )
                 bot.save_state()
 
-        # 2. Trailing Stop: Se activa al alcanzar trigger de ganancia con holgura de oxígeno
-        trail_dist_mult = getattr(bot, "settings", {}).get("trail_distance_atr", 1.50)
+        # TP2: 25% del total original (50% de lo que queda) al +3.0R (~ +4.5%)
+        if getattr(tr, "tp1_hit", False) and not getattr(tr, "tp2_hit", False) and r_gain >= 3.00 and tr.amount > 0:
+            partial_amount_2 = round(tr.amount * 0.50, 4)
+            partial_cap_2 = round(tr.capital * 0.50, 2)
+            if partial_amount_2 > 0 and partial_cap_2 > 0:
+                gross_partial_pnl_2 = (curr_p - tr.entry_price) * partial_amount_2
+                partial_exit_fee_2 = (curr_p * partial_amount_2) * FEE_RATE
+                partial_entry_fee_2 = tr.entry_fee * 0.50
+                net_partial_pnl_2 = gross_partial_pnl_2 - partial_entry_fee_2 - partial_exit_fee_2
+
+                bot.cash += (partial_cap_2 + net_partial_pnl_2)
+                tr.amount -= partial_amount_2
+                tr.capital -= partial_cap_2
+                tr.entry_fee -= partial_entry_fee_2
+                tr.tp2_hit = True
+
+                # Al asegurar TP2, ceñir stop a +1.8R (+3.0%)
+                lockin_stop_2 = round(tr.entry_price * (1.0 + (tr.stop_pct * 1.80)), 6)
+                if lockin_stop_2 > tr.stop_price:
+                    tr.stop_price = lockin_stop_2
+
+                reason_tp2 = f"🎯 TP2 INTERMEDIO 25% (+3.0R | +{gain_pct*100:.2f}%): Ganancia masiva asegurada"
+                bot.add_log(
+                    f"{reason_tp2} en {sym} @ ${curr_p:.4f} | PnL: +${net_partial_pnl_2:.4f} USDT. "
+                    f"Moonbag restante 25% persigue explosión parabólica libre con trailing ceñido.",
+                    "trade"
+                )
+                bot.db.log_trade(
+                    symbol=sym,
+                    side="SELL",
+                    price=curr_p,
+                    amount=partial_amount_2,
+                    capital=partial_cap_2,
+                    pnl=net_partial_pnl_2,
+                    fee=partial_exit_fee_2,
+                    order_id=f"{tr.trade_id}_TP2",
+                    target_price=tr.target_price,
+                    stop_price=tr.stop_price,
+                    note=reason_tp2,
+                    parent_trade_id=tr.trade_id
+                )
+                bot.save_state()
+
+        # 1.9 DETECCIÓN DE CLÍMAX INSTITUCIONAL EN MÁXIMOS (Blow-off Top Exit)
+        # Si la ganancia es > +3.0% y el flujo de órdenes muestra agotamiento clímax
+        # (compras minoristas > 88% o libro saturado de rechazo), liquidar el runner de inmediato en el pico.
+        if gain_pct >= 0.030 and tr.amount > 0 and getattr(tr, "tp1_hit", False):
+            try:
+                flow_chk = fetch_order_flow_confirmation(sym)
+                climax_buy = flow_chk.get("buy_ratio_pct", 50.0) >= 88.0
+                climax_obi = flow_chk.get("obi", 0.0) <= -0.30  # Ventas masivas absorbiendo
+                if climax_buy or climax_obi:
+                    gross_climax_pnl = (curr_p - tr.entry_price) * tr.amount
+                    exit_fee = (curr_p * tr.amount) * FEE_RATE
+                    net_climax_pnl = gross_climax_pnl - tr.entry_fee - exit_fee
+                    bot.cash += (tr.capital + net_climax_pnl)
+                    reason_climax = f"🌋 ESCAPE POR CLÍMAX EN MÁXIMOS (+{gain_pct*100:.2f}% | OF: {flow_chk['buy_ratio_pct']:.1f}% Compras)"
+                    bot.add_log(f"{reason_climax} en {sym} @ ${curr_p:.4f} | PnL: +${net_climax_pnl:.4f} USDT", "trade")
+                    bot.db.log_trade(
+                        symbol=sym,
+                        side="SELL",
+                        price=curr_p,
+                        amount=tr.amount,
+                        capital=tr.capital,
+                        pnl=net_climax_pnl,
+                        fee=exit_fee,
+                        order_id=f"{tr.trade_id}_CLIMAX",
+                        target_price=tr.target_price,
+                        stop_price=tr.stop_price,
+                        note=reason_climax,
+                        parent_trade_id=tr.trade_id
+                    )
+                    process_trade_autopsy_and_feedback(bot, tr, curr_p, net_climax_pnl, reason_climax, exit_fee)
+                    bot.cooldowns[sym] = time.time() + 300
+                    bot.active_trades.pop(sym, None)
+                    bot.save_state()
+                    continue
+            except Exception:
+                pass
+
+        # 2. TRAILING STOP ASIMÉTRICO CON ACELERACIÓN (TIGHTENING DINÁMICO)
+        # • Fase 1 (Ganancia +1.8% a +3.5%): Oxígeno holgado (1.50x ATR)
+        # • Fase 2 (Ganancia +3.5% a +6.0%): Compresión protectora (0.80x ATR - reduce el giveback a mínimos)
+        # • Fase 3 (Parabólica > +6.0%): Ultra-ceñido (0.45x ATR - persigue la cima al milímetro)
         trail_trigger_pct = getattr(bot, "settings", {}).get("trail_trigger_pct", 0.0180)
         trailing_trigger = max(trail_trigger_pct, (tr.atr_pct / 100.0) * 1.8)
         if gain_pct >= trailing_trigger:
-            trail_stop = round(tr.highest_price - (trail_dist_mult * atr_val_abs), 6)
+            if gain_pct >= 0.060:
+                dyn_mult = 0.45   # Ultra-ceñido en despegue parabólico
+                fase_desc = "Fase 3 Parabólica 0.45x ATR"
+            elif gain_pct >= 0.035:
+                dyn_mult = 0.80   # Compresión protectora anti-retroceso
+                fase_desc = "Fase 2 Ceñida 0.80x ATR"
+            else:
+                dyn_mult = getattr(bot, "settings", {}).get("trail_distance_atr", 1.50)
+                fase_desc = "Fase 1 Oxígeno 1.50x ATR"
+
+            trail_stop = round(tr.highest_price - (dyn_mult * atr_val_abs), 6)
             if trail_stop > tr.stop_price:
                 old_stop = tr.stop_price
                 tr.stop_price = trail_stop
                 tr.is_trailing_active = True
                 bot.add_log(
-                    f"📈 TRAILING [Oxígeno {trail_dist_mult}x ATR] en {sym}: "
+                    f"📈 TRAILING DINÁMICO [{fase_desc}] en {sym}: "
                     f"Max ${tr.highest_price:.4f}. Stop ${old_stop:.4f} -> ${trail_stop:.4f}",
                     "trade"
                 )
