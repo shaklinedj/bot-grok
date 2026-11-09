@@ -35,6 +35,7 @@ class SwingTrade:
         self.is_turbo = is_turbo
         self.is_be_active = False        # Break-Even Shield activado (+0.20%)
         self.is_trailing_active = False  # Trailing Stop ATR activado
+        self.tp1_hit = False            # Protocolo Bimodal: True si se ejecutó toma parcial 50% al +1.5R
         self.highest_price = entry_price
         self.lowest_price = entry_price
         self.current_price = entry_price
@@ -65,6 +66,7 @@ class SwingTrade:
             "is_turbo": getattr(self, "is_turbo", False),
             "is_be_active": self.is_be_active,
             "is_trailing_active": self.is_trailing_active,
+            "tp1_hit": getattr(self, "tp1_hit", False),
             "highest_price": self.highest_price,
             "lowest_price": getattr(self, "lowest_price", self.entry_price),
             "current_price": self.current_price,
@@ -98,6 +100,7 @@ class SwingTrade:
         )
         st.is_be_active = d.get("is_be_active", False)
         st.is_trailing_active = d.get("is_trailing_active", False)
+        st.tp1_hit = d.get("tp1_hit", False)
         st.highest_price = d.get("highest_price", st.entry_price)
         st.lowest_price = d.get("lowest_price", st.entry_price)
         st.current_price = d.get("current_price", st.entry_price)

@@ -103,6 +103,53 @@ def manage_active_swing_trade(bot):
             bot.save_state()
             continue
 
+        # 1.8 PROTOCOLO BIMODAL CUANTITATIVO: Toma Parcial TP1 (50% a +1.5R) y Stop Runner a +0.5R Lock-in
+        # Asegura la mitad del beneficio en caja inmediatamente y convierte el 50% restante en FREE ROLL.
+        r_gain = gain_pct / max(tr.stop_pct, 0.005)
+        if not getattr(tr, "tp1_hit", False) and r_gain >= 1.50 and tr.amount > 0:
+            partial_amount = round(tr.amount * 0.50, 4)
+            partial_cap = round(tr.capital * 0.50, 2)
+            if partial_amount > 0 and partial_cap > 0:
+                gross_partial_pnl = (curr_p - tr.entry_price) * partial_amount
+                partial_exit_fee = (curr_p * partial_amount) * FEE_RATE
+                partial_entry_fee = tr.entry_fee * 0.50
+                net_partial_pnl = gross_partial_pnl - partial_entry_fee - partial_exit_fee
+
+                # Consolidar caja inmediatamente en tiempo real
+                bot.cash += (partial_cap + net_partial_pnl)
+                tr.amount -= partial_amount
+                tr.capital -= partial_cap
+                tr.entry_fee -= partial_entry_fee
+                tr.tp1_hit = True
+
+                # Lock-in de Ganancia en el 50% restante: Mover stop a +0.5R por encima de la entrada
+                lockin_stop = round(tr.entry_price * (1.0 + (tr.stop_pct * 0.50)), 6)
+                if lockin_stop > tr.stop_price:
+                    tr.stop_price = lockin_stop
+                    tr.is_be_active = True
+
+                reason_tp1 = f"💰 TP1 PARCIAL (+1.5R | +{gain_pct*100:.2f}%): 50% liquidado"
+                bot.add_log(
+                    f"{reason_tp1} en {sym} @ ${curr_p:.4f} | PnL: +${net_partial_pnl:.4f} USDT a caja. "
+                    f"Stop Runner restante asegurado en ${lockin_stop:.4f} (+0.5R Lock-in). Posición en FREE ROLL.",
+                    "trade"
+                )
+                bot.db.log_trade(
+                    symbol=sym,
+                    side="SELL",
+                    price=curr_p,
+                    amount=partial_amount,
+                    capital=partial_cap,
+                    pnl=net_partial_pnl,
+                    fee=partial_exit_fee,
+                    order_id=f"{tr.trade_id}_TP1",
+                    target_price=tr.target_price,
+                    stop_price=tr.stop_price,
+                    note=reason_tp1,
+                    parent_trade_id=tr.trade_id
+                )
+                bot.save_state()
+
         # 2. Trailing Stop: Se activa al alcanzar trigger de ganancia con holgura de oxígeno
         trail_dist_mult = getattr(bot, "settings", {}).get("trail_distance_atr", 1.50)
         trail_trigger_pct = getattr(bot, "settings", {}).get("trail_trigger_pct", 0.0180)

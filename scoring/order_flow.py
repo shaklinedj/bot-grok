@@ -74,15 +74,28 @@ def fetch_order_flow_confirmation(symbol: str, ex=exchange) -> Dict[str, Any]:
                 "reason": f"Muro de venta o falta de soporte pasivo en Bids (OBI {obi:+.2f} < +0.10)"
             }
 
-        # Veto 3: Agresión compradora insuficiente en cinta (Taker buyers calibrado en >= 53.0%)
-        if buy_ratio_pct < 53.0:
+        # Veto 3: Agresión compradora insuficiente en cinta (Taker buyers < 54.0%)
+        if buy_ratio_pct < 54.0:
             return {
                 "confirmed": False,
                 "obi": round(obi, 3),
                 "buy_ratio_pct": round(buy_ratio_pct, 1),
                 "delta": round(delta, 2),
                 "spread_pct": round(spread_pct, 3),
-                "reason": f"Ventas agresivas en cinta o falta de convicción compradora (Solo {buy_ratio_pct:.1f}% compras < 53%)"
+                "reason": f"Ventas agresivas en cinta o falta de convicción compradora (Solo {buy_ratio_pct:.1f}% compras < 54%)"
+            }
+
+        # Veto 4: CLÍMAX DE AGOTAMIENTO (Anti-FOMO / Buying Climax > 78.0%)
+        # Un ratio de compras excesivo (>78%) indica euforia retail en la punta de la vela
+        # donde los creadores de mercado colocan muros de venta pasivos para descargar inventario (HYPE/AAVE Trap).
+        if buy_ratio_pct > 78.0:
+            return {
+                "confirmed": False,
+                "obi": round(obi, 3),
+                "buy_ratio_pct": round(buy_ratio_pct, 1),
+                "delta": round(delta, 2),
+                "spread_pct": round(spread_pct, 3),
+                "reason": f"Veto Clímax de Agotamiento: Compras a mercado excesivas ({buy_ratio_pct:.1f}% > 78.0%). Riesgo de trampa en techo."
             }
 
         return {

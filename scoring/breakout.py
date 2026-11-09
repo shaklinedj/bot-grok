@@ -80,17 +80,22 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict[str, Any], settings: Optiona
         else:
             break
 
-    # Filtro de Sobreextensión / Agotamiento (Anti-FOMO Gen 15 Monte Carlo)
-    # Entrar con RSI 15m >= 74.0 o RSI 5m >= 76.0 es comprar el techo de la expansión. Capping previene trampas alcistas.
+    # Candado 2: Distancia Máxima a la EMA20 normalizada por ATR (Anti-Persecución / The ATR Band)
+    # Si llevamos 3+ velas verdes consecutivas o RSI caliente y la distancia supera 2.4x ATR, el barco ya zarpó (comprar aquí es un techo).
+    dist_to_ema20 = abs(curr_p - ema20_15m)
+    max_allowed_dist_ema = atr_15m * 2.4
+    is_ema_overextended = (dist_to_ema20 > max_allowed_dist_ema) and (consecutive_greens >= 3 or rsi_15m >= 72.0)
+
+    # Filtro de Sobreextensión / Agotamiento (Anti-FOMO Calibrado por Enjambre NVIDIA)
     is_overextended = (
         rsi_15m >= 74.0
         or rsi_5m >= 76.0
         or (consecutive_greens >= 3 and rsi_15m >= 68.0)
-        or (dev_15m_ema20 >= 3.2 and consecutive_greens >= 3)
+        or is_ema_overextended
     )
 
-    # Micro-Base Saludable: precio consolidando cerca de la EMA20 sin estar en euforia
-    has_healthy_base = (dev_15m_ema20 <= 2.0) and (38.0 <= rsi_5m <= 66.0) and (consecutive_greens <= 2)
+    # Micro-Base Saludable: precio consolidando dentro de 1.4x ATR de la EMA20 sin euforia
+    has_healthy_base = (dist_to_ema20 <= atr_15m * 1.4) and (38.0 <= rsi_5m <= 66.0) and (consecutive_greens <= 2)
 
     # --- Indicadores 1H (tendencia de fondo) ---
     ema20_1h = calc_ema(closes_1h, 20)
@@ -233,11 +238,21 @@ def analyze_breakout_15m(symbol: str, btc_ctx: Dict[str, Any], settings: Optiona
     if rsi_1h > 75.0:
         score -= 15.0
 
+    # Candado 3: Validación Contextual Macro (Filtro Anti-SUI en Mercados Planos)
+    # Si BTC está plano/lateral (|chg_1h| < 0.40% o régimen CHOP), la altcoin requiere volumen explosivo
+    # propio (vol_spike >= 1.6x) y Fuerza Relativa (rs_vs_btc >= +0.75pp) para evitar falsas rupturas en el vacío.
+    btc_chg_1h_abs = abs(btc_ctx.get("change_1h", 0.0))
+    btc_is_flat = btc_chg_1h_abs < 0.40 or btc_regime == "CHOP_COMPRESSION"
+    if btc_is_flat:
+        has_independent_fuel = (vol_spike >= 1.6) and (rs_vs_btc >= 0.75)
+    else:
+        has_independent_fuel = (vol_spike >= 1.0) and (rs_vs_btc >= 0.35)
+
     is_trigger_ready = (
         (score >= min_score_target or is_momentum_ignition)
         and (breakout_confirmed or is_momentum_ignition)
         and is_green
-        and vol_spike >= 1.0
+        and has_independent_fuel
         and not is_falling_knife
         and not is_overextended
         and rr_ratio >= 2.0
