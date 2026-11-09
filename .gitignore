@@ -35,6 +35,7 @@ reversion_logs/*
 *.db-shm
 *.db-wal
 paper_logs_backup_*/
+archive/
 *.log
 *.db-shm
 *.db-wal
