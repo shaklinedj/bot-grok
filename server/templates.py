@@ -823,8 +823,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                         <div class="metric-value" id="carry-apr" style="color: #3fb950; font-weight: bold;">+69.7% Anual</div>
                     </div>
                     <div class="metric">
-                        <div class="metric-label">Pago por Ciclo</div>
-                        <div class="metric-value" id="carry-payout">+$0.0417 USDT / 8h</div>
+                        <div class="metric-label">Pago por Ciclo (Posición ~$31.3)</div>
+                        <div class="metric-value" id="carry-payout">+$0.0167 USDT / 8h</div>
                     </div>
                     <div class="metric">
                         <div class="metric-label">Intereses Cobrados</div>
@@ -2430,8 +2430,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
                     if (cPayoutEl) {
 
-                        const payout = Number(c.capital || 100) * (Number(c.active_rate_8h || 0) / 100.0);
-
+                        const notional = Number(c.position_notional || (c.capital ? c.capital * 0.467 : 31.25));
+                        const rate = Number(c.active_rate_8h_dec || (c.active_rate_8h ? c.active_rate_8h / 100.0 : 0.0005));
+                        const payout = c.payout_per_cycle ? Number(c.payout_per_cycle) : (notional * rate);
                         cPayoutEl.innerText = '+$' + payout.toFixed(4) + ' USDT / 8h';
 
                     }

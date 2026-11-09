@@ -94,12 +94,17 @@ class CashAndCarrySimulator:
     def save_state(self):
         """Persiste el estado de Cash & Carry directamente en SQLite WAL de forma atómica."""
         pnl_pct = ((self.capital - self.initial_capital) / self.initial_capital * 100.0) if self.initial_capital > 0 else 0.0
+        pos_notional = getattr(self, "position_notional", round(self.capital * 0.47, 4))
+        payout_cycle = getattr(self, "payout_per_cycle", round(pos_notional * self.active_rate_8h, 4))
         d = {
             "mode": self.mode,
             "initial_capital": round(self.initial_capital, 2),
             "capital": round(self.capital, 4),
             "total_interest_earned": round(self.total_interest_earned, 4),
+            "total_pnl_usd": round(self.capital - self.initial_capital, 4),
             "pnl_pct": round(pnl_pct, 2),
+            "position_notional": pos_notional,
+            "payout_per_cycle": payout_cycle,
             "payments_collected": self.payments_collected,
             "active_pair": self.active_pair,
             "active_rate_8h": round(self.active_rate_8h * 100, 4),
@@ -193,6 +198,8 @@ class CashAndCarrySimulator:
             self.active_pair = clean_pair
             self.active_rate_8h = live_rate
             self.active_apr = live_rate * 3.0 * 365.0 * 100.0
+            self.position_notional = round(contracts * current_price, 4)
+            self.payout_per_cycle = round(self.position_notional * live_rate, 4)
             if total_real_capital > 10.0:
                 self.capital = total_real_capital
                 if self.initial_capital == INITIAL_CAPITAL or self.initial_capital > 80.0:
