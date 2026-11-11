@@ -358,68 +358,70 @@ class BudaMarketMakerSim:
         new_fills = []
         if trades_data and "trades" in trades_data:
             entries = trades_data["trades"].get("entries", [])
-            for tr in entries:
-                tr_id = int(tr[4])
-                tr_amount = float(tr[1])
-                tr_price = float(tr[2])
-                tr_side = tr[3].lower()
+            if self.last_seen_trade_id == 0 and entries:
+                self.last_seen_trade_id = max(int(e[4]) for e in entries)
+            else:
+                # Ordenar cronológicamente ascendente para no saltar trades en ráfagas dentro del mismo ciclo
+                for tr in sorted(entries, key=lambda x: int(x[4])):
+                    tr_id = int(tr[4])
+                    tr_amount = float(tr[1])
+                    tr_price = float(tr[2])
+                    tr_side = tr[3].lower()
 
-                if self.last_seen_trade_id == 0:
+                    if tr_id <= self.last_seen_trade_id:
+                        continue
+
                     self.last_seen_trade_id = tr_id
-                    break
 
-                if tr_id <= self.last_seen_trade_id:
-                    continue
+                    # Si un usuario chileno ejecutó SELL a mercado y el precio tocó o cayó por debajo de nuestro Bid:
+                    if tr_side == "sell" and tr_price <= self.my_bid_price and self.my_bid_amount > 0:
+                        fill_amt = min(self.my_bid_amount, tr_amount)
+                        gross_cost = fill_amt * self.my_bid_price
+                        fee = gross_cost * self.current_maker_fee
+                        net_cost = gross_cost + fee
 
-                self.last_seen_trade_id = max(self.last_seen_trade_id, tr_id)
+                        if self.clp_balance >= net_cost:
+                            tot_val_prev = self.usdt_balance * self.avg_cost_price
+                            new_usdt = self.usdt_balance + fill_amt
+                            self.avg_cost_price = (tot_val_prev + net_cost) / new_usdt if new_usdt > 0 else self.my_bid_price
 
-                # Si un usuario chileno ejecutó SELL a mercado y el precio tocó o cayó por debajo de nuestro Bid:
-                if tr_side == "sell" and tr_price <= self.my_bid_price and self.my_bid_amount > 0:
-                    fill_amt = min(self.my_bid_amount, tr_amount)
-                    gross_cost = fill_amt * self.my_bid_price
-                    fee = gross_cost * self.current_maker_fee
-                    net_cost = gross_cost + fee
+                            self.clp_balance -= net_cost
+                            self.usdt_balance = new_usdt
+                            self.my_bid_amount = max(0.0, self.my_bid_amount - fill_amt)
+                            self.trades_completed += 1
+                            self.total_volume_clp += gross_cost
+                            log_msg = f"📥 [FILL COMPRA MAKER] Compramos {fill_amt:.2f} USDT @ ${self.my_bid_price:.2f} CLP (Fee {self.current_maker_fee*100:.2f}%: ${fee:.1f} CLP)"
+                            new_fills.append(log_msg)
+                            self.history.append({"time": datetime.now().strftime("%H:%M:%S"), "side": "BUY", "amount": fill_amt, "price": self.my_bid_price, "fee": fee})
+                            try:
+                                self.db.log_buda_trade("BUY", self.my_bid_price, fill_amt, gross_cost, fee, 0.0, "Maker BUY fill")
+                            except Exception:
+                                pass
 
-                    if self.clp_balance >= net_cost:
-                        tot_val_prev = self.usdt_balance * self.avg_cost_price
-                        new_usdt = self.usdt_balance + fill_amt
-                        self.avg_cost_price = (tot_val_prev + net_cost) / new_usdt if new_usdt > 0 else self.my_bid_price
+                    # Si un usuario chileno ejecutó BUY a mercado y el precio tocó o subió por encima de nuestro Ask:
+                    elif tr_side == "buy" and tr_price >= self.my_ask_price and self.my_ask_amount > 0:
+                        fill_amt = min(self.my_ask_amount, tr_amount, self.usdt_balance)
+                        gross_revenue = fill_amt * self.my_ask_price
+                        fee = gross_revenue * self.current_maker_fee
+                        net_revenue = gross_revenue - fee
 
-                        self.clp_balance -= net_cost
-                        self.usdt_balance = new_usdt
-                        self.trades_completed += 1
-                        self.total_volume_clp += gross_cost
-                        log_msg = f"📥 [FILL COMPRA MAKER] Compramos {fill_amt:.2f} USDT @ ${self.my_bid_price:.2f} CLP (Fee {self.current_maker_fee*100:.2f}%: ${fee:.1f} CLP)"
-                        new_fills.append(log_msg)
-                        self.history.append({"time": datetime.now().strftime("%H:%M:%S"), "side": "BUY", "amount": fill_amt, "price": self.my_bid_price, "fee": fee})
-                        try:
-                            self.db.log_buda_trade("BUY", self.my_bid_price, fill_amt, gross_cost, fee, 0.0, "Maker BUY fill")
-                        except Exception:
-                            pass
+                        if fill_amt > 0 and self.usdt_balance >= fill_amt:
+                            cost_of_sold = fill_amt * self.avg_cost_price
+                            trade_profit = net_revenue - cost_of_sold
+                            self.realized_pnl_clp += trade_profit
 
-                # Si un usuario chileno ejecutó BUY a mercado y el precio tocó o subió por encima de nuestro Ask:
-                elif tr_side == "buy" and tr_price >= self.my_ask_price and self.my_ask_amount > 0:
-                    fill_amt = min(self.my_ask_amount, tr_amount)
-                    gross_revenue = fill_amt * self.my_ask_price
-                    fee = gross_revenue * self.current_maker_fee
-                    net_revenue = gross_revenue - fee
-
-                    if self.usdt_balance >= fill_amt:
-                        cost_of_sold = fill_amt * self.avg_cost_price
-                        trade_profit = net_revenue - cost_of_sold
-                        self.realized_pnl_clp += trade_profit
-
-                        self.usdt_balance -= fill_amt
-                        self.clp_balance += net_revenue
-                        self.trades_completed += 1
-                        self.total_volume_clp += gross_revenue
-                        log_msg = f"📤 [FILL VENTA MAKER] Vendimos {fill_amt:.2f} USDT @ ${self.my_ask_price:.2f} CLP | Ganancia neta: {trade_profit:+.1f} CLP (Fee {self.current_maker_fee*100:.2f}%: ${fee:.1f} CLP)"
-                        new_fills.append(log_msg)
-                        self.history.append({"time": datetime.now().strftime("%H:%M:%S"), "side": "SELL", "amount": fill_amt, "price": self.my_ask_price, "fee": fee, "profit": trade_profit})
-                        try:
-                            self.db.log_buda_trade("SELL", self.my_ask_price, fill_amt, gross_revenue, fee, trade_profit, "Maker SELL fill")
-                        except Exception:
-                            pass
+                            self.usdt_balance -= fill_amt
+                            self.clp_balance += net_revenue
+                            self.my_ask_amount = max(0.0, self.my_ask_amount - fill_amt)
+                            self.trades_completed += 1
+                            self.total_volume_clp += gross_revenue
+                            log_msg = f"📤 [FILL VENTA MAKER] Vendimos {fill_amt:.2f} USDT @ ${self.my_ask_price:.2f} CLP | Ganancia neta: {trade_profit:+.1f} CLP (Fee {self.current_maker_fee*100:.2f}%: ${fee:.1f} CLP)"
+                            new_fills.append(log_msg)
+                            self.history.append({"time": datetime.now().strftime("%H:%M:%S"), "side": "SELL", "amount": fill_amt, "price": self.my_ask_price, "fee": fee, "profit": trade_profit})
+                            try:
+                                self.db.log_buda_trade("SELL", self.my_ask_price, fill_amt, gross_revenue, fee, trade_profit, "Maker SELL fill")
+                            except Exception:
+                                pass
 
         self.save_state()
 
