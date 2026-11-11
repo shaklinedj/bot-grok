@@ -123,8 +123,8 @@ class SwingBot:
             del self._active_grids[grid_id]
 
     def total_equity(self) -> float:
-        """Calcula el patrimonio total en vivo: Caja disponible + Posiciones Swing + Mallas Acotadas."""
-        pos_val = sum(tr.amount * getattr(tr, "current_price", tr.entry_price) for tr in self.active_trades.values())
+        """Calcula el patrimonio total en vivo: Caja disponible + Margen invertido + PnL flotante real."""
+        pos_val = sum(tr.capital + getattr(tr, "unrealized_pnl", 0.0) for tr in self.active_trades.values())
         grid_val = sum(g.get_invested_capital() + g.unrealized_pnl for g in self.get_active_grids())
         return self.cash + pos_val + grid_val
 

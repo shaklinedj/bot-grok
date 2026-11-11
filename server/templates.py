@@ -1946,7 +1946,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
                             <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap:8px; margin-bottom:8px;">
 
-                                <div><span style="color:var(--text-dim); font-size:10px;">PORTE (TAMAÑO):</span><br><b>${tr.amount} ${tr.symbol.split('/')[0]}</b> <span style="color:var(--text-dim); font-size:11px;">($${Number(tr.capital).toFixed(2)})</span></div>
+                                <div><span style="color:var(--text-dim); font-size:10px;">PORTE (TAMAÑO):</span><br><b>${tr.amount} ${tr.symbol.split('/')[0]}</b> <span style="color:var(--text-dim); font-size:11px;">(Margen $${Number(tr.capital).toFixed(2)} | x${Number(tr.leverage || 1).toFixed(0)} Notional $${(Number(tr.amount) * Number(tr.entry_price)).toFixed(2)})</span></div>
 
                                 <div><span style="color:var(--text-dim); font-size:10px;">PRECIO ENTRADA:</span><br><b>$${entP}</b></div>
 

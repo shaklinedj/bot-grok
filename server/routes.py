@@ -70,7 +70,7 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 last_closed = bot.db.get_last_closed_trade()
                 autopsies = bot.db.get_recent_autopsies(5)
 
-            invested = sum(round(t.amount * t.entry_price, 2) for t in trades_list)
+            invested = sum(round(t.capital, 2) for t in trades_list)
             unrealized_pnl = sum(getattr(t, "unrealized_pnl", 0.0) for t in trades_list)
             unrealized_pnl_pct = ((unrealized_pnl / invested) * 100.0) if invested > 0 else 0.0
             grid_obj = getattr(bot, "active_grid", None)
