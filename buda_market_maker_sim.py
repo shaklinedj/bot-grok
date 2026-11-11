@@ -118,6 +118,8 @@ class BudaMarketMakerSim:
         self.var_24h = 0.0
         
         self.history: List[Dict[str, Any]] = []
+        self._last_log_ts = 0.0
+        self._last_mode = ""
         self.db = SwingDatabase()
         self.load_state()
 
@@ -141,6 +143,30 @@ class BudaMarketMakerSim:
             return {"var_24h": var_24h}
         return {"var_24h": 0.0}
 
+    def _reconstruct_avg_cost_from_db(self) -> float:
+        """Reconstruye el costo promedio real del inventario actual usando las últimas compras en SQLite."""
+        try:
+            with self.db._get_connection() as conn:
+                rows = conn.execute(
+                    "SELECT side, price, amount, total_clp, fee_clp FROM buda_trades WHERE side='BUY' ORDER BY id DESC"
+                ).fetchall()
+            rem = max(self.usdt_balance, 0.0)
+            if rem <= 0.0 or not rows:
+                return 0.0
+            tot_clp = 0.0
+            tot_amt = 0.0
+            for r in rows:
+                take = min(rem, float(r["amount"]))
+                fee_mult = (1.0 + (float(r["fee_clp"]) / max(float(r["total_clp"]), 1e-6)))
+                tot_clp += take * float(r["price"]) * fee_mult
+                tot_amt += take
+                rem -= take
+                if rem <= 0.0:
+                    break
+            return round(tot_clp / tot_amt, 4) if tot_amt > 0 else 0.0
+        except Exception:
+            return 0.0
+
     def load_state(self):
         """Carga el estado de Buda MM directamente desde SQLite WAL."""
         d = self.db.load_buda_state()
@@ -152,8 +178,12 @@ class BudaMarketMakerSim:
             self.trades_completed = int(d.get("trades_completed", 0))
             self.total_volume_clp = float(d.get("total_volume_clp", 0.0))
             self.last_seen_trade_id = int(d.get("last_seen_trade_id", 0))
-            self.avg_cost_price = float(d.get("avg_cost_price", 0.0))
+            self.avg_cost_price = float(d.get("avg_cost_price") or 0.0)
             self.history = d.get("history", [])
+        if self.avg_cost_price <= 0.0 and self.usdt_balance > 0.0:
+            reconstructed = self._reconstruct_avg_cost_from_db()
+            if reconstructed > 0.0:
+                self.avg_cost_price = reconstructed
 
     def save_state(self):
         """Persiste el estado de Buda MM directamente en SQLite WAL de forma atómica."""
@@ -165,6 +195,7 @@ class BudaMarketMakerSim:
             "maker_fee_pct": round(self.current_maker_fee * 100.0, 3),
             "clp_balance": round(self.clp_balance, 2),
             "usdt_balance": round(self.usdt_balance, 4),
+            "avg_cost_price": round(self.avg_cost_price, 4),
             "initial_equity_clp": round(self.initial_equity_clp, 2),
             "current_equity_clp": round(self.current_equity_clp, 2),
             "current_equity_usd": round(self.current_equity_usd, 2),
@@ -262,46 +293,48 @@ class BudaMarketMakerSim:
         vol_usd = self.total_volume_clp / mid_price if mid_price > 0 else 0.0
         self.current_maker_fee, self.current_tier_label = get_buda_fee_tier(vol_usd)
         roundtrip_fee = self.current_maker_fee * 2
-        min_profitable_spread = max(0.0048, roundtrip_fee + 0.0012)  # Mínimo 0.48% o comisión + 0.12% margen neto
+        min_profitable_spread = max(0.0044, roundtrip_fee + 0.0010)  # Escalable según Tier (comisión + 0.10% neto)
 
-        # 4. Gestión Cuantitativa de Inventario & Cotización con Break-Even Dinámico
+        # 4. Gestión Cuantitativa de Inventario, Interés Compuesto & Cotización Asimétrica
         usdt_val_clp = self.usdt_balance * mid_price
         inv_ratio_usdt = (usdt_val_clp / current_equity_clp) if current_equity_clp > 0 else 0.50
 
-        # Precio mínimo para salir a coste cero neto (Break-Even exacto cubriendo compra + venta)
-        be_ask_price = round(self.avg_cost_price * (1.0 + self.current_maker_fee) / (1.0 - self.current_maker_fee), 2)
+        # Precio exacto de Break-Even (avg_cost_price ya incluye comisión de compra; solo se cubre comisión de venta)
+        be_ask_price = round(self.avg_cost_price / (1.0 - self.current_maker_fee), 2)
         half_spread = mid_price * (min_profitable_spread / 2.0)
 
-        # Caso A: Déficit de USDT (< 25% del capital) -> Sesgo comprador
-        if inv_ratio_usdt < 0.25:
+        # Caso A: Exceso de CLP / Déficit de USDT (< 42% del capital en USDT) -> Priorizar compra en punta
+        if inv_ratio_usdt < 0.42:
             self.strategy_mode = "SKEW_RELOAD_USDT"
+            buy_pct = 0.60 if inv_ratio_usdt < 0.28 else 0.50
+            sell_pct = 0.25 if inv_ratio_usdt < 0.28 else 0.35
             target_bid = round(best_bid + 0.01, 2)
             target_ask = round(max(best_ask, be_ask_price, mid_price * (1.0 + min_profitable_spread)), 2)
-            order_size_usdt_buy = round(min(25.0, (self.clp_balance * 0.50) / target_bid), 4) if self.clp_balance >= 5000 else 0.0
-            order_size_usdt_sell = round(min(15.0, self.usdt_balance * 0.50), 4) if self.usdt_balance >= 1.0 else 0.0
+            order_size_usdt_buy = round((self.clp_balance * buy_pct) / target_bid, 4) if self.clp_balance >= 3000 else 0.0
+            order_size_usdt_sell = round(self.usdt_balance * sell_pct, 4) if self.usdt_balance >= 2.0 else 0.0
 
-        # Caso B: Exceso de USDT (> 75% del capital) -> Desescalada Suave & Break-Even Dinámico
-        elif inv_ratio_usdt > 0.75:
+        # Caso B: Exceso de USDT (> 58% del capital en USDT) -> Venta en punta (si hay ganancia) o TWAP defensivo
+        elif inv_ratio_usdt > 0.58:
             target_bid = round(min(best_bid, mid_price - half_spread), 2)
-            order_size_usdt_buy = round(min(10.0, (self.clp_balance * 0.30) / target_bid), 4) if self.clp_balance >= 5000 else 0.0
+            buy_pct = 0.25 if inv_ratio_usdt > 0.72 else 0.35
+            order_size_usdt_buy = round((self.clp_balance * buy_pct) / target_bid, 4) if self.clp_balance >= 3000 else 0.0
 
-            # Sub-caso B1: El mercado permite salir en Break-Even o con ganancia
+            # Sub-caso B1: El mercado paga por encima de nuestro costo real -> Liquidar exceso en la punta (#1 Ask)
             if best_ask >= be_ask_price:
-                self.strategy_mode = "DEFENSIVE_BREAK_EVEN"
+                self.strategy_mode = "INVENTORY_SKEW_SELL" if inv_ratio_usdt <= 0.75 else "DEFENSIVE_BREAK_EVEN"
+                sell_pct = 0.60 if inv_ratio_usdt > 0.72 else 0.50
                 target_ask = round(max(be_ask_price, best_ask - 0.01), 2)
-                order_size_usdt_sell = round(min(25.0, self.usdt_balance * 0.40), 4) if self.usdt_balance >= 2.0 else 0.0
+                order_size_usdt_sell = round(self.usdt_balance * sell_pct, 4) if self.usdt_balance >= 2.0 else 0.0
 
-            # Sub-caso B2: Movimiento brusco hacia abajo (best_ask < be_ask_price).
-            # En lugar de un "dump masivo" con pérdidas brutales, aplicamos desescalada suave (TWAP defensivo):
-            # Salimos en pequeños tramos (15-20% del inventario) con descuento controlado para rotar liquidez sin congelarse.
+            # Sub-caso B2: Caída brusca bajo nuestro Break-Even -> Desescalada suave TWAP para no congelar capital
             else:
                 self.strategy_mode = "SOFT_DEESCALATION_TWAP"
-                # Concesión suave: nunca vender con más de 0.25% de descuento respecto a BE
                 soft_floor = round(be_ask_price * 0.9975, 2)
                 target_ask = round(max(soft_floor, best_ask), 2)
-                order_size_usdt_sell = round(min(12.0, self.usdt_balance * 0.20), 4) if self.usdt_balance >= 2.0 else 0.0
+                sell_pct = 0.25 if inv_ratio_usdt > 0.78 else 0.15
+                order_size_usdt_sell = round(self.usdt_balance * sell_pct, 4) if self.usdt_balance >= 2.0 else 0.0
 
-        # Caso C: Inventario equilibrado (25% - 75%) -> Spread Puro Rentable & Invariante de Ganancia
+        # Caso C: Inventario equilibrado (42% - 58%) -> Spread Puro Rentable con Interés Compuesto
         else:
             if spread_pct >= (min_profitable_spread * 100.0):
                 self.strategy_mode = "WIDE_SPREAD_MAKER"
@@ -312,8 +345,8 @@ class BudaMarketMakerSim:
                 target_bid = round(mid_price - half_spread, 2)
                 target_ask = round(max(be_ask_price, mid_price + half_spread), 2)
 
-            order_size_usdt_buy = round(min(20.0, (self.clp_balance * 0.40) / target_bid), 4) if self.clp_balance >= 5000 else 0.0
-            order_size_usdt_sell = round(min(20.0, self.usdt_balance * 0.40), 4) if self.usdt_balance >= 2.0 else 0.0
+            order_size_usdt_buy = round((self.clp_balance * 0.45) / target_bid, 4) if self.clp_balance >= 3000 else 0.0
+            order_size_usdt_sell = round(self.usdt_balance * 0.45, 4) if self.usdt_balance >= 2.0 else 0.0
 
         self.my_bid_price = target_bid
         self.my_ask_price = target_ask
@@ -390,7 +423,17 @@ class BudaMarketMakerSim:
 
         self.save_state()
 
-        # 6. Renderizar Consola Interactiva
+        # 6. Renderizar Consola Interactiva (Con throttle en modo daemon para evitar logs gigantes)
+        now_ts = time.time()
+        should_log = sys.stdout.isatty() or bool(new_fills) or (self.strategy_mode != self._last_mode) or (now_ts - self._last_log_ts >= 300.0)
+        if not should_log:
+            return
+        self._last_log_ts = now_ts
+        self._last_mode = self.strategy_mode
+
+        for f_msg in new_fills:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] {f_msg}", flush=True)
+
         spread_status = "🟢 RENTABLE" if spread_pct >= (min_profitable_spread * 100) else "🟡 ESTRECHO"
         net_margin_proj = ((self.my_ask_price - self.my_bid_price) / self.my_bid_price * 100.0) - (roundtrip_fee * 100.0) if self.my_bid_price > 0 else 0.0
 
