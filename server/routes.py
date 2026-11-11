@@ -71,6 +71,7 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 autopsies = bot.db.get_recent_autopsies(5)
 
             invested = sum(round(t.capital, 2) for t in trades_list)
+            notional_trades = sum(round(t.amount * t.entry_price, 2) for t in trades_list)
             unrealized_pnl = sum(getattr(t, "unrealized_pnl", 0.0) for t in trades_list)
             unrealized_pnl_pct = ((unrealized_pnl / invested) * 100.0) if invested > 0 else 0.0
             grid_obj = getattr(bot, "active_grid", None)
@@ -80,6 +81,7 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             grid_unreal = sum(getattr(g, "unrealized_pnl", 0.0) for g in grids_list)
 
             total_invested = invested + grid_inv
+            total_notional = notional_trades + grid_inv
             total_unrealized = unrealized_pnl + grid_unreal
             total_unrealized_pct = ((total_unrealized / total_invested) * 100.0) if total_invested > 0 else 0.0
             equity = bot.cash + (total_invested + total_unrealized)
@@ -91,6 +93,7 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 "cash": round(bot.cash, 2),
                 "equity": round(equity, 2),
                 "invested": round(total_invested, 2),
+                "notional_exposure": round(total_notional, 2),
                 "unrealized_pnl": round(total_unrealized, 4),
                 "unrealized_pnl_pct": round(total_unrealized_pct, 2),
                 "tier_mode": bot.get_tier_name(),

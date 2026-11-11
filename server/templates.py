@@ -886,9 +886,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
                     <div class="metric">
 
-                        <div class="metric-label">En Posición (Invertido)</div>
+                        <div class="metric-label">Margen Propio en Posición</div>
 
                         <div class="metric-value" id="swing-invested">$0.00</div>
+
+                        <div id="swing-notional" style="font-size:11px; color:var(--text-dim); margin-top:2px;"></div>
 
                     </div>
 
@@ -1830,6 +1832,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
                 const invested = Number(d.invested || 0);
 
+                const notional = Number(d.notional_exposure || invested);
+
                 const unPnl = Number(d.unrealized_pnl || 0);
 
                 const unPnlPct = Number(d.unrealized_pnl_pct || 0);
@@ -1843,6 +1847,28 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 document.getElementById('swing-cash').innerText = '$' + cash.toFixed(2);
 
                 document.getElementById('swing-invested').innerText = '$' + invested.toFixed(2);
+
+                const notionalEl = document.getElementById('swing-notional');
+
+                if (notionalEl) {
+
+                    if (invested > 0 && notional > invested + 0.5) {
+
+                        const lev = notional / invested;
+
+                        notionalEl.innerText = `Palanca Exposición: $${notional.toFixed(2)} (x${lev.toFixed(1)})`;
+
+                    } else if (invested > 0) {
+
+                        notionalEl.innerText = 'Sin apalancamiento (1x)';
+
+                    } else {
+
+                        notionalEl.innerText = '';
+
+                    }
+
+                }
 
                 
 
