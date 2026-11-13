@@ -317,12 +317,19 @@ class BudaMarketMakerSim:
         elif inv_ratio_usdt > 0.58:
             target_bid = round(min(best_bid, mid_price - half_spread), 2)
             buy_pct = 0.35 if inv_ratio_usdt > 0.72 else 0.45
-            order_size_usdt_buy = round((self.clp_balance * buy_pct) / target_bid, 4) if self.clp_balance >= 3000 else 0.0
+            
+            # Blindaje Anti-Selección Adversa (Alerta Roja > 78% inventario):
+            # Si el inventario USDT supera el 78% del patrimonio total, congelar compras por completo (0.0)
+            # para evitar acumular flujo tóxico ante una caída vertical sostenida de USDT/CLP.
+            if inv_ratio_usdt > 0.78:
+                order_size_usdt_buy = 0.0
+            else:
+                order_size_usdt_buy = round((self.clp_balance * buy_pct) / target_bid, 4) if self.clp_balance >= 3000 else 0.0
 
             # Sub-caso B1: El mercado paga por encima de nuestro costo real -> Liquidar exceso en la punta (#1 Ask)
             if best_ask >= be_ask_price:
                 self.strategy_mode = "INVENTORY_SKEW_SELL" if inv_ratio_usdt <= 0.75 else "DEFENSIVE_BREAK_EVEN"
-                sell_pct = 0.80 if inv_ratio_usdt > 0.72 else 0.70
+                sell_pct = 0.85 if inv_ratio_usdt > 0.75 else 0.70
                 target_ask = round(max(be_ask_price, best_ask - 0.01), 2)
                 order_size_usdt_sell = round(self.usdt_balance * sell_pct, 4) if self.usdt_balance >= 2.0 else 0.0
 
@@ -331,7 +338,7 @@ class BudaMarketMakerSim:
                 self.strategy_mode = "SOFT_DEESCALATION_TWAP"
                 soft_floor = round(be_ask_price * 0.9975, 2)
                 target_ask = round(max(soft_floor, best_ask), 2)
-                sell_pct = 0.35 if inv_ratio_usdt > 0.78 else 0.25
+                sell_pct = 0.40 if inv_ratio_usdt > 0.78 else 0.25
                 order_size_usdt_sell = round(self.usdt_balance * sell_pct, 4) if self.usdt_balance >= 2.0 else 0.0
 
         # Caso C: Inventario equilibrado (42% - 58%) -> Spread Puro Rentable con Interés Compuesto Agresivo (70%)

@@ -329,14 +329,19 @@ def manage_active_swing_trade(bot):
             )
             process_trade_autopsy_and_feedback(bot, tr, tr.stop_price, net_pnl, reason, exit_fee)
             cd_sec = getattr(bot, "settings", {}).get("post_stop_cooldown_s", POST_STOP_COOLDOWN_S)
-            bot.cooldowns[sym] = time.time() + cd_sec
+            
+            # Cuarentena Inteligente por Moneda (Cluster Cooldown):
+            # Si un activo toca stop, se le aplica una cuarentena de 4 horas a esa moneda específica
+            # para evitar re-entradas suicidas en activos que están bajo fuerte presión vendedora.
+            bot.cooldowns[sym] = time.time() + 14400  # 4 horas de cuarentena al activo perdedor
             bot.last_stop_time = time.time()
             if not tr.is_trailing_active and not tr.is_be_active:
-                # Pérdida real en stop loss: Pausa portfolio-wide para evitar el efecto ametralladora
-                global_cd = getattr(bot, "settings", {}).get("global_stop_cooldown_s", 300)
+                # Pausa defensiva de mercado de solo 15 minutos (900s) para asentar la volatilidad general
+                # sin congelar el resto del universo de activos que sí puedan tener fuerza relativa.
+                global_cd = getattr(bot, "settings", {}).get("global_stop_cooldown_s", 900)
                 bot.global_cooldown_until = time.time() + global_cd
                 bot.add_log(
-                    f"⏸️ [ENFRIAMIENTO GLOBAL POST-STOP] Pausa obligatoria de {global_cd}s para evitar sobreoperar en mercado adverso.",
+                    f"⏸️ [CUARENTENA ACTIVADA] Activo {sym} en cuarentena por 4h tras stop loss. Pausa global de mercado: {global_cd/60:.0f}m.",
                     "info"
                 )
             bot.active_trades.pop(sym, None)

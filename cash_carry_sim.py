@@ -224,6 +224,11 @@ class CashAndCarrySimulator:
                 if fr is None or fr <= 0.0002: # Filtrar tasas menores a +0.02%
                     continue
 
+                # Filtro de Sanidad Institucional: Descartar tokens exóticos o anómalos
+                # con tasas astronómicas artificiales (> 0.50% por 8h) o en riesgo de liquidación en spot
+                if fr > 0.0050:
+                    continue
+
                 funding_time = data.get("fundingTimestamp") or (now_ms + 8 * 3600 * 1000)
                 fr_pct_8h = fr * 100.0
                 apr = fr_pct_8h * 3.0 * 365.0
