@@ -306,8 +306,8 @@ class BudaMarketMakerSim:
         # Caso A: Exceso de CLP / Déficit de USDT (< 42% del capital en USDT) -> Priorizar compra en punta
         if inv_ratio_usdt < 0.42:
             self.strategy_mode = "SKEW_RELOAD_USDT"
-            buy_pct = 0.60 if inv_ratio_usdt < 0.28 else 0.50
-            sell_pct = 0.25 if inv_ratio_usdt < 0.28 else 0.35
+            buy_pct = 0.80 if inv_ratio_usdt < 0.28 else 0.70
+            sell_pct = 0.35 if inv_ratio_usdt < 0.28 else 0.45
             target_bid = round(best_bid + 0.01, 2)
             target_ask = round(max(best_ask, be_ask_price, mid_price * (1.0 + min_profitable_spread)), 2)
             order_size_usdt_buy = round((self.clp_balance * buy_pct) / target_bid, 4) if self.clp_balance >= 3000 else 0.0
@@ -316,13 +316,13 @@ class BudaMarketMakerSim:
         # Caso B: Exceso de USDT (> 58% del capital en USDT) -> Venta en punta (si hay ganancia) o TWAP defensivo
         elif inv_ratio_usdt > 0.58:
             target_bid = round(min(best_bid, mid_price - half_spread), 2)
-            buy_pct = 0.25 if inv_ratio_usdt > 0.72 else 0.35
+            buy_pct = 0.35 if inv_ratio_usdt > 0.72 else 0.45
             order_size_usdt_buy = round((self.clp_balance * buy_pct) / target_bid, 4) if self.clp_balance >= 3000 else 0.0
 
             # Sub-caso B1: El mercado paga por encima de nuestro costo real -> Liquidar exceso en la punta (#1 Ask)
             if best_ask >= be_ask_price:
                 self.strategy_mode = "INVENTORY_SKEW_SELL" if inv_ratio_usdt <= 0.75 else "DEFENSIVE_BREAK_EVEN"
-                sell_pct = 0.60 if inv_ratio_usdt > 0.72 else 0.50
+                sell_pct = 0.80 if inv_ratio_usdt > 0.72 else 0.70
                 target_ask = round(max(be_ask_price, best_ask - 0.01), 2)
                 order_size_usdt_sell = round(self.usdt_balance * sell_pct, 4) if self.usdt_balance >= 2.0 else 0.0
 
@@ -331,10 +331,10 @@ class BudaMarketMakerSim:
                 self.strategy_mode = "SOFT_DEESCALATION_TWAP"
                 soft_floor = round(be_ask_price * 0.9975, 2)
                 target_ask = round(max(soft_floor, best_ask), 2)
-                sell_pct = 0.25 if inv_ratio_usdt > 0.78 else 0.15
+                sell_pct = 0.35 if inv_ratio_usdt > 0.78 else 0.25
                 order_size_usdt_sell = round(self.usdt_balance * sell_pct, 4) if self.usdt_balance >= 2.0 else 0.0
 
-        # Caso C: Inventario equilibrado (42% - 58%) -> Spread Puro Rentable con Interés Compuesto
+        # Caso C: Inventario equilibrado (42% - 58%) -> Spread Puro Rentable con Interés Compuesto Agresivo (70%)
         else:
             if spread_pct >= (min_profitable_spread * 100.0):
                 self.strategy_mode = "WIDE_SPREAD_MAKER"
@@ -345,8 +345,9 @@ class BudaMarketMakerSim:
                 target_bid = round(mid_price - half_spread, 2)
                 target_ask = round(max(be_ask_price, mid_price + half_spread), 2)
 
-            order_size_usdt_buy = round((self.clp_balance * 0.45) / target_bid, 4) if self.clp_balance >= 3000 else 0.0
-            order_size_usdt_sell = round(self.usdt_balance * 0.45, 4) if self.usdt_balance >= 2.0 else 0.0
+            # Utilización activa del 70% del saldo por lado para acelerar rotación e interés compuesto
+            order_size_usdt_buy = round((self.clp_balance * 0.70) / target_bid, 4) if self.clp_balance >= 3000 else 0.0
+            order_size_usdt_sell = round(self.usdt_balance * 0.70, 4) if self.usdt_balance >= 2.0 else 0.0
 
         self.my_bid_price = target_bid
         self.my_ask_price = target_ask
