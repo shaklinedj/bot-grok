@@ -314,14 +314,20 @@ def run_hourly_swing():
         try:
             now_ts = time.time()
 
-            # Auditoría Triple-Ledger Recurrente (Grado 10: cada 1 hora)
-            if now_ts - last_reconcile_time >= 3600.0:
+            # Auditoría Triple-Ledger Recurrente (Grado 10: cada 6 horas o solo en desbalance)
+            if now_ts - last_reconcile_time >= 21600.0:
                 last_reconcile_time = now_ts
                 rec_res = reconciler.reconcile_swing_engine(bot)
-                if rec_res["is_balanced"]:
-                    bot.add_log(f"⚖️ [AUDITORÍA TRIPLE-LEDGER GRADO 10] Balance íntegro: {rec_res['status']} (Delta: {rec_res['delta_usdt']:+.4f} USDT)", "info")
+                if not rec_res["is_balanced"]:
+                    bot.add_log(f"⚠️ [AUDITORÍA TRIPLE-LEDGER] Desbalance detectado: {rec_res['details']}", "warn")
                 else:
-                    bot.add_log(f"⚠️ [AUDITORÍA TRIPLE-LEDGER GRADO 10] Alerta: {rec_res['details']}", "warn")
+                    # Log discreto cada 6h sin spam
+                    bot.add_log(f"⚖️ [AUDITORÍA TRIPLE-LEDGER] Balance íntegro: {rec_res['status']} (Delta: {rec_res['delta_usdt']:+.4f} USDT)", "info")
+            elif not hasattr(bot, "_initial_reconciled"):
+                bot._initial_reconciled = True
+                rec_res = reconciler.reconcile_swing_engine(bot)
+                if not rec_res["is_balanced"]:
+                    bot.add_log(f"⚠️ [AUDITORÍA INICIAL] Alerta: {rec_res['details']}", "warn")
             btc_ctx = update_btc_context()
             btc_regime = btc_ctx.get("regime", "NEUTRAL_TRANSITION")
 

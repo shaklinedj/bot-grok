@@ -198,9 +198,14 @@ def run_supervisor():
             else:
                 status_strs.append(f"{s['script'][:8]}: OK")
 
-        # Emitir latido de actividad visible en consola
+        # Emitir latido de actividad visible en consola SOLO cuando hay cambios o errores,
+        # o un latido silencioso cada 20 minutos (80 ciclos x 15s) para no inundar memoria ni logs.
         ts = datetime.now().strftime("%H:%M:%S")
-        print(f"[{ts}] 🟢 [LATIDO 24/7 #{cycle:03d}] {' | '.join(status_strs)} | Dashboard: http://localhost:8900", flush=True)
+        has_issue = any("RESTART" in st for st in status_strs)
+        if has_issue:
+            log_master(f"⚠️ [ALERTA PROCESOS] {' | '.join(status_strs)}")
+        elif cycle % 80 == 0:
+            print(f"[{ts}] 🟢 [SUPERVISOR 24/7] Motores saludables: {' | '.join(status_strs)} | Dashboard: http://localhost:8900", flush=True)
 
 if __name__ == "__main__":
     try:
