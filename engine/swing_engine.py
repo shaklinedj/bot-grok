@@ -26,6 +26,7 @@ from scoring.market_scanner import (
 )
 from scoring.breakout import analyze_breakout_15m
 from risk.risk_manager import manage_active_swing_trade
+from risk.shadow_veto_tracker import register_shadow_veto, update_shadow_veto_tracking
 from grid.bounded_grid import scan_bounded_grid_candidates, manage_active_bounded_grid
 from server.routes import start_swing_dashboard
 from execution.depth_slippage import evaluate_execution_route
@@ -52,10 +53,20 @@ def execute_swing_paper_entry(bot: SwingBot, opp: Dict[str, Any]):
     # --- FILTRO CENTINELA DE ORDER FLOW (Microestructura L2 & Tape) ---
     flow = fetch_order_flow_confirmation(sym, exchange)
     if not flow.get("confirmed", True):
+        reason_msg = f"{flow['reason']} (OBI: {flow['obi']:+.2f} | Compras: {flow['buy_ratio_pct']:.1f}% | Spread: {flow['spread_pct']:.2f}%)"
         bot.add_log(
-            f"🛡️ [VETO ORDER FLOW] Disparo cancelado en {sym}: {flow['reason']} "
-            f"(OBI: {flow['obi']:+.2f} | Compras: {flow['buy_ratio_pct']:.1f}% | Spread: {flow['spread_pct']:.2f}%)",
+            f"🛡️ [VETO ORDER FLOW] Disparo cancelado en {sym}: {reason_msg}",
             "info"
+        )
+        register_shadow_veto(
+            bot=bot,
+            symbol=sym,
+            veto_type="ORDER_FLOW",
+            reason=reason_msg,
+            opp=opp,
+            curr_p=curr_p,
+            trade_capital=trade_capital,
+            leverage=leverage
         )
         bot.cooldowns[sym] = time.time() + 180  # Cooldown 3m para re-evaluar
         return
@@ -68,6 +79,16 @@ def execute_swing_paper_entry(bot: SwingBot, opp: Dict[str, Any]):
     if not stale_check["safe_to_execute"]:
         reasons_str = "; ".join(stale_check["rejection_reasons"])
         bot.add_log(f"🛡️ [VETO GRADO 10: STALE GUARD] Disparo cancelado en {sym}: {reasons_str}", "warn")
+        register_shadow_veto(
+            bot=bot,
+            symbol=sym,
+            veto_type="STALE_GUARD",
+            reason=reasons_str,
+            opp=opp,
+            curr_p=curr_p,
+            trade_capital=trade_capital,
+            leverage=leverage
+        )
         bot.cooldowns[sym] = time.time() + 120
         return
 
@@ -82,10 +103,20 @@ def execute_swing_paper_entry(bot: SwingBot, opp: Dict[str, Any]):
             side="BUY"
         )
         if route_decision["slippage_pct"] > 0.20:
+            slip_reason = f"Deslizamiento {route_decision['slippage_pct']:.3f}% supera tolerancia (Impacto: {route_decision['market_impact_bps']:.1f} bps)"
             bot.add_log(
-                f"🛡️ [VETO GRADO 10: SLIPPAGE EXCESIVO] {sym}: Deslizamiento {route_decision['slippage_pct']:.3f}% "
-                f"supera tolerancia institucional (Impacto: {route_decision['market_impact_bps']:.1f} bps)",
+                f"🛡️ [VETO GRADO 10: SLIPPAGE EXCESIVO] {sym}: {slip_reason}",
                 "warn"
+            )
+            register_shadow_veto(
+                bot=bot,
+                symbol=sym,
+                veto_type="SLIPPAGE_VWAP",
+                reason=slip_reason,
+                opp=opp,
+                curr_p=curr_p,
+                trade_capital=trade_capital,
+                leverage=leverage
             )
             bot.cooldowns[sym] = time.time() + 180
             return
@@ -268,9 +299,10 @@ def run_hourly_swing():
             btc_ctx = update_btc_context()
             btc_regime = btc_ctx.get("regime", "NEUTRAL_TRANSITION")
 
-            # 1. Monitoreo de posiciones vivas
+            # 1. Monitoreo de posiciones vivas y Shadow Tracking de Vetos
             manage_active_swing_trade(bot)
             manage_active_bounded_grid(bot)
+            update_shadow_veto_tracking(bot, exchange)
 
             has_active_swing = len(bot.active_trades) > 0
             has_active_grid = (getattr(bot, "active_grid", None) is not None and bot.active_grid.status == "ACTIVE")

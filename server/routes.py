@@ -69,6 +69,8 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 trades_list = list(bot.active_trades.values())
                 last_closed = bot.db.get_last_closed_trade()
                 autopsies = bot.db.get_recent_autopsies(5)
+                veto_autopsies = bot.db.get_recent_veto_autopsies(5) if hasattr(bot.db, "get_recent_veto_autopsies") else []
+                veto_stats = bot.db.get_veto_summary_stats() if hasattr(bot.db, "get_veto_summary_stats") else {}
 
             invested = sum(round(t.capital, 2) for t in trades_list)
             notional_trades = sum(round(t.amount * t.entry_price, 2) for t in trades_list)
@@ -113,6 +115,8 @@ class SwingHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 "events": events,
                 "btc_context": update_btc_context(),
                 "recent_autopsies": autopsies,
+                "veto_autopsies": veto_autopsies,
+                "veto_stats": veto_stats,
                 "buda_sim": buda_sim,
                 "carry_sim": carry_sim
             }

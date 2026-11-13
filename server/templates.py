@@ -960,6 +960,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
                     </div>
 
+                    <div id="veto-shadow-summary" style="margin-top: 8px; padding-top: 8px; border-top: 1px dashed #21262d; font-size: 10px; color: #8b949e;">
+
+                        <span style="color: #a371f7; font-weight: 600;">🛡️ SHADOW TRACKER (VETOS):</span> Inicializando rastreo contrafactual de oportunidades canceladas...
+
+                    </div>
+
                 </div>
 
 
@@ -2221,6 +2227,56 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                         autopsySummaryEl.innerHTML = `<span style="color:#8b949e;">📡 Contexto BTC: <em>${btcRegimeDesc}</em> | Piso de Stop mínimo 1.20% activo para filtrar ruido.</span>`;
 
                     }
+
+                }
+
+
+
+                const vetoShadowEl = document.getElementById('veto-shadow-summary');
+
+                if (vetoShadowEl) {
+
+                    const vStats = d.veto_stats || {};
+
+                    const vAutopsies = d.veto_autopsies || [];
+
+                    const totalV = Number(vStats.total_vetoes_analyzed || 0);
+
+                    const capSaved = Number(vStats.capital_saved_usdt || 0);
+
+                    const acc = Number(vStats.accuracy_pct || 100);
+
+                    
+
+                    let lastVetoHtml = '';
+
+                    if (vAutopsies.length > 0) {
+
+                        const topV = vAutopsies[0];
+
+                        const outCol = (topV.outcome.indexOf('SAVED') !== -1) ? '#3fb950' : (topV.outcome === 'MISSED_WIN' ? '#f85149' : '#8b949e');
+
+                        const outBadge = (topV.outcome.indexOf('SAVED') !== -1) ? '🛡️ Pérdida Evitada' : (topV.outcome === 'MISSED_WIN' ? '⚠️ Target Alcanzado' : '⏳ En Rastreo');
+
+                        lastVetoHtml = `<div style="margin-top:4px;"><strong>Último Veto:</strong> <span style="color:#58a6ff;">${topV.symbol}</span> (${topV.veto_type}) &rarr; <span style="color:${outCol}; font-weight:600;">${outBadge}</span> <span style="color:var(--text-dim); font-size:9px;">[${topV.reason.substring(0, 75)}...]</span></div>`;
+
+                    }
+
+
+
+                    vetoShadowEl.innerHTML = `
+
+                        <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:6px;">
+
+                            <span><span style="color:#a371f7; font-weight:600;">🛡️ SHADOW TRACKER (VETOS):</span> <strong>${totalV}</strong> evaluados | Precisión: <strong style="color:#3fb950;">${acc}%</strong></span>
+
+                            <span>Capital Salvado: <strong style="color:#3fb950;">+$${capSaved.toFixed(2)} USDT</strong></span>
+
+                        </div>
+
+                        ${lastVetoHtml}
+
+                    `;
 
                 }
 

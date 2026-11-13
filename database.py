@@ -134,6 +134,36 @@ class SwingDatabase:
                 );
             """)
 
+            # 8. Tabla de Autopsias de Veto (Shadow Tracking Contrafactual)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS veto_autopsies (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    veto_type TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    veto_price REAL NOT NULL,
+                    target_price REAL NOT NULL,
+                    stop_price REAL NOT NULL,
+                    target_pct REAL NOT NULL,
+                    stop_pct REAL NOT NULL,
+                    leverage REAL NOT NULL DEFAULT 2.0,
+                    capital REAL NOT NULL,
+                    max_price REAL NOT NULL,
+                    min_price REAL NOT NULL,
+                    final_price REAL DEFAULT 0.0,
+                    mfe_pct REAL DEFAULT 0.0,
+                    mae_pct REAL DEFAULT 0.0,
+                    hypothetical_pnl REAL DEFAULT 0.0,
+                    hypothetical_pnl_pct REAL DEFAULT 0.0,
+                    outcome TEXT DEFAULT 'TRACKING',
+                    learning_insight TEXT DEFAULT '',
+                    duration_s REAL DEFAULT 0.0,
+                    expires_at REAL NOT NULL,
+                    status TEXT DEFAULT 'OPEN'
+                );
+            """)
+
             # 8. Tabla de Liquidaciones Funding Cash & Carry (Pilar 4)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS cash_carry_history (
@@ -337,6 +367,76 @@ class SwingDatabase:
                 ORDER BY id DESC LIMIT ?
             """, (limit,)).fetchall()
             return [dict(r) for r in rows]
+
+    # --- Métodos de Veto Autopsies (Shadow Tracking Contrafactual) ---
+    def log_veto_candidate(self, symbol: str, veto_type: str, reason: str,
+                           veto_price: float, target_price: float, stop_price: float,
+                           target_pct: float, stop_pct: float, capital: float,
+                           leverage: float = 2.0, horizon_seconds: float = 3600.0) -> int:
+        ts = datetime.now().isoformat()
+        expires_at = time.time() + horizon_seconds
+        with self._get_connection() as conn:
+            cur = conn.execute("""
+                INSERT INTO veto_autopsies (
+                    timestamp, symbol, veto_type, reason, veto_price,
+                    target_price, stop_price, target_pct, stop_pct,
+                    leverage, capital, max_price, min_price, expires_at, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')
+            """, (ts, symbol, veto_type, reason, veto_price,
+                  target_price, stop_price, target_pct, stop_pct,
+                  leverage, capital, veto_price, veto_price, expires_at))
+            conn.commit()
+            return cur.lastrowid
+
+    def get_open_vetoes(self) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            rows = conn.execute("SELECT * FROM veto_autopsies WHERE status = 'OPEN'").fetchall()
+            return [dict(r) for r in rows]
+
+    def update_veto_autopsy(self, veto_id: int, max_price: float, min_price: float,
+                            final_price: float, mfe_pct: float, mae_pct: float,
+                            hypothetical_pnl: float, hypothetical_pnl_pct: float,
+                            outcome: str, learning_insight: str, duration_s: float,
+                            status: str = "CLOSED"):
+        with self._get_connection() as conn:
+            conn.execute("""
+                UPDATE veto_autopsies
+                SET max_price = ?, min_price = ?, final_price = ?,
+                    mfe_pct = ?, mae_pct = ?, hypothetical_pnl = ?,
+                    hypothetical_pnl_pct = ?, outcome = ?, learning_insight = ?,
+                    duration_s = ?, status = ?
+                WHERE id = ?
+            """, (max_price, min_price, final_price, mfe_pct, mae_pct,
+                  hypothetical_pnl, hypothetical_pnl_pct, outcome,
+                  learning_insight, duration_s, status, veto_id))
+            conn.commit()
+
+    def get_recent_veto_autopsies(self, limit: int = 10) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            rows = conn.execute("SELECT * FROM veto_autopsies ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_veto_summary_stats(self) -> Dict[str, Any]:
+        with self._get_connection() as conn:
+            total = conn.execute("SELECT COUNT(*) FROM veto_autopsies WHERE status = 'CLOSED'").fetchone()[0]
+            saved = conn.execute("SELECT COUNT(*) FROM veto_autopsies WHERE status = 'CLOSED' AND outcome IN ('SAVED_LOSS_STOP', 'SAVED_LOSS_TIME')").fetchone()[0]
+            missed = conn.execute("SELECT COUNT(*) FROM veto_autopsies WHERE status = 'CLOSED' AND outcome = 'MISSED_WIN'").fetchone()[0]
+            capital_saved = conn.execute("""
+                SELECT COALESCE(SUM(CASE WHEN hypothetical_pnl < 0 THEN -hypothetical_pnl ELSE 0 END), 0.0)
+                FROM veto_autopsies WHERE status = 'CLOSED'
+            """).fetchone()[0]
+            capital_missed = conn.execute("""
+                SELECT COALESCE(SUM(CASE WHEN hypothetical_pnl > 0 THEN hypothetical_pnl ELSE 0 END), 0.0)
+                FROM veto_autopsies WHERE status = 'CLOSED'
+            """).fetchone()[0]
+            return {
+                "total_vetoes_analyzed": total,
+                "saved_losses": saved,
+                "missed_wins": missed,
+                "accuracy_pct": round((saved / total * 100.0), 1) if total > 0 else 100.0,
+                "capital_saved_usdt": round(capital_saved, 2),
+                "capital_missed_usdt": round(capital_missed, 2)
+            }
 
     # --- Métodos de Persistencia SQLite para Buda Market Maker (Pilar 3) ---
     def save_buda_state(self, state: Dict[str, Any]):
