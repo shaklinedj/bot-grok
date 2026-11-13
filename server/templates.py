@@ -2526,10 +2526,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                         cCollEl.innerText = '+$' + Number(c.total_interest_earned || 0).toFixed(4) + ' USDT (' + (c.payments_collected || 0) + ' pagos)';
                     }
                     const cModeBadge = document.getElementById('carry-mode-badge');
-                    if (cModeBadge && c.mode === 'LIVE_BINANCE') {
-                        cModeBadge.innerText = '🔴 REAL EN VIVO (BINANCE)';
-                        cModeBadge.className = 'tag tag-green';
-
+                    if (cModeBadge) {
+                        if (c.mode === 'LIVE_BINANCE') {
+                            cModeBadge.innerText = '🔴 REAL EN VIVO (BINANCE)';
+                            cModeBadge.className = 'tag tag-green';
+                        } else {
+                            cModeBadge.innerText = '⚠️ API RESTRINGIDA (SIMULADOR)';
+                            cModeBadge.className = 'tag tag-yellow';
+                        }
                     }
 
                     const cTopEl = document.getElementById('carry-top-feed');
