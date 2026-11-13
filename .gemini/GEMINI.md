@@ -12,19 +12,31 @@ Debe ser leído y respetado por el agente en cada turno y nueva sesión sin exce
 
 ---
 
-## 2. REGLAS CONTABLES Y TRANSPARENCIA RADICAL (LEVERAGE VS MARGEN)
+## 2. DELEGACIÓN Y ENJAMBRE DE AGENTES NVIDIA (SKILL: `nvidia-agent-swarm`)
+- **Ahorro masivo de tokens y perspectivas en paralelo:** Ante auditorías complejas, dilemas arquitectónicos, revisiones de código profundas o rediseño de estrategias, se delega el análisis al enjambre de NVIDIA NIM (`nemotron-550b`, `mistral-large`, `diffusiongemma`):
+  - **Quant Senior (`nvidia/nemotron-3-ultra-550b-a55b`):** Análisis matemático de EV positivo, slippage, fricción y R:R.
+  - **Staff Architect (`mistralai/mistral-large-4-1t-a52b`):** Concurrencia, robustez, persistencia y prevención de deadlocks.
+  - **Abogado del Diablo / Red Team (`nvidia/nemotron-3-nano-omni-30b-a3b-reasoning`):** Detección implacable de fallas ocultas, trampas de liquidez y cisnes negros.
+  - **Script de Despliegue:** `C:\Users\Dell\.gemini\config\skills\nvidia-agent-swarm\scripts\dispatch_swarm.py`.
+
+---
+
+## 3. REGLAS CONTABLES Y TRANSPARENCIA RADICAL (LEVERAGE VS MARGEN)
 - **Equity Real:** El Patrimonio Total (Equity) en Swing Sniper representa **exclusivamente capital propio real** (`cash + tr.capital + unrealized_pnl`).
 - **Separación de Apalancamiento:** Queda terminantemente prohibido inflar el equity con el volumen nocional apalancado (`tr.amount * price`). 
 - **Presentación en Dashboard y API:** El margen propio invertido (`invested`) y la exposición apalancada (`notional_exposure`) deben mostrarse siempre por separado tanto en el dashboard como en `/api/status`.
 
 ---
 
-## 3. LOS 3 PILARES DEL SISTEMA
+## 4. LOS 3 PILARES DEL SISTEMA
 
-### PILAR 1: BINANCE CASH & CARRY (`LIVE_BINANCE`)
-- Monitoreo de posición delta-neutral en futuros/spot (ej. `XVG/USDT`).
-- Fondeo pasivo con cobros periódicos de funding rate (cada 8 horas).
-- En vivo es modo pasivo auditado; el bot no rota arbitrariamente la posición viva del usuario sin instrucción explícita.
+### PILAR 1: BINANCE CASH & CARRY (ARBITRAJE ROTATIVO DELTA-NEUTRAL)
+- **Rotación Algorítmica con Anti-Churning Cuantitativo:**
+  La posición en Binance **SÍ DEBE ROTAR AUTOMÁTICAMENTE** hacia el par con mejor tasa de financiamiento (Funding Rate) cuando se cumplan las condiciones matemáticas establecidas:
+  1. **Fricción de comisiones cubierta:** Rotar cuesta ~0.10% (Spot + Futuros). Solo se rota si la ganancia acumulada del nuevo par en 48h (6 ciclos de 8h) supera **2.5x el costo de comisiones** (`spread_gain_48h >= ROUNDTRIP_FEE * 2.5`).
+  2. **Tasa actual agotada:** Si el par activo decae por debajo de `+0.03%` (8h), se activa búsqueda prioritaria de reemplazo.
+  3. **Filtro de Liquidez y VWAP:** Mínimo `$5M USDT` de volumen 24h y libro de órdenes con slippage `< 0.15%` para un tamaño de cobertura de $50 USD.
+- **Interés Compuesto:** Los pagos de fondeo cobrados cada 8 horas se acumulan y capitalizan para expandir la cobertura.
 
 ### PILAR 2: SWING SNIPER V2 (`PAPER_SWING`)
 - **Apalancamiento:** `2.0x` sobre capital propio (`SNIPER_LEVERAGE = 2.0`).
@@ -46,7 +58,7 @@ Debe ser leído y respetado por el agente en cada turno y nueva sesión sin exce
 
 ---
 
-## 4. GESTIÓN DE PROCESOS 24/7 EN WINDOWS
+## 5. GESTIÓN DE PROCESOS 24/7 EN WINDOWS
 - Los tres pilares corren supervisados por [`master_daemon.py`](file:///C:/Users/Dell/Desktop/bot%20grok/master_daemon.py).
 - Si un agente se detiene o se modifica, el daemon maestro lo reinicia automáticamente en menos de 15 segundos sin matar los otros procesos.
 - Script de arranque maestro en Windows: `INICIAR_BOT_24_7.vbs` y acceso directo en `shell:startup`.
