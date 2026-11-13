@@ -50,6 +50,10 @@ def execute_swing_paper_entry(bot: SwingBot, opp: Dict[str, Any]):
     if trade_capital < 15.0 or curr_p <= 0 or bot.cash < trade_capital:
         return
 
+    # Determinar apalancamiento base antes de evaluar vetos
+    is_grade_a = opp.get("is_grade_a_turbo", False)
+    leverage = SNIPER_LEVERAGE
+
     # --- FILTRO CENTINELA: APERTURA INSTITUCIONAL WALL STREET (14:30-14:40 UTC / 10:30-10:40 Local) ---
     # Durante los primeros 10 minutos de la campana de apertura de EE.UU., los creadores de mercado
     # ejecutan barridas masivas de liquidez y falsos rompimientos de alta volatilidad errática.
