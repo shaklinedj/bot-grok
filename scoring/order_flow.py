@@ -74,15 +74,16 @@ def fetch_order_flow_confirmation(symbol: str, ex=exchange) -> Dict[str, Any]:
                 "reason": f"Muro de venta o falta de soporte pasivo en Bids (OBI {obi:+.2f} < +0.10)"
             }
 
-        # Veto 3: Agresión compradora insuficiente en cinta (Taker buyers < 54.0%)
-        if buy_ratio_pct < 54.0:
+        # Veto 3: Agresión compradora insuficiente en cinta (Taker buyers < 58.0%)
+        # Elevado de 54.0% a 58.0% para evitar trampas en apalancamiento x2 (como falso rebote de SNDKB a 54.5%).
+        if buy_ratio_pct < 58.0:
             return {
                 "confirmed": False,
                 "obi": round(obi, 3),
                 "buy_ratio_pct": round(buy_ratio_pct, 1),
                 "delta": round(delta, 2),
                 "spread_pct": round(spread_pct, 3),
-                "reason": f"Ventas agresivas en cinta o falta de convicción compradora (Solo {buy_ratio_pct:.1f}% compras < 54%)"
+                "reason": f"Ventas agresivas en cinta o falta de convicción compradora (Solo {buy_ratio_pct:.1f}% compras < 58% requeridas para x2)"
             }
 
         # Veto 4: CLÍMAX DE AGOTAMIENTO (Anti-FOMO / Buying Climax > 78.0%)

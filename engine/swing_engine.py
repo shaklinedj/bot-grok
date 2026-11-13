@@ -50,6 +50,28 @@ def execute_swing_paper_entry(bot: SwingBot, opp: Dict[str, Any]):
     if trade_capital < 15.0 or curr_p <= 0 or bot.cash < trade_capital:
         return
 
+    # --- FILTRO CENTINELA: APERTURA INSTITUCIONAL WALL STREET (14:30-14:40 UTC / 10:30-10:40 Local) ---
+    # Durante los primeros 10 minutos de la campana de apertura de EE.UU., los creadores de mercado
+    # ejecutan barridas masivas de liquidez y falsos rompimientos de alta volatilidad errática.
+    from datetime import datetime, timezone
+    utc_now = datetime.now(timezone.utc)
+    # Lunes a Viernes (0 a 4)
+    if utc_now.weekday() < 5 and (utc_now.hour == 14 and 30 <= utc_now.minute < 40):
+        bell_reason = f"Apertura EE.UU. (14:{utc_now.minute:02d} UTC): Pausa defensiva de 10m contra barridas de apertura"
+        bot.add_log(f"🛡️ [VETO APERTURA WALL STREET] Disparo cancelado en {sym}: {bell_reason}", "info")
+        register_shadow_veto(
+            bot=bot,
+            symbol=sym,
+            veto_type="OPENING_BELL_GUARD",
+            reason=bell_reason,
+            opp=opp,
+            curr_p=curr_p,
+            trade_capital=trade_capital,
+            leverage=leverage
+        )
+        bot.cooldowns[sym] = time.time() + 180
+        return
+
     # --- FILTRO CENTINELA DE ORDER FLOW (Microestructura L2 & Tape) ---
     flow = fetch_order_flow_confirmation(sym, exchange)
     if not flow.get("confirmed", True):
